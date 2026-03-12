@@ -95,6 +95,9 @@ public actor MatterDeviceServer {
     /// Active PASE handshakes keyed by exchange ID.
     private var paseHandshakes: [UInt16: PASEHandshake] = [:]
 
+    /// Active CASE handshakes keyed by exchange ID.
+    private var caseHandshakes: [UInt16: CASEHandshake] = [:]
+
     /// Established sessions keyed by local session ID.
     private var sessions: [UInt16: SessionEntry] = [:]
 
@@ -133,6 +136,15 @@ public actor MatterDeviceServer {
             salt: salt,
             iterations: config.iterations
         )
+
+        // Hook commissioning state callback for CASE readiness
+        bridge.commissioningState.onCommissioningComplete = { [weak self] fabric in
+            // Fabric committed — CASE sessions can now be established for this fabric
+            Task { [weak self] in
+                guard let self else { return }
+                await self.onFabricCommitted(fabric)
+            }
+        }
 
         // Bind UDP transport
         try await transport.bind(port: config.port)
@@ -287,6 +299,10 @@ public actor MatterDeviceServer {
             try await handlePake1(body, exchangeID: exchangeHeader.exchangeID, from: sender)
         case .pasePake3:
             try await handlePake3(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+        case .caseSigma1:
+            try await handleSigma1(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+        case .caseSigma3:
+            try await handleSigma3(body, exchangeID: exchangeHeader.exchangeID, from: sender)
         default:
             logger.debug("Ignoring unsecured opcode \(opcode) on exchange \(exchangeHeader.exchangeID)")
         }
@@ -448,6 +464,120 @@ public actor MatterDeviceServer {
         logger.info("PASE session established: local=\(handshake.responderSessionID) peer=\(handshake.initiatorSessionID)")
     }
 
+    // MARK: - CASE Step 1: Sigma1 → Sigma2
+
+    private func handleSigma1(
+        _ data: Data,
+        exchangeID: UInt16,
+        from sender: MatterAddress
+    ) async throws {
+        // Find a committed fabric that matches the destination ID in Sigma1
+        guard let (fabricInfo, _) = findMatchingFabric(sigma1Data: data) else {
+            logger.warning("No matching fabric for Sigma1 on exchange \(exchangeID)")
+            return
+        }
+
+        let handler = CASEProtocolHandler(fabricInfo: fabricInfo)
+        let responderSessionID = allocateSessionID()
+
+        let (sigma2Data, handshakeCtx) = try handler.handleSigma1(
+            payload: data,
+            responderSessionID: responderSessionID
+        )
+
+        caseHandshakes[exchangeID] = CASEHandshake(
+            exchangeID: exchangeID,
+            sender: sender,
+            handlerContext: handshakeCtx,
+            fabricInfo: fabricInfo
+        )
+
+        let message = buildUnsecuredMessage(
+            payload: sigma2Data,
+            opcode: .caseSigma2,
+            exchangeID: exchangeID,
+            isInitiator: false
+        )
+
+        try await transport.send(message, to: sender)
+        logger.debug("Sent Sigma2 on exchange \(exchangeID)")
+    }
+
+    // MARK: - CASE Step 2: Sigma3 → Session Established
+
+    private func handleSigma3(
+        _ data: Data,
+        exchangeID: UInt16,
+        from sender: MatterAddress
+    ) async throws {
+        guard let handshake = caseHandshakes[exchangeID] else {
+            logger.warning("Sigma3 for unknown exchange \(exchangeID)")
+            return
+        }
+
+        let handler = CASEProtocolHandler(fabricInfo: handshake.fabricInfo)
+        let localSessionID = allocateSessionID()
+
+        let session = try handler.handleSigma3(
+            payload: data,
+            context: handshake.handlerContext,
+            initiatorRCAC: handshake.fabricInfo.rcac,
+            localSessionID: localSessionID
+        )
+
+        sessions[session.localSessionID] = SessionEntry(
+            session: session,
+            address: sender,
+            fabricIndex: handshake.fabricInfo.fabricIndex
+        )
+
+        caseHandshakes.removeValue(forKey: exchangeID)
+
+        // Send status report success
+        let statusReport = StatusReportMessage(
+            generalStatus: .success,
+            protocolID: UInt32(MatterProtocolID.secureChannel.rawValue),
+            protocolStatus: SecureChannelStatusCode.success.rawValue
+        )
+
+        let message = buildUnsecuredMessage(
+            payload: statusReport.encode(),
+            opcode: .statusReport,
+            exchangeID: exchangeID,
+            isInitiator: false
+        )
+
+        try await transport.send(message, to: sender)
+        logger.info("CASE session established: local=\(localSessionID) fabric=\(handshake.fabricInfo.fabricIndex)")
+    }
+
+    // MARK: - Fabric Management
+
+    /// Committed fabrics available for CASE session establishment.
+    private var committedFabrics: [FabricIndex: FabricInfo] = [:]
+
+    private func onFabricCommitted(_ fabric: CommittedFabric) {
+        do {
+            let fabricInfo = try fabric.fabricInfo()
+            committedFabrics[fabric.fabricIndex] = fabricInfo
+            logger.info("Fabric \(fabric.fabricIndex) committed, CASE ready")
+        } catch {
+            logger.error("Failed to build FabricInfo from committed fabric: \(error)")
+        }
+    }
+
+    /// Find a committed fabric matching the Sigma1 destination ID.
+    private func findMatchingFabric(sigma1Data: Data) -> (FabricInfo, FabricIndex)? {
+        for (index, info) in committedFabrics {
+            // Try to create a responder step1 — if destination ID matches, it succeeds
+            let handler = CASEProtocolHandler(fabricInfo: info)
+            if let _ = try? handler.handleSigma1(payload: sigma1Data, responderSessionID: 0) {
+                return (info, index)
+            }
+        }
+        return nil
+    }
+
     // MARK: - Secured Message Handling (IM)
 
     private func handleSecuredMessage(
@@ -585,5 +715,13 @@ extension MatterDeviceServer {
         let session: SecureSession
         let address: MatterAddress
         let fabricIndex: FabricIndex
+    }
+
+    /// Active CASE handshake state.
+    struct CASEHandshake {
+        let exchangeID: UInt16
+        let sender: MatterAddress
+        let handlerContext: CASEProtocolHandler.ResponderHandshakeContext
+        let fabricInfo: FabricInfo
     }
 }

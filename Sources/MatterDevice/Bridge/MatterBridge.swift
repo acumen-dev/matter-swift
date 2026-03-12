@@ -4,6 +4,7 @@
 import Foundation
 import MatterTypes
 import MatterModel
+import MatterCrypto
 import MatterProtocol
 
 /// High-level API for a Matter bridge device.
@@ -60,13 +61,15 @@ public final class MatterBridge: @unchecked Sendable {
     public let store: AttributeStore
     public let endpoints: EndpointManager
     public let subscriptions: SubscriptionManager
+    public let commissioningState: CommissioningState
     private let imHandler: InteractionModelHandler
     private var bridgedEndpoints: [EndpointID: BridgedEndpoint] = [:]
 
     // MARK: - Init
 
-    public init(config: Config = Config()) {
+    public init(config: Config = Config(), commissioningState: CommissioningState? = nil) {
         self.config = config
+        self.commissioningState = commissioningState ?? CommissioningState()
         self.store = AttributeStore()
         self.endpoints = EndpointManager(store: store)
         self.subscriptions = SubscriptionManager()
@@ -83,7 +86,14 @@ public final class MatterBridge: @unchecked Sendable {
     // MARK: - Root + Aggregator Setup
 
     private func setupRootEndpoint() {
-        let rootClusters: [ClusterID] = [.descriptor]
+        let rootClusters: [ClusterID] = [
+            .descriptor,
+            .basicInformation,
+            .generalCommissioning,
+            .operationalCredentials,
+            .accessControl,
+            .adminCommissioning,
+        ]
         let root = EndpointConfig(
             endpointID: EndpointID(rawValue: 0),
             deviceTypes: [(.rootNode, 1)],
@@ -91,7 +101,17 @@ public final class MatterBridge: @unchecked Sendable {
                 DescriptorHandler(
                     deviceTypes: [(.rootNode, 1)],
                     serverClusters: rootClusters
-                )
+                ),
+                BasicInformationHandler(
+                    vendorName: config.vendorName,
+                    vendorID: config.vendorId,
+                    productName: config.productName,
+                    productID: config.productId
+                ),
+                GeneralCommissioningHandler(commissioningState: commissioningState),
+                OperationalCredentialsHandler(commissioningState: commissioningState),
+                AccessControlHandler(commissioningState: commissioningState),
+                AdminCommissioningHandler(),
             ]
         )
         endpoints.addEndpoint(root)
