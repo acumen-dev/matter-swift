@@ -127,6 +127,7 @@ let package = Package(
             dependencies: [
                 "MatterTransport",
                 "MatterCrypto",
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
 
@@ -162,11 +163,15 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterDeviceTests",
-            dependencies: ["MatterDevice", "MatterTransport"]
+            dependencies: ["MatterDevice", "MatterCrypto", "MatterProtocol", "MatterTransport"]
         ),
         .testTarget(
             name: "MatterControllerTests",
             dependencies: ["MatterController", "MatterModel", "MatterCrypto", "MatterTransport"]
+        ),
+        .testTarget(
+            name: "MatterAppleTests",
+            dependencies: ["MatterApple", "MatterTransport"]
         ),
     ]
 )

@@ -10,4 +10,4 @@
 ///
 /// This module is only available on Apple platforms (macOS, iOS, tvOS, watchOS, visionOS).
 
-// Placeholder — will be implemented alongside MatterProtocol
+@_exported import MatterTransport

@@ -4,6 +4,7 @@
 import Testing
 import Foundation
 @testable import MatterController
+import MatterProtocol
 import MatterTypes
 
 @Suite("PASE Messages")
