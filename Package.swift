@@ -158,7 +158,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterProtocolTests",
-            dependencies: ["MatterProtocol", "MatterTransport"]
+            dependencies: ["MatterProtocol", "MatterCrypto", "MatterTransport"]
         ),
         .testTarget(
             name: "MatterDeviceTests",

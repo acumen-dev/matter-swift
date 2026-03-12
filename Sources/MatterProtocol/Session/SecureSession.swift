@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Crypto
 import MatterTypes
 
 /// A Matter secure session — established via PASE or CASE.
@@ -33,6 +34,15 @@ public final class SecureSession: Sendable {
     /// Whether this is a session resumption (CASE only).
     public let isResumption: Bool
 
+    /// Encryption key for messages this node sends (I2R for initiator, R2I for responder).
+    public let encryptKey: SymmetricKey?
+
+    /// Decryption key for messages this node receives (R2I for initiator, I2R for responder).
+    public let decryptKey: SymmetricKey?
+
+    /// Attestation challenge key (used during commissioning attestation).
+    public let attestationKey: SymmetricKey?
+
     // Counter state is mutable — managed by the session table/engine
     private let _sendCounter: ManagedAtomic<UInt32>
     private let _maxReceivedCounter: ManagedAtomic<UInt32>
@@ -45,7 +55,10 @@ public final class SecureSession: Sendable {
         fabricIndex: FabricIndex? = nil,
         timeout: Duration = .seconds(3600),
         isResumption: Bool = false,
-        initialSendCounter: UInt32? = nil
+        initialSendCounter: UInt32? = nil,
+        encryptKey: SymmetricKey? = nil,
+        decryptKey: SymmetricKey? = nil,
+        attestationKey: SymmetricKey? = nil
     ) {
         self.localSessionID = localSessionID
         self.peerSessionID = peerSessionID
@@ -55,6 +68,9 @@ public final class SecureSession: Sendable {
         self.createdAt = Date()
         self.timeout = timeout
         self.isResumption = isResumption
+        self.encryptKey = encryptKey
+        self.decryptKey = decryptKey
+        self.attestationKey = attestationKey
 
         // Initialize counter with random 28-bit value per spec
         let initial = initialSendCounter ?? (UInt32.random(in: 0...UInt32.max) & MessageCounter.randomInitMask)
