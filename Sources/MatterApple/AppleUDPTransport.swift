@@ -2,14 +2,15 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
-import Network
 import MatterTransport
 import Logging
 
-/// Apple platform UDP transport using Network.framework.
+/// Apple platform UDP transport using a POSIX UDP socket.
 ///
-/// Uses `NWListener` for inbound datagrams and a connection pool for outbound.
-/// Each inbound datagram arrives as a new `NWConnection` from the listener.
+/// Uses a single POSIX socket for both inbound and outbound datagrams.
+/// The receive loop runs on a dedicated `DispatchQueue` to avoid blocking
+/// the Swift cooperative thread pool. Inbound datagrams are yielded to an
+/// `AsyncStream` consumed by the server's receive loop.
 ///
 /// ```swift
 /// let transport = AppleUDPTransport()
@@ -24,11 +25,11 @@ public final class AppleUDPTransport: MatterUDPTransport, @unchecked Sendable {
 
     // MARK: - State
 
-    private let queue = DispatchQueue(label: "matter.udp.transport", qos: .userInitiated)
-    private var listener: NWListener?
-    private var connectionPool: [MatterAddress: NWConnection] = [:]
+    private let receiveQueue = DispatchQueue(label: "matter.udp.receive", qos: .userInitiated)
+    private var fd: Int32 = -1
     private var receiveContinuation: AsyncStream<(Data, MatterAddress)>.Continuation?
     private var receiveStream: AsyncStream<(Data, MatterAddress)>?
+    private var receiveRunning = false
     private let logger: Logger
 
     // MARK: - Init
@@ -43,73 +44,61 @@ public final class AppleUDPTransport: MatterUDPTransport, @unchecked Sendable {
     // MARK: - MatterUDPTransport
 
     public func bind(port: UInt16) async throws {
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
+        let socketFD = socket(AF_INET, SOCK_DGRAM, 0)
+        guard socketFD >= 0 else {
+            throw TransportError.socketCreationFailed
+        }
 
-        let nwPort = NWEndpoint.Port(rawValue: port) ?? .any
-        let nwListener = try NWListener(using: params, on: nwPort)
+        var reuseAddr: Int32 = 1
+        setsockopt(socketFD, SOL_SOCKET, SO_REUSEADDR, &reuseAddr, socklen_t(MemoryLayout<Int32>.size))
 
-        nwListener.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                if let actualPort = nwListener.port {
-                    self.logger.info("UDP listener ready on port \(actualPort.rawValue)")
-                }
-            case .failed(let error):
-                self.logger.error("UDP listener failed: \(error)")
-                self.receiveContinuation?.finish()
-            case .cancelled:
-                self.logger.debug("UDP listener cancelled")
-            default:
-                break
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = INADDR_ANY.bigEndian
+
+        let bindResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                Darwin.bind(socketFD, sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
-
-        nwListener.newConnectionHandler = { [weak self] connection in
-            self?.handleInboundConnection(connection)
+        guard bindResult == 0 else {
+            Darwin.close(socketFD)
+            throw TransportError.bindFailed(errno)
         }
 
-        nwListener.start(queue: queue)
-        self.listener = nwListener
+        self.fd = socketFD
+        self.receiveRunning = true
 
-        // Wait for the listener to become ready
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            nwListener.stateUpdateHandler = { [weak self] state in
-                guard let self else { return }
-                switch state {
-                case .ready:
-                    if let actualPort = nwListener.port {
-                        self.logger.info("UDP listener ready on port \(actualPort.rawValue)")
-                    }
-                    cont.resume()
-                case .failed(let error):
-                    self.logger.error("UDP listener failed: \(error)")
-                    self.receiveContinuation?.finish()
-                    cont.resume(throwing: error)
-                case .cancelled:
-                    self.logger.debug("UDP listener cancelled")
-                    cont.resume(throwing: CancellationError())
-                default:
-                    break
-                }
-            }
-        }
+        logger.info("UDP transport bound on port \(port)")
+
+        // Start receive loop on a dedicated dispatch queue
+        startReceiveLoop()
     }
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
-        let connection = getOrCreateConnection(to: address)
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            connection.send(
-                content: data,
-                completion: .contentProcessed { error in
-                    if let error {
-                        cont.resume(throwing: error)
-                    } else {
-                        cont.resume()
-                    }
+        let socketFD = self.fd
+        guard socketFD >= 0 else {
+            throw TransportError.notBound
+        }
+
+        var destAddr = sockaddr_in()
+        destAddr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        destAddr.sin_family = sa_family_t(AF_INET)
+        destAddr.sin_port = address.port.bigEndian
+        inet_pton(AF_INET, address.host, &destAddr.sin_addr)
+
+        let sent = data.withUnsafeBytes { buffer in
+            withUnsafePointer(to: &destAddr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                    sendto(socketFD, buffer.baseAddress, buffer.count, 0,
+                           sockPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
                 }
-            )
+            }
+        }
+        guard sent >= 0 else {
+            throw TransportError.sendFailed(errno)
         }
     }
 
@@ -118,13 +107,12 @@ public final class AppleUDPTransport: MatterUDPTransport, @unchecked Sendable {
     }
 
     public func close() async {
-        listener?.cancel()
-        listener = nil
+        receiveRunning = false
 
-        for (_, connection) in connectionPool {
-            connection.cancel()
+        if fd >= 0 {
+            Darwin.close(fd)
+            fd = -1
         }
-        connectionPool.removeAll()
 
         receiveContinuation?.finish()
         receiveContinuation = nil
@@ -132,55 +120,52 @@ public final class AppleUDPTransport: MatterUDPTransport, @unchecked Sendable {
 
     // MARK: - Internal
 
-    /// Handle an inbound connection from the listener.
+    /// Blocking receive loop dispatched to a background queue.
     ///
-    /// Each UDP datagram arrives as a new `NWConnection`. We read one message,
-    /// yield it to the receive stream, then cancel the connection.
-    private func handleInboundConnection(_ connection: NWConnection) {
-        connection.start(queue: queue)
-        connection.receiveMessage { [weak self] content, _, _, error in
-            guard let self else { return }
-            if let error {
-                self.logger.debug("Inbound receive error: \(error)")
-                connection.cancel()
-                return
-            }
-            guard let data = content,
-                  let remoteEndpoint = connection.currentPath?.remoteEndpoint,
-                  let sender = MatterAddress(endpoint: remoteEndpoint) else {
-                connection.cancel()
-                return
-            }
-            self.receiveContinuation?.yield((data, sender))
-            connection.cancel()
-        }
-    }
+    /// Reads datagrams using `recvfrom()` and yields them to the async stream.
+    /// The loop terminates when `receiveRunning` is set to `false` or the
+    /// socket is closed (causing `recvfrom` to return -1).
+    private func startReceiveLoop() {
+        let socketFD = self.fd
+        receiveQueue.async { [weak self] in
+            var buffer = [UInt8](repeating: 0, count: 65536)
 
-    /// Get or create an outbound connection for the given address.
-    private func getOrCreateConnection(to address: MatterAddress) -> NWConnection {
-        if let existing = connectionPool[address] {
-            return existing
-        }
-        let endpoint = NWEndpoint.hostPort(from: address)
-        let connection = NWConnection(to: endpoint, using: .udp)
-        connection.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .failed(let error):
-                self.logger.debug("Outbound connection to \(address) failed: \(error)")
-                self.queue.async {
-                    self.connectionPool.removeValue(forKey: address)
+            while self?.receiveRunning == true {
+                var senderAddr = sockaddr_in()
+                var addrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+
+                let received = withUnsafeMutablePointer(to: &senderAddr) { ptr in
+                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                        recvfrom(socketFD, &buffer, buffer.count, 0, sockPtr, &addrLen)
+                    }
                 }
-            case .cancelled:
-                self.queue.async {
-                    self.connectionPool.removeValue(forKey: address)
+
+                guard received > 0 else {
+                    // Socket closed or error — stop loop
+                    break
                 }
-            default:
-                break
+
+                let data = Data(buffer[..<received])
+
+                // Extract sender address
+                var hostBuf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+                inet_ntop(AF_INET, &senderAddr.sin_addr, &hostBuf, socklen_t(INET_ADDRSTRLEN))
+                let host = hostBuf.withUnsafeBufferPointer { buf in
+                    String(cString: buf.baseAddress!)
+                }
+                let port = UInt16(bigEndian: senderAddr.sin_port)
+
+                self?.receiveContinuation?.yield((data, MatterAddress(host: host, port: port)))
             }
         }
-        connection.start(queue: queue)
-        connectionPool[address] = connection
-        return connection
     }
+}
+
+// MARK: - Errors
+
+enum TransportError: Error {
+    case socketCreationFailed
+    case bindFailed(Int32)
+    case sendFailed(Int32)
+    case notBound
 }

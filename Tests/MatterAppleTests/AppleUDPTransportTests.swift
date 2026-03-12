@@ -18,23 +18,19 @@ struct AppleUDPTransportTests {
 
     @Test("Loopback send and receive")
     func loopbackSendReceive() async throws {
-        let transport = AppleUDPTransport()
-        try await transport.bind(port: 0)
-
-        // We need a second transport to send to the first one.
-        // Since NWListener assigns an ephemeral port, we'd need to know it.
-        // For now, validate that send/receive stream works with self-send on a known port.
-        let sendTransport = AppleUDPTransport()
-
-        let testData = Data([0x01, 0x02, 0x03, 0x04])
-        let address = MatterAddress(host: "127.0.0.1", port: 5541)
-
         // Bind receiver on known port
         let receiver = AppleUDPTransport()
         try await receiver.bind(port: 5541)
 
+        // Bind sender on ephemeral port
+        let sender = AppleUDPTransport()
+        try await sender.bind(port: 0)
+
+        let testData = Data([0x01, 0x02, 0x03, 0x04])
+        let address = MatterAddress(host: "127.0.0.1", port: 5541)
+
         // Send from sender to receiver
-        try await sendTransport.send(testData, to: address)
+        try await sender.send(testData, to: address)
 
         // Listen for data on receiver
         let stream = receiver.receive()
@@ -56,8 +52,7 @@ struct AppleUDPTransportTests {
 
         // Clean up
         await receiver.close()
-        await sendTransport.close()
-        await transport.close()
+        await sender.close()
 
         #expect(received == testData)
     }

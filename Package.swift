@@ -173,5 +173,18 @@ let package = Package(
             name: "MatterAppleTests",
             dependencies: ["MatterApple", "MatterTransport"]
         ),
+        .testTarget(
+            name: "IntegrationTests",
+            dependencies: [
+                "MatterDevice",
+                "MatterController",
+                "MatterApple",
+                "MatterCrypto",
+                "MatterProtocol",
+                "MatterTransport",
+                "MatterModel",
+                "MatterTypes",
+            ]
+        ),
     ]
 )

@@ -195,6 +195,7 @@ public actor MatterDeviceServer {
                 logger.warning("Error handling datagram from \(sender): \(error)")
             }
         }
+        logger.debug("Receive loop exited")
     }
 
     // MARK: - Report Loop
@@ -478,7 +479,6 @@ public actor MatterDeviceServer {
                 let responseExchangeHeader = ExchangeHeader(
                     flags: ExchangeFlags(
                         initiator: false,
-                        acknowledgment: true,
                         reliableDelivery: true
                     ),
                     protocolOpcode: responseOpcode.rawValue,
