@@ -401,6 +401,31 @@ extension Spake2p {
         return result.uncompressed
     }
 
+    /// Derive the w0 and w1 scalars from a passcode using PBKDF2.
+    ///
+    /// This is the public entry point for computing SPAKE2+ scalars from
+    /// a passcode and PBKDF parameters (used by both prover and verifier).
+    ///
+    /// - Parameters:
+    ///   - passcode: The setup passcode.
+    ///   - salt: PBKDF2 salt (16-32 bytes).
+    ///   - iterations: PBKDF2 iteration count.
+    /// - Returns: Tuple of (w0, w1) as 32-byte big-endian scalars.
+    public static func deriveW0W1(
+        passcode: UInt32,
+        salt: Data,
+        iterations: Int
+    ) -> (w0: Data, w1: Data) {
+        let ws = KeyDerivation.pbkdf2DeriveWS(
+            passcode: passcode,
+            salt: salt,
+            iterations: iterations
+        )
+        let w0 = reduceModOrder(Data(ws[0..<40]))
+        let w1 = reduceModOrder(Data(ws[40..<80]))
+        return (w0, w1)
+    }
+
     /// Reduce a 40-byte big-endian integer modulo the curve order.
     static func reduceModOrder(_ value: Data) -> Data {
         let bigVal = bigIntFromBytes(value)

@@ -166,7 +166,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterControllerTests",
-            dependencies: ["MatterController", "MatterTransport"]
+            dependencies: ["MatterController", "MatterModel", "MatterCrypto", "MatterTransport"]
         ),
     ]
 )
