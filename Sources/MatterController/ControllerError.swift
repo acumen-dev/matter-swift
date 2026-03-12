@@ -47,4 +47,18 @@ public enum ControllerError: Error, Sendable, Equatable {
 
     /// Interaction Model error in response.
     case interactionModelError(String)
+
+    // MARK: - Transport & Discovery
+
+    /// UDP transport failure.
+    case transportError(String)
+
+    /// mDNS discovery failure.
+    case discoveryFailed(String)
+
+    /// Cached session has expired.
+    case sessionExpired
+
+    /// No response received within the deadline.
+    case timeout(String)
 }
