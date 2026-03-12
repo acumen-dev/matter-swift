@@ -134,15 +134,7 @@ public final class MatterBridge: @unchecked Sendable {
             ]
         )
         endpoints.addEndpoint(config)
-
-        let bridged = BridgedEndpoint(
-            endpointID: epID,
-            name: name,
-            store: store,
-            subscriptions: subscriptions
-        )
-        bridgedEndpoints[epID] = bridged
-        return bridged
+        return registerBridgedEndpoint(epID: epID, name: name)
     }
 
     /// Add a bridged on/off light (OnOff + BridgedDeviceBasicInfo + Descriptor).
@@ -164,15 +156,275 @@ public final class MatterBridge: @unchecked Sendable {
             ]
         )
         endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
 
-        let bridged = BridgedEndpoint(
+    /// Add a bridged color temperature light (OnOff + LevelControl + ColorControl + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addColorTemperatureLight(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.onOff, .levelControl, .colorControl, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
             endpointID: epID,
-            name: name,
-            store: store,
-            subscriptions: subscriptions
+            deviceTypes: [(.bridgedNode, 1), (.colorTemperatureLight, 1)],
+            clusterHandlers: [
+                OnOffHandler(),
+                LevelControlHandler(),
+                ColorControlHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.colorTemperatureLight, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
         )
-        bridgedEndpoints[epID] = bridged
-        return bridged
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged extended color light (OnOff + LevelControl + ColorControl + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addExtendedColorLight(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.onOff, .levelControl, .colorControl, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.extendedColorLight, 1)],
+            clusterHandlers: [
+                OnOffHandler(),
+                LevelControlHandler(),
+                ColorControlHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.extendedColorLight, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged on/off plug-in unit (OnOff + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addOnOffPlugInUnit(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.onOff, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.onOffPlugInUnit, 1)],
+            clusterHandlers: [
+                OnOffHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.onOffPlugInUnit, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged thermostat (Thermostat + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addThermostat(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.thermostat, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.thermostat, 1)],
+            clusterHandlers: [
+                ThermostatHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.thermostat, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged door lock (DoorLock + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addDoorLock(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.doorLock, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.doorLock, 1)],
+            clusterHandlers: [
+                DoorLockHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.doorLock, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged window covering (WindowCovering + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addWindowCovering(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.windowCovering, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.windowCovering, 1)],
+            clusterHandlers: [
+                WindowCoveringHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.windowCovering, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged fan (FanControl + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addFan(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.fanControl, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.fan, 1)],
+            clusterHandlers: [
+                FanControlHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.fan, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged contact sensor (BooleanState + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addContactSensor(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.booleanState, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.contactSensor, 1)],
+            clusterHandlers: [
+                BooleanStateHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.contactSensor, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged occupancy sensor (OccupancySensing + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addOccupancySensor(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.occupancySensing, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.occupancySensor, 1)],
+            clusterHandlers: [
+                OccupancySensingHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.occupancySensor, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged temperature sensor (TemperatureMeasurement + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addTemperatureSensor(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.temperatureMeasurement, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.temperatureSensor, 1)],
+            clusterHandlers: [
+                TemperatureMeasurementHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.temperatureSensor, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged humidity sensor (RelativeHumidityMeasurement + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addHumiditySensor(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.relativeHumidityMeasurement, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.humiditySensor, 1)],
+            clusterHandlers: [
+                RelativeHumidityMeasurementHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.humiditySensor, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
+    }
+
+    /// Add a bridged light sensor (IlluminanceMeasurement + BridgedDeviceBasicInfo + Descriptor).
+    @discardableResult
+    public func addLightSensor(name: String) -> BridgedEndpoint {
+        let epID = endpoints.nextEndpointID()
+        let serverClusters: [ClusterID] = [.illuminanceMeasurement, .bridgedDeviceBasicInformation, .descriptor]
+
+        let config = EndpointConfig(
+            endpointID: epID,
+            deviceTypes: [(.bridgedNode, 1), (.lightSensor, 1)],
+            clusterHandlers: [
+                IlluminanceMeasurementHandler(),
+                BridgedDeviceBasicInfoHandler(nodeLabel: name),
+                DescriptorHandler(
+                    deviceTypes: [(.bridgedNode, 1), (.lightSensor, 1)],
+                    serverClusters: serverClusters
+                )
+            ]
+        )
+        endpoints.addEndpoint(config)
+        return registerBridgedEndpoint(epID: epID, name: name)
     }
 
     // MARK: - Remove Endpoints
@@ -186,6 +438,19 @@ public final class MatterBridge: @unchecked Sendable {
     /// Remove a bridged endpoint by handle.
     public func removeEndpoint(_ endpoint: BridgedEndpoint) {
         removeEndpoint(endpoint.endpointID)
+    }
+
+    // MARK: - Internal
+
+    private func registerBridgedEndpoint(epID: EndpointID, name: String) -> BridgedEndpoint {
+        let bridged = BridgedEndpoint(
+            endpointID: epID,
+            name: name,
+            store: store,
+            subscriptions: subscriptions
+        )
+        bridgedEndpoints[epID] = bridged
+        return bridged
     }
 
     // MARK: - IM Handling

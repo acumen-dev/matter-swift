@@ -301,3 +301,443 @@ struct BridgedDeviceBasicInfoHandlerTests {
         #expect(result == .unsupportedWrite)
     }
 }
+
+// MARK: - ColorControl Tests
+
+@Suite("ColorControlHandler")
+struct ColorControlHandlerTests {
+
+    let endpoint = EndpointID(rawValue: 1)
+
+    @Test("initialAttributes has correct defaults")
+    func initialAttributes() {
+        let handler = ColorControlHandler(physicalMinMireds: 153, physicalMaxMireds: 500)
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[ColorControlCluster.Attribute.currentHue] == .unsignedInt(0))
+        #expect(attrs[ColorControlCluster.Attribute.colorTemperatureMireds] == .unsignedInt(153))
+        #expect(attrs[ColorControlCluster.Attribute.colorTempPhysicalMinMireds] == .unsignedInt(153))
+        #expect(attrs[ColorControlCluster.Attribute.colorTempPhysicalMaxMireds] == .unsignedInt(500))
+    }
+
+    @Test("moveToHue sets hue and colorMode to 0")
+    func moveToHue() throws {
+        let handler = ColorControlHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(180))
+        ])
+
+        _ = try handler.handleCommand(
+            commandID: ColorControlCluster.Command.moveToHue,
+            fields: fields,
+            store: store,
+            endpointID: endpoint
+        )
+
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.currentHue) == .unsignedInt(180))
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.colorMode) == .unsignedInt(0))
+    }
+
+    @Test("moveToColor sets x, y and colorMode to 1")
+    func moveToColor() throws {
+        let handler = ColorControlHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(24000)),
+            .init(tag: .contextSpecific(1), value: .unsignedInt(25000))
+        ])
+
+        _ = try handler.handleCommand(
+            commandID: ColorControlCluster.Command.moveToColor,
+            fields: fields,
+            store: store,
+            endpointID: endpoint
+        )
+
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.currentX) == .unsignedInt(24000))
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.currentY) == .unsignedInt(25000))
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.colorMode) == .unsignedInt(1))
+    }
+
+    @Test("moveToColorTemperature clamps to physical range")
+    func moveToColorTemperatureClamps() throws {
+        let handler = ColorControlHandler(physicalMinMireds: 153, physicalMaxMireds: 500)
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        // Below min
+        let fields1 = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(100))
+        ])
+        _ = try handler.handleCommand(
+            commandID: ColorControlCluster.Command.moveToColorTemperature,
+            fields: fields1,
+            store: store,
+            endpointID: endpoint
+        )
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.colorTemperatureMireds) == .unsignedInt(153))
+
+        // Above max
+        let fields2 = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(600))
+        ])
+        _ = try handler.handleCommand(
+            commandID: ColorControlCluster.Command.moveToColorTemperature,
+            fields: fields2,
+            store: store,
+            endpointID: endpoint
+        )
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.colorTemperatureMireds) == .unsignedInt(500))
+        #expect(store.get(endpoint: endpoint, cluster: .colorControl, attribute: ColorControlCluster.Attribute.colorMode) == .unsignedInt(2))
+    }
+
+    @Test("onChange callback fires with correct value")
+    func onChangeCallback() throws {
+        nonisolated(unsafe) var received: ColorControlChange?
+        let handler = ColorControlHandler(onChange: { received = $0 })
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(200))
+        ])
+        _ = try handler.handleCommand(
+            commandID: ColorControlCluster.Command.moveToSaturation,
+            fields: fields,
+            store: store,
+            endpointID: endpoint
+        )
+
+        if case .saturation(let v) = received {
+            #expect(v == 200)
+        } else {
+            Issue.record("Expected saturation change")
+        }
+    }
+}
+
+// MARK: - Thermostat Tests
+
+@Suite("ThermostatHandler")
+struct ThermostatHandlerTests {
+
+    let endpoint = EndpointID(rawValue: 1)
+
+    @Test("initialAttributes has correct defaults")
+    func initialAttributes() {
+        let handler = ThermostatHandler()
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[ThermostatCluster.Attribute.localTemperature] == .signedInt(2000))
+        #expect(attrs[ThermostatCluster.Attribute.occupiedHeatingSetpoint] == .signedInt(2000))
+        #expect(attrs[ThermostatCluster.Attribute.occupiedCoolingSetpoint] == .signedInt(2600))
+        #expect(attrs[ThermostatCluster.Attribute.systemMode] == .unsignedInt(1))
+    }
+
+    @Test("setpointRaiseLower adjusts heating setpoint")
+    func raiseHeatingSetpoint() throws {
+        let handler = ThermostatHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        // Mode 0 = heat, amount +5 (0.5°C = 50 hundredths)
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(0)),
+            .init(tag: .contextSpecific(1), value: .signedInt(5))
+        ])
+
+        _ = try handler.handleCommand(
+            commandID: ThermostatCluster.Command.setpointRaiseLower,
+            fields: fields,
+            store: store,
+            endpointID: endpoint
+        )
+
+        let val = store.get(endpoint: endpoint, cluster: .thermostat, attribute: ThermostatCluster.Attribute.occupiedHeatingSetpoint)
+        #expect(val == .signedInt(2050)) // 2000 + 5*10
+    }
+
+    @Test("setpointRaiseLower mode 2 adjusts both setpoints")
+    func raiseBothSetpoints() throws {
+        let handler = ThermostatHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(2)),
+            .init(tag: .contextSpecific(1), value: .signedInt(-3))
+        ])
+
+        _ = try handler.handleCommand(
+            commandID: ThermostatCluster.Command.setpointRaiseLower,
+            fields: fields,
+            store: store,
+            endpointID: endpoint
+        )
+
+        let heat = store.get(endpoint: endpoint, cluster: .thermostat, attribute: ThermostatCluster.Attribute.occupiedHeatingSetpoint)
+        let cool = store.get(endpoint: endpoint, cluster: .thermostat, attribute: ThermostatCluster.Attribute.occupiedCoolingSetpoint)
+        #expect(heat == .signedInt(1970)) // 2000 - 30
+        #expect(cool == .signedInt(2570)) // 2600 - 30
+    }
+
+    @Test("validateWrite allows systemMode and setpoints")
+    func validateWriteAllows() {
+        let handler = ThermostatHandler()
+        #expect(handler.validateWrite(attributeID: ThermostatCluster.Attribute.systemMode, value: .unsignedInt(4)) == .allowed)
+        #expect(handler.validateWrite(attributeID: ThermostatCluster.Attribute.occupiedHeatingSetpoint, value: .signedInt(2100)) == .allowed)
+        #expect(handler.validateWrite(attributeID: ThermostatCluster.Attribute.localTemperature, value: .signedInt(2000)) == .unsupportedWrite)
+    }
+}
+
+// MARK: - DoorLock Tests
+
+@Suite("DoorLockHandler")
+struct DoorLockHandlerTests {
+
+    let endpoint = EndpointID(rawValue: 1)
+
+    @Test("initialAttributes has locked state")
+    func initialAttributes() {
+        let handler = DoorLockHandler()
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[DoorLockCluster.Attribute.lockState] == .unsignedInt(1))
+        #expect(attrs[DoorLockCluster.Attribute.actuatorEnabled] == .bool(true))
+    }
+
+    @Test("lockDoor sets lockState to 1")
+    func lockDoor() throws {
+        let handler = DoorLockHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        // First unlock
+        _ = try handler.handleCommand(commandID: DoorLockCluster.Command.unlockDoor, fields: nil, store: store, endpointID: endpoint)
+        // Then lock
+        _ = try handler.handleCommand(commandID: DoorLockCluster.Command.lockDoor, fields: nil, store: store, endpointID: endpoint)
+
+        #expect(store.get(endpoint: endpoint, cluster: .doorLock, attribute: DoorLockCluster.Attribute.lockState) == .unsignedInt(1))
+    }
+
+    @Test("unlockDoor sets lockState to 2")
+    func unlockDoor() throws {
+        let handler = DoorLockHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        _ = try handler.handleCommand(commandID: DoorLockCluster.Command.unlockDoor, fields: nil, store: store, endpointID: endpoint)
+
+        #expect(store.get(endpoint: endpoint, cluster: .doorLock, attribute: DoorLockCluster.Attribute.lockState) == .unsignedInt(2))
+    }
+
+    @Test("onChange callback fires")
+    func onChangeCallback() throws {
+        nonisolated(unsafe) var received: UInt8?
+        let handler = DoorLockHandler(onChange: { received = $0 })
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        _ = try handler.handleCommand(commandID: DoorLockCluster.Command.unlockDoor, fields: nil, store: store, endpointID: endpoint)
+
+        #expect(received == 2)
+    }
+}
+
+// MARK: - WindowCovering Tests
+
+@Suite("WindowCoveringHandler")
+struct WindowCoveringHandlerTests {
+
+    let endpoint = EndpointID(rawValue: 1)
+
+    @Test("upOrOpen sets position to 0")
+    func upOrOpen() throws {
+        let handler = WindowCoveringHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        // Close first
+        _ = try handler.handleCommand(commandID: WindowCoveringCluster.Command.downOrClose, fields: nil, store: store, endpointID: endpoint)
+        // Then open
+        _ = try handler.handleCommand(commandID: WindowCoveringCluster.Command.upOrOpen, fields: nil, store: store, endpointID: endpoint)
+
+        #expect(store.get(endpoint: endpoint, cluster: .windowCovering, attribute: WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths) == .unsignedInt(0))
+    }
+
+    @Test("downOrClose sets position to 10000")
+    func downOrClose() throws {
+        let handler = WindowCoveringHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        _ = try handler.handleCommand(commandID: WindowCoveringCluster.Command.downOrClose, fields: nil, store: store, endpointID: endpoint)
+
+        #expect(store.get(endpoint: endpoint, cluster: .windowCovering, attribute: WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths) == .unsignedInt(10000))
+        #expect(store.get(endpoint: endpoint, cluster: .windowCovering, attribute: WindowCoveringCluster.Attribute.targetPositionLiftPercent100ths) == .unsignedInt(10000))
+    }
+
+    @Test("goToLiftPercentage clamps to 0-10000")
+    func goToLiftPercentageClamps() throws {
+        let handler = WindowCoveringHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(15000))
+        ])
+        _ = try handler.handleCommand(commandID: WindowCoveringCluster.Command.goToLiftPercentage, fields: fields, store: store, endpointID: endpoint)
+
+        #expect(store.get(endpoint: endpoint, cluster: .windowCovering, attribute: WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths) == .unsignedInt(10000))
+    }
+
+    @Test("goToLiftPercentage sets valid position")
+    func goToLiftPercentageValid() throws {
+        let handler = WindowCoveringHandler()
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: endpoint)
+
+        let fields = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(5000))
+        ])
+        _ = try handler.handleCommand(commandID: WindowCoveringCluster.Command.goToLiftPercentage, fields: fields, store: store, endpointID: endpoint)
+
+        #expect(store.get(endpoint: endpoint, cluster: .windowCovering, attribute: WindowCoveringCluster.Attribute.currentPositionLiftPercent100ths) == .unsignedInt(5000))
+    }
+}
+
+// MARK: - FanControl Tests
+
+@Suite("FanControlHandler")
+struct FanControlHandlerTests {
+
+    @Test("initialAttributes has correct defaults")
+    func initialAttributes() {
+        let handler = FanControlHandler(speedMax: 5)
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[FanControlCluster.Attribute.fanMode] == .unsignedInt(0))
+        #expect(attrs[FanControlCluster.Attribute.speedMax] == .unsignedInt(5))
+        #expect(attrs[FanControlCluster.Attribute.percentSetting] == .unsignedInt(0))
+    }
+
+    @Test("validateWrite allows fanMode in range")
+    func validateWriteFanMode() {
+        let handler = FanControlHandler()
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.fanMode, value: .unsignedInt(3)) == .allowed)
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.fanMode, value: .unsignedInt(6)) == .constraintError)
+    }
+
+    @Test("validateWrite allows percentSetting in range")
+    func validateWritePercent() {
+        let handler = FanControlHandler()
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.percentSetting, value: .unsignedInt(50)) == .allowed)
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.percentSetting, value: .unsignedInt(101)) == .constraintError)
+    }
+
+    @Test("validateWrite allows speedSetting up to speedMax")
+    func validateWriteSpeed() {
+        let handler = FanControlHandler(speedMax: 5)
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.speedSetting, value: .unsignedInt(5)) == .allowed)
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.speedSetting, value: .unsignedInt(6)) == .constraintError)
+    }
+
+    @Test("validateWrite rejects read-only attributes")
+    func validateWriteRejectsReadOnly() {
+        let handler = FanControlHandler()
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.percentCurrent, value: .unsignedInt(50)) == .unsupportedWrite)
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.speedCurrent, value: .unsignedInt(5)) == .unsupportedWrite)
+        #expect(handler.validateWrite(attributeID: FanControlCluster.Attribute.speedMax, value: .unsignedInt(10)) == .unsupportedWrite)
+    }
+}
+
+// MARK: - Sensor Handler Tests
+
+@Suite("TemperatureMeasurementHandler")
+struct TemperatureMeasurementHandlerTests {
+
+    @Test("initialAttributes has correct defaults")
+    func initialAttributes() {
+        let handler = TemperatureMeasurementHandler()
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[TemperatureMeasurementCluster.Attribute.measuredValue] == .signedInt(0))
+        #expect(attrs[TemperatureMeasurementCluster.Attribute.minMeasuredValue] == .signedInt(-27315))
+        #expect(attrs[TemperatureMeasurementCluster.Attribute.maxMeasuredValue] == .signedInt(32767))
+    }
+
+    @Test("validateWrite rejects all writes")
+    func validateWriteRejects() {
+        let handler = TemperatureMeasurementHandler()
+        #expect(handler.validateWrite(attributeID: TemperatureMeasurementCluster.Attribute.measuredValue, value: .signedInt(2200)) == .unsupportedWrite)
+    }
+}
+
+@Suite("RelativeHumidityMeasurementHandler")
+struct RelativeHumidityMeasurementHandlerTests {
+
+    @Test("initialAttributes has correct defaults")
+    func initialAttributes() {
+        let handler = RelativeHumidityMeasurementHandler()
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[RelativeHumidityMeasurementCluster.Attribute.measuredValue] == .unsignedInt(0))
+        #expect(attrs[RelativeHumidityMeasurementCluster.Attribute.maxMeasuredValue] == .unsignedInt(10000))
+    }
+}
+
+@Suite("IlluminanceMeasurementHandler")
+struct IlluminanceMeasurementHandlerTests {
+
+    @Test("initialAttributes has correct defaults")
+    func initialAttributes() {
+        let handler = IlluminanceMeasurementHandler()
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[IlluminanceMeasurementCluster.Attribute.measuredValue] == .unsignedInt(0))
+        #expect(attrs[IlluminanceMeasurementCluster.Attribute.minMeasuredValue] == .unsignedInt(1))
+        #expect(attrs[IlluminanceMeasurementCluster.Attribute.maxMeasuredValue] == .unsignedInt(0xFFFE))
+    }
+}
+
+@Suite("OccupancySensingHandler")
+struct OccupancySensingHandlerTests {
+
+    @Test("initialAttributes uses configurable sensor type")
+    func initialAttributesSensorType() {
+        let handler = OccupancySensingHandler(sensorType: 2) // PIR + Ultrasonic
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[OccupancySensingCluster.Attribute.occupancy] == .unsignedInt(0))
+        #expect(attrs[OccupancySensingCluster.Attribute.occupancySensorType] == .unsignedInt(2))
+    }
+
+    @Test("validateWrite rejects all writes")
+    func validateWriteRejects() {
+        let handler = OccupancySensingHandler()
+        #expect(handler.validateWrite(attributeID: OccupancySensingCluster.Attribute.occupancy, value: .unsignedInt(1)) == .unsupportedWrite)
+    }
+}
+
+@Suite("BooleanStateHandler")
+struct BooleanStateHandlerTests {
+
+    @Test("initialAttributes defaults to false")
+    func initialAttributes() {
+        let handler = BooleanStateHandler()
+        let attrs = Dictionary(uniqueKeysWithValues: handler.initialAttributes())
+
+        #expect(attrs[BooleanStateCluster.Attribute.stateValue] == .bool(false))
+    }
+
+    @Test("validateWrite rejects all writes")
+    func validateWriteRejects() {
+        let handler = BooleanStateHandler()
+        #expect(handler.validateWrite(attributeID: BooleanStateCluster.Attribute.stateValue, value: .bool(true)) == .unsupportedWrite)
+    }
+}
