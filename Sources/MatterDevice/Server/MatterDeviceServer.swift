@@ -488,6 +488,7 @@ public actor MatterDeviceServer {
         caseHandshakes[exchangeID] = CASEHandshake(
             exchangeID: exchangeID,
             sender: sender,
+            responderSessionID: responderSessionID,
             handlerContext: handshakeCtx,
             fabricInfo: fabricInfo
         )
@@ -516,13 +517,14 @@ public actor MatterDeviceServer {
         }
 
         let handler = CASEProtocolHandler(fabricInfo: handshake.fabricInfo)
-        let localSessionID = allocateSessionID()
 
+        // Use the responderSessionID allocated during Sigma1 — this is the ID
+        // the controller will use as peerSessionID when sending encrypted messages.
         let session = try handler.handleSigma3(
             payload: data,
             context: handshake.handlerContext,
             initiatorRCAC: handshake.fabricInfo.rcac,
-            localSessionID: localSessionID
+            localSessionID: handshake.responderSessionID
         )
 
         sessions[session.localSessionID] = SessionEntry(
@@ -548,7 +550,7 @@ public actor MatterDeviceServer {
         )
 
         try await transport.send(message, to: sender)
-        logger.info("CASE session established: local=\(localSessionID) fabric=\(handshake.fabricInfo.fabricIndex)")
+        logger.info("CASE session established: local=\(handshake.responderSessionID) fabric=\(handshake.fabricInfo.fabricIndex)")
     }
 
     // MARK: - Fabric Management
@@ -721,6 +723,7 @@ extension MatterDeviceServer {
     struct CASEHandshake {
         let exchangeID: UInt16
         let sender: MatterAddress
+        let responderSessionID: UInt16
         let handlerContext: CASEProtocolHandler.ResponderHandshakeContext
         let fabricInfo: FabricInfo
     }

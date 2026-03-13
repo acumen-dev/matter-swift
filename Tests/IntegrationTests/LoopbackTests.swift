@@ -3,6 +3,7 @@
 
 import Testing
 import Foundation
+import Crypto
 import Network
 import MatterTypes
 import MatterModel
@@ -253,6 +254,57 @@ struct LoopbackTests {
         }
 
         await server.stop()
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
+    // MARK: - Full Commissioning + CASE
+
+    @Test("Full commissioning flow and CASE operational read")
+    func fullCommissioningAndCASE() async throws {
+        let (server, _, _) = try await startServer()
+        let serverAddress = MatterAddress(host: "127.0.0.1", port: Self.serverPort)
+
+        // Create controller with LoopbackTransport (POSIX socket — bidirectional on one port)
+        let clientTransport = LoopbackTransport()
+        try await clientTransport.bind(port: 0) // ephemeral port
+
+        let controller = try MatterController(
+            transport: clientTransport,
+            discovery: StubDiscovery(),
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                rootKey: P256.Signing.PrivateKey()
+            )
+        )
+
+        do {
+            // Commission: PASE → ArmFailSafe → SetRegulatoryConfig → CSR → AddRootCert
+            //           → AddNOC → ACL write → CommissioningComplete
+            let device = try await controller.commission(
+                address: serverAddress,
+                setupCode: Self.passcode
+            )
+
+            #expect(device.nodeID.rawValue > 0, "Device should have a valid node ID")
+
+            // Read OnOff attribute via automatic CASE session establishment
+            let value = try await controller.readAttribute(
+                nodeID: device.nodeID,
+                endpointID: EndpointID(rawValue: 3),
+                clusterID: .onOff,
+                attributeID: OnOffCluster.Attribute.onOff
+            )
+
+            #expect(value.boolValue == false, "Default OnOff should be false")
+        } catch {
+            await server.stop()
+            await clientTransport.close()
+            try await Task.sleep(for: .milliseconds(500))
+            throw error
+        }
+
+        await server.stop()
+        await clientTransport.close()
         try await Task.sleep(for: .milliseconds(500))
     }
 

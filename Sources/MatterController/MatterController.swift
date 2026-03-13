@@ -216,7 +216,16 @@ public actor MatterController {
             isInitiator: true
         )
 
-        try await transceiver.send(pake3Msg, to: address)
+        let statusMsg = try await transceiver.sendAndReceive(
+            pake3Msg, to: address, timeout: timeout
+        )
+        let statusPayload = try extractUnsecuredPayload(from: statusMsg)
+        let statusReport = try StatusReportMessage.decode(from: statusPayload)
+        guard statusReport.generalStatus == .success else {
+            throw ControllerError.paseHandshakeFailed(
+                "PASE StatusReport: \(statusReport.generalStatus)"
+            )
+        }
 
         guard let paseSession = ctx3.paseSession else {
             throw ControllerError.paseHandshakeFailed("No PASE session after Pake3")
@@ -577,7 +586,17 @@ public actor MatterController {
             isInitiator: true
         )
 
-        try await transceiver.send(sigma3Msg, to: address)
+        // Wait for StatusReport confirming CASE session
+        let caseStatusMsg = try await transceiver.sendAndReceive(
+            sigma3Msg, to: address, timeout: timeout
+        )
+        let caseStatusPayload = try extractUnsecuredPayload(from: caseStatusMsg)
+        let caseStatusReport = try StatusReportMessage.decode(from: caseStatusPayload)
+        guard caseStatusReport.generalStatus == .success else {
+            throw ControllerError.caseSessionFailed(
+                "CASE StatusReport: \(caseStatusReport.generalStatus)"
+            )
+        }
 
         // Cache the session
         sessionCache.store(session, for: nodeID)
