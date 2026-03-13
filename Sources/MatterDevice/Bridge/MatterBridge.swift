@@ -489,13 +489,15 @@ public final class MatterBridge: @unchecked Sendable {
         opcode: InteractionModelOpcode,
         payload: Data,
         sessionID: UInt16,
-        fabricIndex: FabricIndex
+        fabricIndex: FabricIndex,
+        requestContext: IMRequestContext? = nil
     ) async throws -> [(InteractionModelOpcode, Data)] {
         try await imHandler.handleMessage(
             opcode: opcode,
             payload: payload,
             sessionID: sessionID,
-            fabricIndex: fabricIndex
+            fabricIndex: fabricIndex,
+            requestContext: requestContext
         )
     }
 

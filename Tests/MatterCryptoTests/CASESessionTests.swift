@@ -77,7 +77,7 @@ struct CASESessionTests {
         )
 
         // Step 4: Responder processes Sigma3, derives session keys
-        let responderKeys = try CASESession.responderStep2(
+        let (responderKeys, peerNode) = try CASESession.responderStep2(
             context: responderCtx,
             sigma3Data: sigma3Data,
             initiatorRCAC: rcac
@@ -233,7 +233,7 @@ struct CASESessionTests {
         let (s3, iKeys, _) = try CASESession.initiatorStep2(
             context: iCtx, sigma2Data: s2, responderRCAC: rcac
         )
-        let rKeys = try CASESession.responderStep2(
+        let (rKeys, _) = try CASESession.responderStep2(
             context: rCtx, sigma3Data: s3, initiatorRCAC: rcac
         )
 

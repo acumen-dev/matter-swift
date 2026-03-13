@@ -23,12 +23,16 @@ public enum AccessControlCluster {
     // MARK: - Privilege
 
     /// Access control privilege levels.
-    public enum Privilege: UInt8, Sendable, Equatable {
+    public enum Privilege: UInt8, Sendable, Equatable, Comparable {
         case view       = 1
         case proxied    = 2
         case operate    = 3
         case manage     = 4
         case administer = 5
+
+        public static func < (lhs: Privilege, rhs: Privilege) -> Bool {
+            lhs.rawValue < rhs.rawValue
+        }
     }
 
     // MARK: - Auth Mode

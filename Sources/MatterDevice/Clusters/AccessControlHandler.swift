@@ -35,7 +35,22 @@ public struct AccessControlHandler: ClusterHandler, @unchecked Sendable {
     public func validateWrite(attributeID: AttributeID, value: TLVElement) -> WriteValidation {
         switch attributeID {
         case AccessControlCluster.Attribute.acl:
-            // ACL writes are accepted — the list is an array of ACE structures
+            // Parse the ACL array and stage the entries for CommissioningComplete
+            guard case .array(let elements) = value else {
+                return .constraintError
+            }
+
+            var entries: [AccessControlCluster.AccessControlEntry] = []
+            for element in elements {
+                do {
+                    let ace = try AccessControlCluster.AccessControlEntry.fromTLVElement(element)
+                    entries.append(ace)
+                } catch {
+                    return .constraintError
+                }
+            }
+
+            commissioningState.stagedACLs = entries
             return .allowed
         default:
             return .unsupportedWrite

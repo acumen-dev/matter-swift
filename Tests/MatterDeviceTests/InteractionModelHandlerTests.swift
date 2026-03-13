@@ -428,6 +428,285 @@ struct InteractionModelHandlerTests {
         #expect(responses.isEmpty)
     }
 
+    // MARK: - ACL Enforcement
+
+    /// Create a CASE session context with a single admin ACE for the given subject.
+    private func makeAdminContext(subjectNodeID: UInt64 = 42) -> IMRequestContext {
+        IMRequestContext(
+            checkerContext: ACLChecker.RequestContext(
+                isPASE: false,
+                subjectNodeID: subjectNodeID,
+                fabricIndex: testFabric
+            ),
+            acls: [
+                AccessControlCluster.AccessControlEntry(
+                    privilege: .administer,
+                    authMode: .case,
+                    subjects: [subjectNodeID],
+                    fabricIndex: testFabric
+                )
+            ]
+        )
+    }
+
+    /// Create a CASE session context with a view-only ACE.
+    private func makeViewOnlyContext(subjectNodeID: UInt64 = 42) -> IMRequestContext {
+        IMRequestContext(
+            checkerContext: ACLChecker.RequestContext(
+                isPASE: false,
+                subjectNodeID: subjectNodeID,
+                fabricIndex: testFabric
+            ),
+            acls: [
+                AccessControlCluster.AccessControlEntry(
+                    privilege: .view,
+                    authMode: .case,
+                    subjects: [subjectNodeID],
+                    fabricIndex: testFabric
+                )
+            ]
+        )
+    }
+
+    /// Create a CASE session context with no ACLs (completely denied).
+    private func makeDeniedContext(subjectNodeID: UInt64 = 42) -> IMRequestContext {
+        IMRequestContext(
+            checkerContext: ACLChecker.RequestContext(
+                isPASE: false,
+                subjectNodeID: subjectNodeID,
+                fabricIndex: testFabric
+            ),
+            acls: []
+        )
+    }
+
+    /// Create a PASE session context (implicit admin, bypass ACLs).
+    private func makePASEContext() -> IMRequestContext {
+        IMRequestContext(
+            checkerContext: ACLChecker.RequestContext(
+                isPASE: true,
+                subjectNodeID: 0,
+                fabricIndex: testFabric
+            ),
+            acls: []
+        )
+    }
+
+    @Test("Read allowed with proper ACL")
+    func readAllowedWithACL() async throws {
+        let (handler, _, _) = makeTestHandler()
+        let ctx = makeAdminContext()
+
+        let request = ReadRequest(attributeRequests: [
+            AttributePath(endpointID: lightEndpoint, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
+        ])
+
+        let responses = try await handler.handleMessage(
+            opcode: .readRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let report = try ReportData.fromTLV(responses[0].1)
+        #expect(report.attributeReports.count == 1)
+        #expect(report.attributeReports[0].attributeData?.data == .bool(false))
+    }
+
+    @Test("Read denied returns unsupportedAccess for targeted path")
+    func readDeniedTargeted() async throws {
+        let (handler, _, _) = makeTestHandler()
+        let ctx = makeDeniedContext()
+
+        let request = ReadRequest(attributeRequests: [
+            AttributePath(endpointID: lightEndpoint, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
+        ])
+
+        let responses = try await handler.handleMessage(
+            opcode: .readRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let report = try ReportData.fromTLV(responses[0].1)
+        #expect(report.attributeReports.count == 1)
+        #expect(report.attributeReports[0].attributeStatus?.status == .unsupportedAccess)
+    }
+
+    @Test("Wildcard read silently skips denied paths")
+    func wildcardReadSkipsDenied() async throws {
+        let (handler, _, _) = makeTestHandler()
+        let ctx = makeDeniedContext()
+
+        // Wildcard read: endpointID = nil
+        let request = ReadRequest(attributeRequests: [
+            AttributePath(endpointID: nil, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
+        ])
+
+        let responses = try await handler.handleMessage(
+            opcode: .readRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let report = try ReportData.fromTLV(responses[0].1)
+        // All reports silently dropped — no error statuses either
+        let dataReports = report.attributeReports.filter { $0.attributeData != nil }
+        let statusReports = report.attributeReports.filter { $0.attributeStatus?.status == .unsupportedAccess }
+        #expect(dataReports.isEmpty)
+        #expect(statusReports.isEmpty)
+    }
+
+    @Test("Write denied returns unsupportedAccess")
+    func writeDenied() async throws {
+        let (handler, _, _) = makeTestHandler()
+        let ctx = makeViewOnlyContext()  // View privilege can't write
+
+        let writeData = AttributeDataIB(
+            dataVersion: DataVersion(rawValue: 0),
+            path: AttributePath(endpointID: lightEndpoint, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff),
+            data: .bool(true)
+        )
+        let request = WriteRequest(writeRequests: [writeData])
+
+        let responses = try await handler.handleMessage(
+            opcode: .writeRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let writeResponse = try WriteResponse.fromTLV(responses[0].1)
+        #expect(writeResponse.writeResponses.count == 1)
+        #expect(writeResponse.writeResponses[0].status == .unsupportedAccess)
+    }
+
+    @Test("Write allowed with Operate privilege")
+    func writeAllowedWithOperate() async throws {
+        let (handler, store, _) = makeTestHandler()
+        let ctx = IMRequestContext(
+            checkerContext: ACLChecker.RequestContext(
+                isPASE: false,
+                subjectNodeID: 42,
+                fabricIndex: testFabric
+            ),
+            acls: [
+                AccessControlCluster.AccessControlEntry(
+                    privilege: .operate,
+                    authMode: .case,
+                    subjects: [42],
+                    fabricIndex: testFabric
+                )
+            ]
+        )
+
+        let writeData = AttributeDataIB(
+            dataVersion: DataVersion(rawValue: 0),
+            path: AttributePath(endpointID: lightEndpoint, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff),
+            data: .bool(true)
+        )
+        let request = WriteRequest(writeRequests: [writeData])
+
+        let responses = try await handler.handleMessage(
+            opcode: .writeRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let writeResponse = try WriteResponse.fromTLV(responses[0].1)
+        #expect(writeResponse.writeResponses.count == 1)
+        #expect(writeResponse.writeResponses[0].status == .success)
+
+        let value = store.get(endpoint: lightEndpoint, cluster: .onOff, attribute: OnOffCluster.Attribute.onOff)
+        #expect(value == .bool(true))
+    }
+
+    @Test("Invoke denied returns unsupportedAccess")
+    func invokeDenied() async throws {
+        let (handler, _, _) = makeTestHandler()
+        let ctx = makeViewOnlyContext()  // View privilege can't invoke
+
+        let cmd = CommandDataIB(
+            commandPath: CommandPath(endpointID: lightEndpoint, clusterID: .onOff, commandID: OnOffCluster.Command.on)
+        )
+        let request = InvokeRequest(invokeRequests: [cmd])
+
+        let responses = try await handler.handleMessage(
+            opcode: .invokeRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let invokeResponse = try InvokeResponse.fromTLV(responses[0].1)
+        #expect(invokeResponse.invokeResponses.count == 1)
+        #expect(invokeResponse.invokeResponses[0].status?.status == .unsupportedAccess)
+    }
+
+    @Test("PASE context bypasses all ACL checks")
+    func paseBypassIM() async throws {
+        let (handler, store, _) = makeTestHandler()
+        let ctx = makePASEContext()
+
+        // Should be able to write even with no ACLs
+        let writeData = AttributeDataIB(
+            dataVersion: DataVersion(rawValue: 0),
+            path: AttributePath(endpointID: lightEndpoint, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff),
+            data: .bool(true)
+        )
+        let request = WriteRequest(writeRequests: [writeData])
+
+        let responses = try await handler.handleMessage(
+            opcode: .writeRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            requestContext: ctx
+        )
+
+        let writeResponse = try WriteResponse.fromTLV(responses[0].1)
+        #expect(writeResponse.writeResponses[0].status == .success)
+
+        let value = store.get(endpoint: lightEndpoint, cluster: .onOff, attribute: OnOffCluster.Attribute.onOff)
+        #expect(value == .bool(true))
+    }
+
+    @Test("No request context means no enforcement (backward compat)")
+    func noContextNoEnforcement() async throws {
+        let (handler, store, _) = makeTestHandler()
+
+        // Write without any ACL context — should succeed
+        let writeData = AttributeDataIB(
+            dataVersion: DataVersion(rawValue: 0),
+            path: AttributePath(endpointID: lightEndpoint, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff),
+            data: .bool(true)
+        )
+        let request = WriteRequest(writeRequests: [writeData])
+
+        let responses = try await handler.handleMessage(
+            opcode: .writeRequest,
+            payload: request.tlvEncode(),
+            sessionID: testSession,
+            fabricIndex: testFabric
+            // requestContext: nil (default)
+        )
+
+        let writeResponse = try WriteResponse.fromTLV(responses[0].1)
+        #expect(writeResponse.writeResponses[0].status == .success)
+
+        let value = store.get(endpoint: lightEndpoint, cluster: .onOff, attribute: OnOffCluster.Attribute.onOff)
+        #expect(value == .bool(true))
+    }
+
     // MARK: - Unknown Opcode
 
     @Test("Unknown opcode returns invalid action status")

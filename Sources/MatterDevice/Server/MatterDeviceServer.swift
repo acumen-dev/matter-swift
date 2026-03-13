@@ -611,11 +611,22 @@ public actor MatterDeviceServer {
                 return
             }
 
+            // Construct ACL request context from session
+            let requestContext = IMRequestContext(
+                checkerContext: ACLChecker.RequestContext(
+                    isPASE: session.establishment == .pase,
+                    subjectNodeID: session.peerNodeID.rawValue,
+                    fabricIndex: fabricIndex
+                ),
+                acls: bridge.commissioningState.committedACLs[fabricIndex] ?? []
+            )
+
             let responses = try await bridge.handleIM(
                 opcode: opcode,
                 payload: payload,
                 sessionID: session.localSessionID,
-                fabricIndex: fabricIndex
+                fabricIndex: fabricIndex,
+                requestContext: requestContext
             )
 
             for (responseOpcode, responseData) in responses {

@@ -322,12 +322,12 @@ public enum CASESession {
     ///   - context: The context from responderStep1.
     ///   - sigma3Data: The raw Sigma3 TLV bytes.
     ///   - initiatorRCAC: The initiator's expected Root CA Certificate.
-    /// - Returns: Session keys.
+    /// - Returns: Tuple of session keys and the initiator's node ID (from their NOC).
     public static func responderStep2(
         context: ResponderContext,
         sigma3Data: Data,
         initiatorRCAC: MatterCertificate
-    ) throws -> SessionKeys {
+    ) throws -> (SessionKeys, NodeID) {
         let sigma3 = try Sigma3Message.fromTLV(sigma3Data)
 
         // Decrypt Sigma3 payload
@@ -367,7 +367,12 @@ public enum CASESession {
             initiatorEphPubKey: context.initiatorEphPubKey
         )
 
-        return sessionKeys
+        // Extract initiator's node ID from their NOC
+        guard let initiatorNodeID = initiatorNOC.subject.nodeID else {
+            throw CASEError.certificateChainInvalid
+        }
+
+        return (sessionKeys, initiatorNodeID)
     }
 
     // MARK: - Helpers

@@ -415,6 +415,9 @@ public struct StatusIB: Sendable, Equatable {
     /// Common status: unsupported cluster.
     public static let unsupportedCluster = StatusIB(status: 0xC3)
 
+    /// Common status: unsupported access — ACL check denied the operation.
+    public static let unsupportedAccess = StatusIB(status: 0x7E)
+
     public func toTLVElement() -> TLVElement {
         var fields: [TLVElement.TLVField] = [
             .init(tag: .contextSpecific(Tag.status), value: .unsignedInt(UInt64(status)))
