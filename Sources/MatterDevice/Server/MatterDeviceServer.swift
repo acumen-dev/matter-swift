@@ -157,14 +157,47 @@ public actor MatterDeviceServer {
             }
         }
 
+        // Hook fabric removal callback for cleanup
+        bridge.commissioningState.onFabricRemoved = { [weak self] fabricIndex in
+            Task { [weak self] in
+                guard let self else { return }
+                await self.onFabricRemoved(fabricIndex)
+                await self.bridge.commissioningState.saveToStore()
+            }
+        }
+
+        // Hook window state callbacks for mDNS updates
+        bridge.commissioningState.onWindowOpened = { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                await self.updateCommissioningAdvertisement(open: true)
+            }
+        }
+        bridge.commissioningState.onWindowClosed = { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                await self.updateCommissioningAdvertisement(open: false)
+                // Clear any pending PASE handshakes when window closes
+                await self.clearPASEHandshakes()
+            }
+        }
+
+        // Set initial window state based on fabric count
+        if bridge.commissioningState.fabrics.isEmpty {
+            // No fabrics — device is uncommissioned, open basic window
+            bridge.commissioningState.openBasicWindow(timeout: 900)
+        }
+        // Otherwise window stays closed (secure default)
+
         // Bind UDP transport
         try await transport.bind(port: config.port)
 
-        // Advertise via mDNS
+        // Advertise via mDNS — CM reflects current window state
+        let cmValue = bridge.commissioningState.isWindowOpen ? "1" : "0"
         let txtRecords = [
             "D": "\(config.discriminator)",
             "VP": "\(config.vendorId)+\(config.productId)",
-            "CM": "1",  // Commissioning mode: basic
+            "CM": cmValue,
         ]
 
         try await discovery.advertise(service: MatterServiceRecord(
@@ -231,7 +264,19 @@ public actor MatterDeviceServer {
                 break
             }
 
-            let reports = await bridge.pendingReports(now: Date())
+            let now = Date()
+
+            // Check commissioning window expiry
+            if bridge.commissioningState.checkWindowExpiry(now: now) {
+                logger.info("Commissioning window expired")
+            }
+
+            // Check fail-safe expiry
+            if bridge.commissioningState.checkFailSafeExpiry(now: now) {
+                logger.info("Fail-safe timer expired")
+            }
+
+            let reports = await bridge.pendingReports(now: now)
             for report in reports {
                 guard let reportData = await bridge.buildReport(for: report),
                       let entry = sessionEntry(for: report.sessionID) else {
@@ -640,6 +685,9 @@ public actor MatterDeviceServer {
                 acls: bridge.commissioningState.committedACLs[fabricIndex] ?? []
             )
 
+            // Set invoking fabric context for commands that need it
+            bridge.commissioningState.invokingFabricIndex = fabricIndex
+
             let responses = try await bridge.handleIM(
                 opcode: opcode,
                 payload: payload,
@@ -735,6 +783,54 @@ public actor MatterDeviceServer {
         var salt = Data(count: 32)
         salt.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
         return salt
+    }
+
+    // MARK: - Fabric Removal
+
+    private func onFabricRemoved(_ fabricIndex: FabricIndex) {
+        // Remove CASE-ready fabric info
+        committedFabrics.removeValue(forKey: fabricIndex)
+
+        // Close any sessions for this fabric
+        let sessionsToRemove = sessions.filter { $0.value.fabricIndex == fabricIndex }
+        for (sessionID, _) in sessionsToRemove {
+            sessions.removeValue(forKey: sessionID)
+        }
+
+        logger.info("Fabric \(fabricIndex) removed, \(sessionsToRemove.count) sessions closed")
+    }
+
+    // MARK: - Commissioning Window Management
+
+    /// Update mDNS commissionable advertisement based on window state.
+    private func updateCommissioningAdvertisement(open: Bool) async {
+        let cmValue = open ? "1" : "0"
+        let txtRecords = [
+            "D": "\(config.discriminator)",
+            "VP": "\(config.vendorId)+\(config.productId)",
+            "CM": cmValue,
+        ]
+
+        do {
+            try await discovery.advertise(service: MatterServiceRecord(
+                name: "SwiftMatter-\(config.discriminator)",
+                serviceType: .commissionable,
+                host: "",
+                port: config.port,
+                txtRecords: txtRecords
+            ))
+            logger.debug("Updated commissionable mDNS: CM=\(cmValue)")
+        } catch {
+            logger.warning("Failed to update commissionable mDNS: \(error)")
+        }
+    }
+
+    /// Clear all pending PASE handshakes (called when window closes).
+    private func clearPASEHandshakes() {
+        if !paseHandshakes.isEmpty {
+            logger.debug("Clearing \(paseHandshakes.count) pending PASE handshakes")
+            paseHandshakes.removeAll()
+        }
     }
 }
 

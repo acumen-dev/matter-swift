@@ -116,7 +116,7 @@ public final class MatterBridge: @unchecked Sendable {
                 GeneralCommissioningHandler(commissioningState: commissioningState),
                 OperationalCredentialsHandler(commissioningState: commissioningState),
                 AccessControlHandler(commissioningState: commissioningState),
-                AdminCommissioningHandler(),
+                AdminCommissioningHandler(commissioningState: commissioningState),
             ]
         )
         endpoints.addEndpoint(root)

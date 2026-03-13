@@ -9,14 +9,36 @@ import MatterCrypto
 
 /// Shared mutable state for the device-side commissioning flow.
 ///
-/// Tracks fail-safe timer, staged credentials (RCAC, NOC, operational key),
-/// and committed fabrics. Shared between `GeneralCommissioningHandler`,
-/// `OperationalCredentialsHandler`, and `MatterDeviceServer`.
+/// Tracks fail-safe timer, commissioning window state, staged credentials
+/// (RCAC, NOC, operational key), and committed fabrics. Shared between
+/// `GeneralCommissioningHandler`, `OperationalCredentialsHandler`,
+/// `AdminCommissioningHandler`, and `MatterDeviceServer`.
 ///
 /// All mutations happen synchronously on the device server actor — no internal
 /// locking needed. Marked `@unchecked Sendable` because it is owned by the
 /// `MatterDeviceServer` actor and only mutated within that actor's context.
 public final class CommissioningState: @unchecked Sendable {
+
+    // MARK: - Commissioning Window Status
+
+    /// Commissioning window status values per Matter spec §11.18.5.1.
+    public enum WindowStatus: UInt8, Sendable {
+        case notOpen = 0
+        case enhancedWindowOpen = 1
+        case basicWindowOpen = 2
+    }
+
+    /// Current commissioning window status.
+    public private(set) var windowStatus: WindowStatus = .notOpen
+
+    /// When the commissioning window expires (nil if not open).
+    public private(set) var windowExpiry: Date?
+
+    /// Fabric that opened the current window (nil if not open or first commissioning).
+    public private(set) var windowAdminFabricIndex: FabricIndex?
+
+    /// Vendor ID of the admin that opened the current window.
+    public private(set) var windowAdminVendorId: UInt16?
 
     // MARK: - Fail-Safe
 
@@ -52,10 +74,16 @@ public final class CommissioningState: @unchecked Sendable {
     /// CSR nonce from the most recent CSRRequest.
     public private(set) var csrNonce: Data?
 
+    // MARK: - Invoking Context
+
+    /// Fabric index of the current command invocation (set by the server before dispatch).
+    /// Used by commands like UpdateFabricLabel that operate on the accessing fabric.
+    public var invokingFabricIndex: FabricIndex?
+
     // MARK: - Committed Fabrics
 
     /// Committed fabrics on this device.
-    public private(set) var fabrics: [FabricIndex: CommittedFabric] = [:]
+    public var fabrics: [FabricIndex: CommittedFabric] = [:]
 
     /// Next fabric index to assign.
     private var nextFabricIndex: UInt8 = 1
@@ -77,6 +105,15 @@ public final class CommissioningState: @unchecked Sendable {
 
     /// Called when commissioning completes with fabric info for CASE session setup.
     public var onCommissioningComplete: ((CommittedFabric) -> Void)?
+
+    /// Called when a fabric is removed (for server cleanup — CASE sessions, mDNS, etc.).
+    public var onFabricRemoved: ((FabricIndex) -> Void)?
+
+    /// Called when the commissioning window is opened (for mDNS update).
+    public var onWindowOpened: (() -> Void)?
+
+    /// Called when the commissioning window is closed (for mDNS update, PASE cleanup).
+    public var onWindowClosed: (() -> Void)?
 
     // MARK: - Init
 
@@ -105,6 +142,66 @@ public final class CommissioningState: @unchecked Sendable {
             return true
         }
         return false
+    }
+
+    // MARK: - Commissioning Window Operations
+
+    /// Open a basic commissioning window with a timeout.
+    ///
+    /// - Parameters:
+    ///   - timeout: Window duration in seconds (Matter spec: 180–900).
+    ///   - fabricIndex: Fabric of the admin opening the window (nil for first commissioning).
+    ///   - vendorId: Vendor ID of the admin opening the window.
+    ///   - now: Current time (injectable for testing).
+    public func openBasicWindow(
+        timeout: UInt16,
+        fabricIndex: FabricIndex? = nil,
+        vendorId: UInt16? = nil,
+        now: Date = Date()
+    ) {
+        windowStatus = .basicWindowOpen
+        windowExpiry = now.addingTimeInterval(TimeInterval(timeout))
+        windowAdminFabricIndex = fabricIndex
+        windowAdminVendorId = vendorId
+        onWindowOpened?()
+    }
+
+    /// Close the commissioning window.
+    public func closeWindow() {
+        windowStatus = .notOpen
+        windowExpiry = nil
+        windowAdminFabricIndex = nil
+        windowAdminVendorId = nil
+        onWindowClosed?()
+    }
+
+    /// Check if the commissioning window has expired.
+    ///
+    /// Returns `true` if the window was open and has expired (and was closed).
+    public func checkWindowExpiry(now: Date = Date()) -> Bool {
+        guard let expiry = windowExpiry else { return false }
+        if now >= expiry {
+            closeWindow()
+            return true
+        }
+        return false
+    }
+
+    /// Whether the commissioning window is currently open (basic or enhanced).
+    public var isWindowOpen: Bool {
+        windowStatus != .notOpen
+    }
+
+    // MARK: - Fabric Removal
+
+    /// Remove a committed fabric and its ACLs.
+    ///
+    /// Returns `true` if the fabric was found and removed.
+    public func removeFabric(_ fabricIndex: FabricIndex) -> Bool {
+        guard fabrics.removeValue(forKey: fabricIndex) != nil else { return false }
+        committedACLs.removeValue(forKey: fabricIndex)
+        onFabricRemoved?(fabricIndex)
+        return true
     }
 
     // MARK: - CSR
@@ -284,6 +381,9 @@ public struct CommittedFabric: Sendable {
     public let ipkEpochKey: Data
     public let caseAdminSubject: UInt64
     public let adminVendorId: UInt16
+
+    /// Optional user-assigned label for this fabric.
+    public var label: String?
 
     /// Build a `FabricInfo` from this committed fabric.
     ///

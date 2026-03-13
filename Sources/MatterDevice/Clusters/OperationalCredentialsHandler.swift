@@ -51,6 +51,12 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         case OperationalCredentialsCluster.Command.addTrustedRootCert:
             return try handleAddTrustedRootCert(fields: fields)
 
+        case OperationalCredentialsCluster.Command.removeFabric:
+            return handleRemoveFabric(fields: fields, store: store, endpointID: endpointID)
+
+        case OperationalCredentialsCluster.Command.updateFabricLabel:
+            return handleUpdateFabricLabel(fields: fields, store: store, endpointID: endpointID)
+
         default:
             return nil
         }
@@ -146,6 +152,109 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
             statusCode: .ok,
             fabricIndex: pendingIndex
         ).toTLVElement()
+    }
+
+    // MARK: - RemoveFabric
+
+    /// Handle RemoveFabric command.
+    ///
+    /// Per Matter spec §11.17.6.12:
+    /// - Removes the fabric, its ACLs, and triggers cleanup callbacks
+    /// - Returns NOCResponse with status
+    private func handleRemoveFabric(
+        fields: TLVElement?,
+        store: AttributeStore,
+        endpointID: EndpointID
+    ) -> TLVElement {
+        guard let fields,
+              case .structure(let structFields) = fields,
+              let fabricIndexValue = structFields.first(where: { $0.tag == .contextSpecific(0) })?.value.uintValue else {
+            return nocResponse(.invalidFabricIndex, debugText: "Missing fabricIndex field")
+        }
+
+        let fabricIndex = FabricIndex(rawValue: UInt8(fabricIndexValue))
+
+        guard commissioningState.removeFabric(fabricIndex) else {
+            return nocResponse(.invalidFabricIndex, debugText: "Fabric \(fabricIndex) not found")
+        }
+
+        // Update cluster attributes
+        updateFabricAttributes(store: store, endpointID: endpointID)
+
+        return OperationalCredentialsCluster.NOCResponse(
+            statusCode: .ok,
+            fabricIndex: fabricIndex
+        ).toTLVElement()
+    }
+
+    // MARK: - UpdateFabricLabel
+
+    /// Handle UpdateFabricLabel command.
+    ///
+    /// Per Matter spec §11.17.6.11:
+    /// - Updates the label on an existing fabric
+    /// - Returns NOCResponse with status
+    private func handleUpdateFabricLabel(
+        fields: TLVElement?,
+        store: AttributeStore,
+        endpointID: EndpointID
+    ) -> TLVElement {
+        guard let fields,
+              case .structure(let structFields) = fields,
+              let label = structFields.first(where: { $0.tag == .contextSpecific(0) })?.value.stringValue else {
+            return nocResponse(.invalidFabricIndex, debugText: "Missing label field")
+        }
+
+        // UpdateFabricLabel updates the current session's fabric
+        // For now, we need the fabric index from context. Since we don't have session
+        // context in handleCommand, we check if there's a fabricIndex field (tag 1)
+        // or default to the first fabric.
+        let fabricIndex: FabricIndex
+        if let fidxValue = structFields.first(where: { $0.tag == .contextSpecific(1) })?.value.uintValue {
+            fabricIndex = FabricIndex(rawValue: UInt8(fidxValue))
+        } else {
+            // Per spec, UpdateFabricLabel operates on the accessing fabric.
+            // Without session context here, we use the invoking fabric stored on
+            // CommissioningState (set by the server before dispatch).
+            guard let invokingFabric = commissioningState.invokingFabricIndex else {
+                return nocResponse(.invalidFabricIndex, debugText: "No invoking fabric context")
+            }
+            fabricIndex = invokingFabric
+        }
+
+        guard commissioningState.fabrics[fabricIndex] != nil else {
+            return nocResponse(.invalidFabricIndex, debugText: "Fabric \(fabricIndex) not found")
+        }
+
+        // Check for label conflicts — no two fabrics can share the same non-empty label
+        if !label.isEmpty {
+            let conflict = commissioningState.fabrics.contains { (idx, fabric) in
+                idx != fabricIndex && fabric.label == label
+            }
+            if conflict {
+                return nocResponse(.labelConflict, debugText: "Label '\(label)' already in use")
+            }
+        }
+
+        commissioningState.fabrics[fabricIndex]?.label = label
+        updateFabricAttributes(store: store, endpointID: endpointID)
+
+        return OperationalCredentialsCluster.NOCResponse(
+            statusCode: .ok,
+            fabricIndex: fabricIndex
+        ).toTLVElement()
+    }
+
+    // MARK: - Attribute Updates
+
+    /// Update OperationalCredentials cluster attributes to reflect current fabric state.
+    private func updateFabricAttributes(store: AttributeStore, endpointID: EndpointID) {
+        store.set(
+            endpoint: endpointID,
+            cluster: clusterID,
+            attribute: OperationalCredentialsCluster.Attribute.commissionedFabrics,
+            value: .unsignedInt(UInt64(commissioningState.fabrics.count))
+        )
     }
 
     // MARK: - Helpers
