@@ -90,6 +90,7 @@ public actor MatterController {
     private let discovery: any MatterDiscovery
     private let configuration: Configuration
     private let logger: Logger
+    private let store: (any MatterControllerStore)?
 
     private var sessionCache = SessionCache()
     private var exchangeCounter: UInt16 = 1
@@ -103,11 +104,13 @@ public actor MatterController {
     ///   - transport: UDP transport for message exchange.
     ///   - discovery: mDNS/DNS-SD discovery service.
     ///   - configuration: Controller configuration.
+    ///   - store: Optional controller store for persistence across restarts.
     ///   - logger: Logger instance (default: "matter.controller").
     public init(
         transport: any MatterUDPTransport,
         discovery: any MatterDiscovery,
         configuration: Configuration,
+        store: (any MatterControllerStore)? = nil,
         logger: Logger = Logger(label: "matter.controller")
     ) throws {
         self.fabricManager = try FabricManager(
@@ -124,10 +127,95 @@ public actor MatterController {
         self.transceiver = MessageTransceiver(transport: transport)
         self.discovery = discovery
         self.configuration = configuration
+        self.store = store
         self.logger = logger
 
         // Initialize unsecured message counter with random 28-bit value per spec
         self.unsecuredMessageCounter = UInt32.random(in: 0...0x0FFF_FFFF)
+    }
+
+    /// Restore a controller from persisted state.
+    ///
+    /// Reconstructs the `FabricManager` and `DeviceRegistry` from stored state
+    /// rather than creating fresh certificates and an empty registry.
+    ///
+    /// Use the static `loadOrCreate()` factory for the common pattern of
+    /// loading from a store if state exists, or creating fresh otherwise.
+    ///
+    /// - Parameters:
+    ///   - transport: UDP transport for message exchange.
+    ///   - discovery: mDNS/DNS-SD discovery service.
+    ///   - configuration: Controller configuration (used for timeouts only).
+    ///   - stored: Previously persisted controller state.
+    ///   - store: Controller store for ongoing persistence.
+    ///   - logger: Logger instance (default: "matter.controller").
+    public init(
+        transport: any MatterUDPTransport,
+        discovery: any MatterDiscovery,
+        configuration: Configuration,
+        stored: StoredControllerState,
+        store: (any MatterControllerStore)? = nil,
+        logger: Logger = Logger(label: "matter.controller")
+    ) throws {
+        self.fabricManager = try FabricManager(
+            stored: stored.identity,
+            nextNodeID: stored.nextNodeID
+        )
+        self.commissioning = CommissioningController(fabricManager: fabricManager)
+        self.controllerSession = ControllerSession(fabricManager: fabricManager)
+        self.operationalController = OperationalController()
+        self.registry = DeviceRegistry(storedDevices: stored.devices)
+        self.subscriptionClient = SubscriptionClient()
+        self.transceiver = MessageTransceiver(transport: transport)
+        self.discovery = discovery
+        self.configuration = configuration
+        self.store = store
+        self.logger = logger
+
+        // Initialize unsecured message counter with random 28-bit value per spec
+        self.unsecuredMessageCounter = UInt32.random(in: 0...0x0FFF_FFFF)
+
+        logger.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
+    }
+
+    /// Load a controller from persisted state or create a fresh one.
+    ///
+    /// Tries to load from the store. If stored state exists, reconstructs the
+    /// controller from it. Otherwise creates a fresh controller with new certificates.
+    ///
+    /// ```swift
+    /// let controller = try await MatterController.loadOrCreate(
+    ///     transport: udp,
+    ///     discovery: mdns,
+    ///     configuration: config,
+    ///     store: JSONFileControllerStore(directory: configDir)
+    /// )
+    /// ```
+    public static func loadOrCreate(
+        transport: any MatterUDPTransport,
+        discovery: any MatterDiscovery,
+        configuration: Configuration,
+        store: any MatterControllerStore,
+        logger: Logger = Logger(label: "matter.controller")
+    ) async throws -> MatterController {
+        if let stored = try await store.load() {
+            return try MatterController(
+                transport: transport,
+                discovery: discovery,
+                configuration: configuration,
+                stored: stored,
+                store: store,
+                logger: logger
+            )
+        } else {
+            return try MatterController(
+                transport: transport,
+                discovery: discovery,
+                configuration: configuration,
+                store: store,
+                logger: logger
+            )
+        }
     }
 
     // MARK: - Discovery
@@ -311,6 +399,9 @@ public actor MatterController {
         // Register in device registry
         await registry.register(device)
 
+        // Persist controller state
+        await saveState()
+
         logger.info("Commissioning complete: nodeID=\(deviceNodeID.rawValue)")
 
         return device
@@ -446,6 +537,26 @@ public actor MatterController {
     public func removeDevice(nodeID: NodeID) async {
         await registry.remove(nodeID: nodeID)
         sessionCache.remove(for: nodeID)
+        await saveState()
+    }
+
+    // MARK: - Persistence
+
+    /// Save the current controller state (identity + devices + next node ID).
+    ///
+    /// No-op if no store was configured.
+    private func saveState() async {
+        guard let store else { return }
+        let state = StoredControllerState(
+            identity: fabricManager.toStoredIdentity(),
+            devices: await registry.toStoredDevices(),
+            nextNodeID: await fabricManager.nextNodeID
+        )
+        do {
+            try await store.save(state)
+        } catch {
+            logger.warning("Failed to persist controller state: \(error)")
+        }
     }
 
     // MARK: - Private Helpers

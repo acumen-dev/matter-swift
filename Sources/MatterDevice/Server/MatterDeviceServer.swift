@@ -137,12 +137,23 @@ public actor MatterDeviceServer {
             iterations: config.iterations
         )
 
+        // Load persisted state (fabrics, ACLs, attributes)
+        try await bridge.commissioningState.loadFromStore()
+        try await bridge.store.loadFromStore()
+
+        // Rebuild CASE-ready fabric info from persisted fabrics
+        for (_, fabric) in bridge.commissioningState.fabrics {
+            onFabricCommitted(fabric)
+        }
+
         // Hook commissioning state callback for CASE readiness
         bridge.commissioningState.onCommissioningComplete = { [weak self] fabric in
             // Fabric committed — CASE sessions can now be established for this fabric
             Task { [weak self] in
                 guard let self else { return }
                 await self.onFabricCommitted(fabric)
+                await self.bridge.commissioningState.saveToStore()
+                await self.bridge.store.saveToStore()
             }
         }
 

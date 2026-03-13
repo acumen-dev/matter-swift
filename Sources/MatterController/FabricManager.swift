@@ -103,6 +103,57 @@ public actor FabricManager {
         self.nextNodeIDValue = controllerNodeID.rawValue + 1
     }
 
+    /// Restore a fabric manager from persisted state.
+    ///
+    /// Reconstructs the root CA key, controller certificates, and fabric info
+    /// from a `StoredControllerIdentity` without generating new certificates.
+    ///
+    /// - Parameters:
+    ///   - stored: The persisted controller identity.
+    ///   - nextNodeID: The next node ID to allocate.
+    public init(stored: StoredControllerIdentity, nextNodeID: UInt64) throws {
+        self.rootKey = try P256.Signing.PrivateKey(rawRepresentation: stored.rootKeyRaw)
+        self.vendorID = VendorID(rawValue: stored.vendorID)
+        self.ipkEpochKey = stored.ipkEpochKey
+
+        let rcac = try MatterCertificate.fromTLV(stored.rcacTLV)
+        let noc = try MatterCertificate.fromTLV(stored.nocTLV)
+        let operationalKey = try P256.Signing.PrivateKey(rawRepresentation: stored.operationalKeyRaw)
+
+        self.controllerFabricInfo = FabricInfo(
+            fabricIndex: FabricIndex(rawValue: stored.fabricIndex),
+            fabricID: FabricID(rawValue: stored.fabricID),
+            nodeID: NodeID(rawValue: stored.controllerNodeID),
+            rcac: rcac,
+            noc: noc,
+            operationalKey: operationalKey
+        )
+
+        self.nextNodeIDValue = nextNodeID
+    }
+
+    // MARK: - Persistence
+
+    /// Export the current state as a `StoredControllerIdentity` for persistence.
+    public nonisolated func toStoredIdentity() -> StoredControllerIdentity {
+        StoredControllerIdentity(
+            rootKeyRaw: rootKey.rawRepresentation,
+            fabricIndex: controllerFabricInfo.fabricIndex.rawValue,
+            fabricID: controllerFabricInfo.fabricID.rawValue,
+            controllerNodeID: controllerFabricInfo.nodeID.rawValue,
+            rcacTLV: controllerFabricInfo.rcac.tlvEncode(),
+            nocTLV: controllerFabricInfo.noc.tlvEncode(),
+            operationalKeyRaw: controllerFabricInfo.operationalKey.rawRepresentation,
+            vendorID: vendorID.rawValue,
+            ipkEpochKey: ipkEpochKey
+        )
+    }
+
+    /// The current next node ID value (for persistence).
+    public var nextNodeID: UInt64 {
+        nextNodeIDValue
+    }
+
     // MARK: - Node ID Allocation
 
     /// Allocate the next available node ID.

@@ -68,6 +68,11 @@ public final class CommissioningState: @unchecked Sendable {
     /// Committed ACL entries per fabric.
     public private(set) var committedACLs: [FabricIndex: [AccessControlCluster.AccessControlEntry]] = [:]
 
+    // MARK: - Persistence
+
+    /// Optional fabric store for persisting committed state across restarts.
+    private let fabricStore: (any MatterFabricStore)?
+
     // MARK: - Callbacks
 
     /// Called when commissioning completes with fabric info for CASE session setup.
@@ -75,7 +80,9 @@ public final class CommissioningState: @unchecked Sendable {
 
     // MARK: - Init
 
-    public init() {}
+    public init(fabricStore: (any MatterFabricStore)? = nil) {
+        self.fabricStore = fabricStore
+    }
 
     // MARK: - Fail-Safe Operations
 
@@ -150,6 +157,104 @@ public final class CommissioningState: @unchecked Sendable {
         isFailSafeArmed = false
         failSafeExpiry = nil
         clearStagedState()
+    }
+
+    // MARK: - Persistence
+
+    /// Load committed state from the fabric store.
+    ///
+    /// Restores fabrics, ACLs, and the next fabric index counter from persisted
+    /// state. Called during server startup before accepting connections.
+    public func loadFromStore() async throws {
+        guard let store = fabricStore else { return }
+        guard let stored = try await store.load() else { return }
+
+        nextFabricIndex = stored.nextFabricIndex
+
+        for sf in stored.fabrics {
+            let fabricIndex = FabricIndex(rawValue: sf.fabricIndex)
+            let opKey = try P256.Signing.PrivateKey(rawRepresentation: sf.operationalKeyRaw)
+            let fabric = CommittedFabric(
+                fabricIndex: fabricIndex,
+                nocTLV: sf.nocTLV,
+                icacTLV: sf.icacTLV,
+                rcacTLV: sf.rcacTLV,
+                operationalKey: opKey,
+                ipkEpochKey: sf.ipkEpochKey,
+                caseAdminSubject: sf.caseAdminSubject,
+                adminVendorId: sf.adminVendorId
+            )
+            fabrics[fabricIndex] = fabric
+        }
+
+        for sa in stored.acls {
+            let fabricIndex = FabricIndex(rawValue: sa.fabricIndex)
+            committedACLs[fabricIndex] = sa.entries.map { entry in
+                AccessControlCluster.AccessControlEntry(
+                    privilege: AccessControlCluster.Privilege(rawValue: entry.privilege) ?? .view,
+                    authMode: AccessControlCluster.AuthMode(rawValue: entry.authMode) ?? .case,
+                    subjects: entry.subjects,
+                    targets: entry.targets?.map { t in
+                        AccessControlCluster.Target(
+                            cluster: t.cluster.map { ClusterID(rawValue: $0) },
+                            endpoint: t.endpoint.map { EndpointID(rawValue: $0) },
+                            deviceType: t.deviceType.map { DeviceTypeID(rawValue: $0) }
+                        )
+                    },
+                    fabricIndex: fabricIndex
+                )
+            }
+        }
+    }
+
+    /// Save committed state to the fabric store.
+    ///
+    /// Persists all fabrics, ACLs, and the next fabric index counter.
+    /// Called after commissioning completes and after ACL modifications.
+    public func saveToStore() async {
+        guard let store = fabricStore else { return }
+
+        let storedFabrics = fabrics.values.map { f in
+            StoredFabric(
+                fabricIndex: f.fabricIndex.rawValue,
+                nocTLV: f.nocTLV,
+                icacTLV: f.icacTLV,
+                rcacTLV: f.rcacTLV,
+                operationalKeyRaw: f.operationalKey.rawRepresentation,
+                ipkEpochKey: f.ipkEpochKey,
+                caseAdminSubject: f.caseAdminSubject,
+                adminVendorId: f.adminVendorId
+            )
+        }
+
+        let storedACLs = committedACLs.map { (fabricIndex, entries) in
+            StoredFabricACLs(
+                fabricIndex: fabricIndex.rawValue,
+                entries: entries.map { e in
+                    StoredACLEntry(
+                        privilege: e.privilege.rawValue,
+                        authMode: e.authMode.rawValue,
+                        subjects: e.subjects,
+                        targets: e.targets?.map { t in
+                            StoredACLTarget(
+                                cluster: t.cluster?.rawValue,
+                                endpoint: t.endpoint?.rawValue,
+                                deviceType: t.deviceType?.rawValue
+                            )
+                        },
+                        fabricIndex: e.fabricIndex.rawValue
+                    )
+                }
+            )
+        }
+
+        let state = StoredDeviceState(
+            fabrics: storedFabrics,
+            acls: storedACLs,
+            nextFabricIndex: nextFabricIndex
+        )
+
+        try? await store.save(state)
     }
 
     // MARK: - Private

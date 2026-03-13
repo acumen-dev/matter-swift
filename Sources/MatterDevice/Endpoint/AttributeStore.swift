@@ -33,10 +33,15 @@ public final class AttributeStore: @unchecked Sendable {
 
     private var storage: [EndpointID: [ClusterID: ClusterStorage]]
 
+    // MARK: - Persistence
+
+    private let attributeStore: (any MatterAttributeStore)?
+
     // MARK: - Init
 
-    public init() {
+    public init(attributeStore: (any MatterAttributeStore)? = nil) {
         self.storage = [:]
+        self.attributeStore = attributeStore
     }
 
     // MARK: - Read
@@ -150,5 +155,67 @@ public final class AttributeStore: @unchecked Sendable {
     /// Clear dirty flags for a specific cluster instance.
     public func clearDirty(endpoint: EndpointID, cluster: ClusterID) {
         storage[endpoint]?[cluster]?.dirtyAttributes.removeAll()
+    }
+
+    // MARK: - Persistence
+
+    /// Load attribute values from the attribute store.
+    ///
+    /// Restores TLV attribute values and data versions from persisted state.
+    /// Called during server startup before cluster handlers initialize.
+    public func loadFromStore() async throws {
+        guard let store = attributeStore else { return }
+        guard let stored = try await store.load() else { return }
+
+        for (key, clusterData) in stored.clusters {
+            let endpointID = EndpointID(rawValue: key.endpointID)
+            let clusterID = ClusterID(rawValue: key.clusterID)
+
+            var clusterStorage = ClusterStorage()
+            clusterStorage.dataVersion = DataVersion(rawValue: clusterData.dataVersion)
+
+            for (attrRaw, tlvData) in clusterData.attributes {
+                let attrID = AttributeID(rawValue: attrRaw)
+                if let decoded = try? TLVDecoder.decode(tlvData) {
+                    clusterStorage.attributes[attrID] = decoded.element
+                }
+            }
+
+            var endpointStorage = storage[endpointID] ?? [:]
+            endpointStorage[clusterID] = clusterStorage
+            storage[endpointID] = endpointStorage
+        }
+    }
+
+    /// Save all attribute values to the attribute store.
+    ///
+    /// Persists TLV attribute values and data versions for all clusters.
+    /// Dirty tracking state is NOT persisted (ephemeral).
+    public func saveToStore() async {
+        guard let store = attributeStore else { return }
+
+        var clusters: [StoredClusterKey: StoredClusterData] = [:]
+
+        for (endpointID, endpointStorage) in storage {
+            for (clusterID, clusterStorage) in endpointStorage {
+                let key = StoredClusterKey(
+                    endpointID: endpointID.rawValue,
+                    clusterID: clusterID.rawValue
+                )
+
+                var attributes: [UInt32: Data] = [:]
+                for (attrID, element) in clusterStorage.attributes {
+                    attributes[attrID.rawValue] = TLVEncoder.encode(element)
+                }
+
+                clusters[key] = StoredClusterData(
+                    dataVersion: clusterStorage.dataVersion.rawValue,
+                    attributes: attributes
+                )
+            }
+        }
+
+        let data = StoredAttributeData(clusters: clusters)
+        try? await store.save(data)
     }
 }

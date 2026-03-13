@@ -67,10 +67,15 @@ public final class MatterBridge: @unchecked Sendable {
 
     // MARK: - Init
 
-    public init(config: Config = Config(), commissioningState: CommissioningState? = nil) {
+    public init(
+        config: Config = Config(),
+        commissioningState: CommissioningState? = nil,
+        fabricStore: (any MatterFabricStore)? = nil,
+        attributeStore: (any MatterAttributeStore)? = nil
+    ) {
         self.config = config
-        self.commissioningState = commissioningState ?? CommissioningState()
-        self.store = AttributeStore()
+        self.commissioningState = commissioningState ?? CommissioningState(fabricStore: fabricStore)
+        self.store = AttributeStore(attributeStore: attributeStore)
         self.endpoints = EndpointManager(store: store)
         self.subscriptions = SubscriptionManager()
         self.imHandler = InteractionModelHandler(

@@ -91,6 +91,23 @@ public actor DeviceRegistry {
 
     public init() {}
 
+    /// Restore a registry from persisted device list.
+    public init(storedDevices: [StoredCommissionedDevice]) {
+        for sd in storedDevices {
+            let device = CommissionedDevice(
+                nodeID: NodeID(rawValue: sd.nodeID),
+                fabricIndex: FabricIndex(rawValue: sd.fabricIndex),
+                vendorID: sd.vendorID.map { VendorID(rawValue: $0) },
+                productID: sd.productID.map { ProductID(rawValue: $0) },
+                operationalHost: sd.operationalHost,
+                operationalPort: sd.operationalPort,
+                label: sd.label,
+                commissionedAt: sd.commissionedAt
+            )
+            devices[device.nodeID] = device
+        }
+    }
+
     // MARK: - Registration
 
     /// Register a newly commissioned device.
@@ -146,5 +163,23 @@ public actor DeviceRegistry {
     /// Snapshot of all devices, sorted by node ID for deterministic ordering.
     public func snapshot() -> [CommissionedDevice] {
         devices.values.sorted { $0.nodeID.rawValue < $1.nodeID.rawValue }
+    }
+
+    // MARK: - Persistence
+
+    /// Export all devices as `StoredCommissionedDevice` for persistence.
+    public func toStoredDevices() -> [StoredCommissionedDevice] {
+        devices.values.map { d in
+            StoredCommissionedDevice(
+                nodeID: d.nodeID.rawValue,
+                fabricIndex: d.fabricIndex.rawValue,
+                vendorID: d.vendorID?.rawValue,
+                productID: d.productID?.rawValue,
+                operationalHost: d.operationalHost,
+                operationalPort: d.operationalPort,
+                label: d.label,
+                commissionedAt: d.commissionedAt
+            )
+        }
     }
 }
