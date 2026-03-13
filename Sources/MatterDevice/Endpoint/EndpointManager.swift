@@ -80,60 +80,87 @@ public final class EndpointManager: @unchecked Sendable {
 
     /// Read attributes matching the given paths.
     ///
-    /// Supports wildcard `endpointID` (nil = all endpoints). When a specific endpoint
-    /// is requested but doesn't exist, an unsupported-endpoint status is returned.
-    /// Wildcard reads silently skip non-matching endpoints (per Matter spec).
+    /// Supports wildcards on all three path components:
+    /// - `endpointID: nil` → all endpoints
+    /// - `clusterID: nil` → all clusters on the endpoint
+    /// - `attributeID: nil` → all attributes in the cluster
+    ///
+    /// Per the Matter spec, error statuses (unsupportedEndpoint, unsupportedCluster,
+    /// unsupportedAttribute) are only returned for targeted (non-wildcard) paths.
+    /// Wildcard reads silently skip non-matching entries.
     public func readAttributes(_ paths: [AttributePath], fabricFiltered: Bool = true) -> [AttributeReportIB] {
         var reports: [AttributeReportIB] = []
 
+        // Track whether the original path contains any wildcard component.
+        // Per the Matter spec, error statuses are only emitted for fully-targeted
+        // paths — if any component is a wildcard, non-matching entries are silently skipped.
         for path in paths {
+            let isWildcard = path.endpointID == nil || path.clusterID == nil || path.attributeID == nil
+
             let targetEndpoints: [EndpointID]
             if let ep = path.endpointID {
                 targetEndpoints = [ep]
             } else {
-                // Wildcard: all endpoints
                 targetEndpoints = allEndpointIDs()
             }
 
             for endpointID in targetEndpoints {
-                guard let clusterID = path.clusterID, let attributeID = path.attributeID else {
-                    // Wildcard cluster/attribute not yet supported — skip
-                    continue
-                }
-
                 guard endpoints[endpointID] != nil else {
-                    if path.endpointID != nil {
-                        // Specific endpoint requested but doesn't exist
+                    if !isWildcard {
                         reports.append(AttributeReportIB(attributeStatus: AttributeStatusIB(
-                            path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
+                            path: AttributePath(endpointID: endpointID, clusterID: path.clusterID, attributeID: path.attributeID),
                             status: .unsupportedEndpoint
                         )))
                     }
                     continue
                 }
 
-                // Check if the cluster exists on this endpoint
-                guard store.hasCluster(endpoint: endpointID, cluster: clusterID) else {
-                    if path.endpointID != nil {
-                        reports.append(AttributeReportIB(attributeStatus: AttributeStatusIB(
-                            path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
-                            status: .unsupportedCluster
-                        )))
-                    }
-                    continue
+                // Determine target clusters
+                let targetClusters: [ClusterID]
+                if let clusterID = path.clusterID {
+                    targetClusters = [clusterID]
+                } else {
+                    targetClusters = store.allClusterIDs(endpoint: endpointID)
                 }
 
-                if let value = store.get(endpoint: endpointID, cluster: clusterID, attribute: attributeID) {
-                    reports.append(AttributeReportIB(attributeData: AttributeDataIB(
-                        dataVersion: store.dataVersion(endpoint: endpointID, cluster: clusterID),
-                        path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
-                        data: value
-                    )))
-                } else if path.endpointID != nil {
-                    reports.append(AttributeReportIB(attributeStatus: AttributeStatusIB(
-                        path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
-                        status: .unsupportedAttribute
-                    )))
+                for clusterID in targetClusters {
+                    guard store.hasCluster(endpoint: endpointID, cluster: clusterID) else {
+                        if !isWildcard {
+                            reports.append(AttributeReportIB(attributeStatus: AttributeStatusIB(
+                                path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: path.attributeID),
+                                status: .unsupportedCluster
+                            )))
+                        }
+                        continue
+                    }
+
+                    // Determine target attributes
+                    if let attributeID = path.attributeID {
+                        // Specific attribute
+                        if let value = store.get(endpoint: endpointID, cluster: clusterID, attribute: attributeID) {
+                            reports.append(AttributeReportIB(attributeData: AttributeDataIB(
+                                dataVersion: store.dataVersion(endpoint: endpointID, cluster: clusterID),
+                                path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
+                                data: value
+                            )))
+                        } else if !isWildcard {
+                            reports.append(AttributeReportIB(attributeStatus: AttributeStatusIB(
+                                path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
+                                status: .unsupportedAttribute
+                            )))
+                        }
+                    } else {
+                        // Wildcard attribute: all attributes in this cluster
+                        let allAttrs = store.allAttributes(endpoint: endpointID, cluster: clusterID)
+                        let dataVersion = store.dataVersion(endpoint: endpointID, cluster: clusterID)
+                        for (attributeID, value) in allAttrs {
+                            reports.append(AttributeReportIB(attributeData: AttributeDataIB(
+                                dataVersion: dataVersion,
+                                path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
+                                data: value
+                            )))
+                        }
+                    }
                 }
             }
         }

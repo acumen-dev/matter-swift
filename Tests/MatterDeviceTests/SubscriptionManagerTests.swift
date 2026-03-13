@@ -383,4 +383,92 @@ struct SubscriptionManagerTests {
         let paths = await manager.attributePaths(for: unknownID)
         #expect(paths == nil)
     }
+
+    // MARK: - Wildcard Cluster Matching
+
+    @Test("Wildcard cluster in subscription matches any cluster change")
+    func wildcardClusterMatches() async {
+        let manager = SubscriptionManager()
+        // Subscribe with nil clusterID (wildcard)
+        let wildcardPath = AttributePath(
+            endpointID: EndpointID(rawValue: 1),
+            clusterID: nil,
+            attributeID: AttributeID(rawValue: 0)
+        )
+        let request = makeRequest(paths: [wildcardPath])
+        let baseDate = Date(timeIntervalSinceReferenceDate: 0)
+
+        let (subID, _) = await manager.subscribe(
+            request: request,
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            now: baseDate
+        )
+
+        // Change on a specific cluster — should match wildcard subscription
+        let changedPath = makePath(endpoint: 1, cluster: 8, attribute: 0)
+        await manager.attributesChanged([changedPath])
+
+        let afterMin = baseDate.addingTimeInterval(6)
+        let reports = await manager.pendingReports(now: afterMin)
+
+        #expect(reports.count == 1)
+        #expect(reports.first?.subscriptionID == subID)
+    }
+
+    @Test("Wildcard attribute in subscription matches any attribute change")
+    func wildcardAttributeMatches() async {
+        let manager = SubscriptionManager()
+        // Subscribe with nil attributeID (wildcard)
+        let wildcardPath = AttributePath(
+            endpointID: EndpointID(rawValue: 1),
+            clusterID: ClusterID(rawValue: 6),
+            attributeID: nil
+        )
+        let request = makeRequest(paths: [wildcardPath])
+        let baseDate = Date(timeIntervalSinceReferenceDate: 0)
+
+        let (subID, _) = await manager.subscribe(
+            request: request,
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            now: baseDate
+        )
+
+        // Change on a specific attribute — should match wildcard subscription
+        let changedPath = makePath(endpoint: 1, cluster: 6, attribute: 99)
+        await manager.attributesChanged([changedPath])
+
+        let afterMin = baseDate.addingTimeInterval(6)
+        let reports = await manager.pendingReports(now: afterMin)
+
+        #expect(reports.count == 1)
+        #expect(reports.first?.subscriptionID == subID)
+    }
+
+    @Test("Full wildcard subscription matches everything")
+    func fullWildcardMatchesEverything() async {
+        let manager = SubscriptionManager()
+        // Subscribe with all-nil path (full wildcard)
+        let wildcardPath = AttributePath(endpointID: nil, clusterID: nil, attributeID: nil)
+        let request = makeRequest(paths: [wildcardPath])
+        let baseDate = Date(timeIntervalSinceReferenceDate: 0)
+
+        let (subID, _) = await manager.subscribe(
+            request: request,
+            sessionID: testSession,
+            fabricIndex: testFabric,
+            now: baseDate
+        )
+
+        // Any change should match
+        let changedPath = makePath(endpoint: 42, cluster: 999, attribute: 777)
+        await manager.attributesChanged([changedPath])
+
+        let afterMin = baseDate.addingTimeInterval(6)
+        let reports = await manager.pendingReports(now: afterMin)
+
+        #expect(reports.count == 1)
+        #expect(reports.first?.subscriptionID == subID)
+    }
 }

@@ -176,14 +176,22 @@ public actor SubscriptionManager {
     // MARK: - Path Matching
 
     /// Check if a changed path matches a subscribed path.
-    /// Subscribed paths can have wildcard endpointID (nil).
+    ///
+    /// Each nil field in the subscribed path acts as a wildcard:
+    /// - `endpointID: nil` matches any endpoint
+    /// - `clusterID: nil` matches any cluster
+    /// - `attributeID: nil` matches any attribute
     private func pathMatches(subscribed: AttributePath, changed: AttributePath) -> Bool {
-        // Wildcard endpoint in subscription matches any endpoint
         if let subEP = subscribed.endpointID {
             if subEP != changed.endpointID { return false }
         }
-        return subscribed.clusterID == changed.clusterID
-            && subscribed.attributeID == changed.attributeID
+        if let subCluster = subscribed.clusterID {
+            if subCluster != changed.clusterID { return false }
+        }
+        if let subAttr = subscribed.attributeID {
+            if subAttr != changed.attributeID { return false }
+        }
+        return true
     }
 }
 
