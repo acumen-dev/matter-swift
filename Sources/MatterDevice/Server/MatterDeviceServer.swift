@@ -573,7 +573,26 @@ public actor MatterDeviceServer {
         do {
             let fabricInfo = try fabric.fabricInfo()
             committedFabrics[fabric.fabricIndex] = fabricInfo
-            logger.info("Fabric \(fabric.fabricIndex) committed, CASE ready")
+
+            // Advertise operational service for this fabric
+            let opName = OperationalInstanceName(
+                compressedFabricID: fabricInfo.compressedFabricID(),
+                nodeID: fabricInfo.nodeID.rawValue
+            )
+
+            let port = config.port
+            let discovery = self.discovery
+            Task {
+                try? await discovery.advertise(service: MatterServiceRecord(
+                    name: opName.instanceName,
+                    serviceType: .operational,
+                    host: "",
+                    port: port,
+                    txtRecords: [:]
+                ))
+            }
+
+            logger.info("Fabric \(fabric.fabricIndex) committed, CASE ready, advertising \(opName.instanceName)")
         } catch {
             logger.error("Failed to build FabricInfo from committed fabric: \(error)")
         }

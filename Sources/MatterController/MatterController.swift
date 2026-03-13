@@ -225,6 +225,39 @@ public actor MatterController {
         discovery.browse(type: .commissionable)
     }
 
+    /// Browse for operational devices on the local network.
+    ///
+    /// Returns all operational `_matter._tcp` advertisements, regardless of fabric.
+    /// Use `OperationalInstanceName.parse()` to extract fabric and node IDs from
+    /// the service record name.
+    public func discoverOperational() -> AsyncStream<MatterServiceRecord> {
+        discovery.browse(type: .operational)
+    }
+
+    /// Discover a specific operational device by node ID on this controller's fabric.
+    ///
+    /// Constructs the expected operational instance name from the controller's
+    /// compressed fabric ID and the target node ID, then resolves it via mDNS.
+    ///
+    /// - Parameter nodeID: The target device's operational node ID.
+    /// - Returns: The resolved network address of the device.
+    public func discoverDevice(nodeID: NodeID) async throws -> MatterAddress {
+        let cfid = fabricManager.compressedFabricID()
+        let opName = OperationalInstanceName(
+            compressedFabricID: cfid,
+            nodeID: nodeID.rawValue
+        )
+
+        let record = MatterServiceRecord(
+            name: opName.instanceName,
+            serviceType: .operational,
+            host: "",
+            port: 0
+        )
+
+        return try await discovery.resolve(record)
+    }
+
     /// Resolve a discovered service record to a network address.
     public func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
         try await discovery.resolve(record)

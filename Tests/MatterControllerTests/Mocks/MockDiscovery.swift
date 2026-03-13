@@ -57,6 +57,15 @@ actor MockDiscovery: MatterDiscovery {
         await clearAdvertised()
     }
 
+    nonisolated func stopAdvertising(name: String) async {
+        await removeAdvertised(name: name)
+    }
+
+    /// All services currently advertised.
+    var currentAdvertisements: [MatterServiceRecord] {
+        advertisedServices
+    }
+
     // MARK: - Internal
 
     private func recordAdvertise(_ service: MatterServiceRecord) {
@@ -73,5 +82,9 @@ actor MockDiscovery: MatterDiscovery {
 
     private func clearAdvertised() {
         advertisedServices.removeAll()
+    }
+
+    private func removeAdvertised(name: String) {
+        advertisedServices.removeAll { $0.name == name }
     }
 }

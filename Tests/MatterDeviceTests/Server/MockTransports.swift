@@ -119,6 +119,20 @@ actor MockServerDiscovery: MatterDiscovery {
         await recordStopAdvertising()
     }
 
+    nonisolated func stopAdvertising(name: String) async {
+        await recordStopAdvertisingByName(name)
+    }
+
+    /// Services currently advertised (filtered to only active ones).
+    var activeServices: [MatterServiceRecord] {
+        advertisedServices
+    }
+
+    /// Services advertised with a specific service type.
+    func services(ofType type: MatterServiceType) -> [MatterServiceRecord] {
+        advertisedServices.filter { $0.serviceType == type }
+    }
+
     // MARK: - Internal
 
     private func recordAdvertise(_ service: MatterServiceRecord) {
@@ -135,7 +149,15 @@ actor MockServerDiscovery: MatterDiscovery {
     }
 
     private func recordStopAdvertising() {
+        advertisedServices.removeAll()
         isAdvertising = false
+    }
+
+    private func recordStopAdvertisingByName(_ name: String) {
+        advertisedServices.removeAll { $0.name == name }
+        if advertisedServices.isEmpty {
+            isAdvertising = false
+        }
     }
 }
 

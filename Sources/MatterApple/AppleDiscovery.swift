@@ -33,7 +33,8 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
     // MARK: - State
 
     private let queue = DispatchQueue(label: "matter.discovery", qos: .userInitiated)
-    private var advertiseListener: NWListener?
+    /// Active advertisements keyed by service name.
+    private var advertiseListeners: [String: NWListener] = [:]
     private var browsers: [NWBrowser] = []
     private let logger: Logger
 
@@ -82,8 +83,11 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
             connection.cancel()
         }
 
+        // Cancel any existing listener with the same name
+        advertiseListeners[service.name]?.cancel()
+
         listener.start(queue: queue)
-        self.advertiseListener = listener
+        self.advertiseListeners[service.name] = listener
 
         // Wait for listener to be ready
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -187,8 +191,15 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
     }
 
     public func stopAdvertising() async {
-        advertiseListener?.cancel()
-        advertiseListener = nil
+        for (_, listener) in advertiseListeners {
+            listener.cancel()
+        }
+        advertiseListeners.removeAll()
+    }
+
+    public func stopAdvertising(name: String) async {
+        advertiseListeners[name]?.cancel()
+        advertiseListeners.removeValue(forKey: name)
     }
 
     // MARK: - Internal
@@ -202,9 +213,16 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
             return nil
         }
 
-        // Extract TXT records from metadata
-        // NWBrowser.Result.metadata provides TXT record access for known keys
-        let txtRecords: [String: String] = [:]
+        // Extract TXT records from browse result metadata.
+        // NWTXTRecord conforms to Collection with Element = (key: String, value: Entry).
+        var txtRecords: [String: String] = [:]
+        if case .bonjour(let txtRecord) = result.metadata {
+            for (key, entry) in txtRecord {
+                if case .string(let value) = entry {
+                    txtRecords[key] = value
+                }
+            }
+        }
 
         return MatterServiceRecord(
             name: name,
