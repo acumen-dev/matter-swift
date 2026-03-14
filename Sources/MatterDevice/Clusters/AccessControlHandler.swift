@@ -66,4 +66,33 @@ public struct AccessControlHandler: ClusterHandler, @unchecked Sendable {
         // ACL cluster has no commands — all operations are via attribute writes
         nil
     }
+
+    // MARK: - Fabric Scoping
+
+    /// The ACL attribute is fabric-scoped — each fabric's entries must be kept separate.
+    public func isFabricScoped(attributeID: AttributeID) -> Bool {
+        attributeID == AccessControlCluster.Attribute.acl
+    }
+
+    /// Filter the ACL array to only include entries belonging to the requesting fabric.
+    ///
+    /// ACL entries carry a fabricIndex field at context tag `0xFE`. Entries whose
+    /// fabricIndex does not match the requesting fabric are removed from the result.
+    public func filterFabricScopedAttribute(attributeID: AttributeID, value: TLVElement, fabricIndex: FabricIndex) -> TLVElement {
+        guard attributeID == AccessControlCluster.Attribute.acl,
+              case .array(let elements) = value else {
+            return value
+        }
+
+        let filtered = elements.filter { element in
+            guard case .structure(let fields) = element,
+                  let fiValue = fields.first(where: { $0.tag == .contextSpecific(0xFE) })?.value.uintValue else {
+                // If we can't read the fabricIndex, exclude the entry
+                return false
+            }
+            return UInt8(fiValue) == fabricIndex.rawValue
+        }
+
+        return .array(filtered)
+    }
 }

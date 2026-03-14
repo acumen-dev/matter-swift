@@ -243,7 +243,7 @@ struct MatterBridgeTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 1)
         let report = try ReportData.fromTLV(responses[0].1)
@@ -272,7 +272,7 @@ struct MatterBridgeTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 1)
         let invokeResp = try InvokeResponse.fromTLV(responses[0].1)

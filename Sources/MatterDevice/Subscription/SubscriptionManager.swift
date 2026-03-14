@@ -18,11 +18,20 @@ public actor SubscriptionManager {
         let sessionID: UInt16
         let fabricIndex: FabricIndex
         let attributePaths: [AttributePath]
+        let eventPaths: [EventPath]
         let minInterval: UInt16  // seconds
         let maxInterval: UInt16  // seconds
         var lastReportTime: Date
         var lastStatusResponseTime: Date
         var pendingReport: Bool
+        /// Whether subscription reports should apply fabric-scoped attribute filtering.
+        let isFabricFiltered: Bool
+        /// Last event number included in a report for this subscription.
+        var lastEventNumber: EventNumber
+        /// Whether an urgent event is pending that should bypass the minInterval check.
+        var urgentPending: Bool
+        /// Data version filters provided at subscribe time, applied to periodic reports.
+        let dataVersionFilters: [DataVersionFilter]
     }
 
     // MARK: - State
@@ -54,11 +63,16 @@ public actor SubscriptionManager {
             sessionID: sessionID,
             fabricIndex: fabricIndex,
             attributePaths: request.attributeRequests,
+            eventPaths: request.eventRequests,
             minInterval: request.minIntervalFloor,
             maxInterval: negotiatedMax,
             lastReportTime: now,
             lastStatusResponseTime: now,
-            pendingReport: false
+            pendingReport: false,
+            isFabricFiltered: request.isFabricFiltered,
+            lastEventNumber: EventNumber(rawValue: 0),
+            urgentPending: false,
+            dataVersionFilters: request.dataVersionFilters
         )
 
         return (subID, negotiatedMax)
@@ -86,7 +100,8 @@ public actor SubscriptionManager {
 
     /// Get subscriptions that need a report sent.
     /// Returns reports where either:
-    /// - Attributes changed AND minInterval has elapsed since last report
+    /// - Attributes/events changed AND minInterval has elapsed since last report
+    /// - An urgent event is pending (bypasses minInterval check)
     /// - maxInterval has elapsed since last report (keepalive)
     public func pendingReports(now: Date = Date()) -> [PendingReport] {
         var reports: [PendingReport] = []
@@ -94,8 +109,16 @@ public actor SubscriptionManager {
         for (id, sub) in subscriptions {
             let sinceLastReport = now.timeIntervalSince(sub.lastReportTime)
 
-            // Change-driven report: attributes changed and minInterval elapsed
-            if sub.pendingReport && sinceLastReport >= Double(sub.minInterval) {
+            // Urgent event: bypass minInterval
+            if sub.urgentPending {
+                reports.append(PendingReport(
+                    subscriptionID: id,
+                    sessionID: sub.sessionID,
+                    reason: .urgentEvent
+                ))
+            }
+            // Change-driven report: attributes/events changed and minInterval elapsed
+            else if sub.pendingReport && sinceLastReport >= Double(sub.minInterval) {
                 reports.append(PendingReport(
                     subscriptionID: id,
                     sessionID: sub.sessionID,
@@ -119,6 +142,7 @@ public actor SubscriptionManager {
     public func reportSent(subscriptionID: SubscriptionID, now: Date = Date()) {
         subscriptions[subscriptionID]?.lastReportTime = now
         subscriptions[subscriptionID]?.pendingReport = false
+        subscriptions[subscriptionID]?.urgentPending = false
     }
 
     /// Record that a StatusResponse was received (keeps subscription alive).
@@ -168,9 +192,66 @@ public actor SubscriptionManager {
     /// Number of active subscriptions.
     public var count: Int { subscriptions.count }
 
+    // MARK: - Event Notifications
+
+    /// Mark subscriptions as needing a report when an event is recorded.
+    ///
+    /// Subscriptions whose event paths match the event are marked as pending.
+    /// If the event is urgent, the `urgentPending` flag is set to bypass minInterval.
+    public func eventRecorded(_ event: StoredEvent) {
+        for id in subscriptions.keys {
+            guard let sub = subscriptions[id] else { continue }
+            // Check if any subscribed event path matches this event
+            let matches = sub.eventPaths.isEmpty || sub.eventPaths.contains { path in
+                eventPathMatches(path: path, event: event)
+            }
+            if matches {
+                subscriptions[id]?.pendingReport = true
+                if event.isUrgent {
+                    subscriptions[id]?.urgentPending = true
+                }
+            }
+        }
+    }
+
+    /// Get the event paths for a subscription.
+    public func eventPaths(for subscriptionID: SubscriptionID) -> [EventPath]? {
+        subscriptions[subscriptionID]?.eventPaths
+    }
+
+    /// Get the last event number included in a report for a subscription.
+    public func lastEventNumber(for subscriptionID: SubscriptionID) -> EventNumber? {
+        subscriptions[subscriptionID]?.lastEventNumber
+    }
+
+    /// Update the last event number for a subscription after a report is sent.
+    public func updateLastEventNumber(for subscriptionID: SubscriptionID, to eventNumber: EventNumber) {
+        subscriptions[subscriptionID]?.lastEventNumber = eventNumber
+    }
+
+    // MARK: - Accessor Methods
+
     /// Get the attribute paths for a subscription (for building reports).
     public func attributePaths(for subscriptionID: SubscriptionID) -> [AttributePath]? {
         subscriptions[subscriptionID]?.attributePaths
+    }
+
+    /// Return whether the subscription was created with fabric filtering enabled.
+    public func isFabricFiltered(for subscriptionID: SubscriptionID) -> Bool {
+        subscriptions[subscriptionID]?.isFabricFiltered ?? true
+    }
+
+    /// Return the fabric index for a subscription (used when building fabric-filtered reports).
+    public func fabricIndex(for subscriptionID: SubscriptionID) -> FabricIndex? {
+        subscriptions[subscriptionID]?.fabricIndex
+    }
+
+    /// Return the data version filters for a subscription (used when building reports).
+    ///
+    /// The filters were supplied by the client at subscribe time. They are applied to
+    /// every periodic report so unchanged clusters are silently omitted.
+    public func dataVersionFilters(for subscriptionID: SubscriptionID) -> [DataVersionFilter] {
+        subscriptions[subscriptionID]?.dataVersionFilters ?? []
     }
 
     // MARK: - Path Matching
@@ -193,6 +274,16 @@ public actor SubscriptionManager {
         }
         return true
     }
+
+    /// Check if a stored event matches a subscribed event path.
+    ///
+    /// Each nil field in the subscribed path acts as a wildcard.
+    private func eventPathMatches(path: EventPath, event: StoredEvent) -> Bool {
+        if let ep = path.endpointID, ep != event.endpointID { return false }
+        if let cl = path.clusterID, cl != event.clusterID { return false }
+        if let evID = path.eventID, evID != event.eventID { return false }
+        return true
+    }
 }
 
 // MARK: - Pending Report
@@ -206,5 +297,6 @@ public struct PendingReport: Sendable {
     public enum ReportReason: Sendable {
         case attributeChanged
         case maxIntervalElapsed
+        case urgentEvent
     }
 }

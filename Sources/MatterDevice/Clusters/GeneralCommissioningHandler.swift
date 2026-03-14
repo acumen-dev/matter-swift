@@ -109,6 +109,33 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
 
         let request = try GeneralCommissioningCluster.SetRegulatoryConfigRequest.fromTLVElement(fields)
 
+        // Validate the requested config is within capability bounds
+        let capabilityRaw = store.get(
+            endpoint: endpointID,
+            cluster: clusterID,
+            attribute: GeneralCommissioningCluster.Attribute.locationCapability
+        )?.uintValue ?? 2
+        let capability = GeneralCommissioningCluster.RegulatoryLocationType(rawValue: UInt8(capabilityRaw))
+            ?? .indoorOutdoor
+        let requested = request.newRegulatoryConfig
+        // IndoorOutdoor capability allows any config; Indoor only allows Indoor;
+        // Outdoor only allows Outdoor.
+        let configAllowed: Bool
+        switch capability {
+        case .indoorOutdoor:
+            configAllowed = true
+        case .indoor:
+            configAllowed = (requested == .indoor)
+        case .outdoor:
+            configAllowed = (requested == .outdoor)
+        }
+        guard configAllowed else {
+            return GeneralCommissioningCluster.SetRegulatoryConfigResponse(
+                errorCode: .valueOutsideRange,
+                debugText: "Regulatory config outside location capability"
+            ).toTLVElement()
+        }
+
         // Accept the regulatory config
         store.set(
             endpoint: endpointID,
@@ -126,6 +153,21 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         )
 
         return GeneralCommissioningCluster.SetRegulatoryConfigResponse(errorCode: .ok).toTLVElement()
+    }
+
+    // MARK: - Event Generation
+
+    /// Emit a CommissioningComplete event when the CommissioningComplete command succeeds.
+    public func generatedEvents(commandID: CommandID, endpointID: EndpointID, store: AttributeStore) -> [ClusterEvent] {
+        guard commandID == GeneralCommissioningCluster.Command.commissioningComplete else { return [] }
+        // Only emit the event if commissioning actually completed successfully (fail-safe was armed)
+        // The command handler already committed the state, so if we're here it succeeded
+        return [ClusterEvent(
+            eventID: GeneralCommissioningCluster.Event.commissioningComplete,
+            priority: .info,
+            data: nil,
+            isUrgent: false
+        )]
     }
 
     // MARK: - CommissioningComplete

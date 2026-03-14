@@ -97,7 +97,11 @@ public struct DataVersion: RawRepresentable, Sendable, Hashable, Codable {
 }
 
 /// An event number (64-bit, monotonically increasing per node).
-public struct EventNumber: RawRepresentable, Sendable, Hashable, Codable {
+public struct EventNumber: RawRepresentable, Sendable, Hashable, Codable, Comparable {
     public let rawValue: UInt64
     public init(rawValue: UInt64) { self.rawValue = rawValue }
+
+    public static func < (lhs: EventNumber, rhs: EventNumber) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
 }

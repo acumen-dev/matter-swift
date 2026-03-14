@@ -44,7 +44,14 @@ public struct DescriptorHandler: ClusterHandler {
         // serverList: array of uint32 (cluster IDs)
         let serverElements = serverClusters.map { TLVElement.unsignedInt(UInt64($0.rawValue)) }
 
-        // clientList: empty array
+        // clientList: empty array.
+        //
+        // The Matter spec (§9.5.4.3) defines ClientClusterList as the list of cluster IDs
+        // that this endpoint uses as a *client* — i.e., clusters where this endpoint initiates
+        // reads, writes, or invokes to other nodes. For a bridge acting purely as a server,
+        // all communication is inbound (controllers read/write/invoke this bridge). The bridge
+        // never initiates requests to other nodes, so the client cluster list is legitimately
+        // empty. This is spec-compliant for a server-only bridge device.
         let clientElements: [TLVElement] = []
 
         // partsList: array of uint16 (endpoint IDs)

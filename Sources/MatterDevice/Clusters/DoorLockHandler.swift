@@ -30,6 +30,13 @@ public struct DoorLockHandler: ClusterHandler {
         ]
     }
 
+    // MARK: - Timed Interaction
+
+    /// LockDoor and UnlockDoor are security-sensitive and require a timed interaction.
+    public func requiresTimedInteraction(commandID: CommandID) -> Bool {
+        commandID == DoorLockCluster.Command.lockDoor || commandID == DoorLockCluster.Command.unlockDoor
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,
@@ -49,5 +56,28 @@ public struct DoorLockHandler: ClusterHandler {
             break
         }
         return nil
+    }
+
+    // MARK: - Event Generation
+
+    /// Generate a LockOperation event for lockDoor/unlockDoor commands.
+    ///
+    /// These events are critical priority and urgent (trigger immediate subscription reports).
+    public func generatedEvents(commandID: CommandID, endpointID: EndpointID, store: AttributeStore) -> [ClusterEvent] {
+        switch commandID {
+        case DoorLockCluster.Command.lockDoor, DoorLockCluster.Command.unlockDoor:
+            let lockState = store.get(endpoint: endpointID, cluster: clusterID, attribute: DoorLockCluster.Attribute.lockState)?.uintValue.map { UInt8($0) } ?? 0
+            let data = TLVElement.structure([
+                TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(lockState)))
+            ])
+            return [ClusterEvent(
+                eventID: DoorLockCluster.Event.lockOperation,
+                priority: .critical,
+                data: data,
+                isUrgent: true
+            )]
+        default:
+            return []
+        }
     }
 }

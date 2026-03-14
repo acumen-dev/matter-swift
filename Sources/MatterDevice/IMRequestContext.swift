@@ -34,11 +34,28 @@ public struct IMRequestContext: Sendable {
     /// ACL entries for the session's fabric.
     public let acls: [AccessControlCluster.AccessControlEntry]
 
+    /// Whether fabric-scoped attributes should be filtered to only the session's fabric.
+    ///
+    /// When `true` (the default), fabric-scoped attributes such as ACLs, NOCs, and the
+    /// fabrics list are filtered to return only entries belonging to the requesting fabric.
+    /// When `false`, all entries are returned (e.g. for diagnostic or administrative reads).
+    public let isFabricFiltered: Bool
+
+    /// Whether this request arrived via a group-addressed message.
+    ///
+    /// When `true`, the request was addressed to a group ID rather than a specific node.
+    /// Per the Matter spec, no response is sent for group-cast messages.
+    public let isGroupMessage: Bool
+
     public init(
         checkerContext: ACLChecker.RequestContext,
-        acls: [AccessControlCluster.AccessControlEntry]
+        acls: [AccessControlCluster.AccessControlEntry],
+        isFabricFiltered: Bool = true,
+        isGroupMessage: Bool = false
     ) {
         self.checkerContext = checkerContext
         self.acls = acls
+        self.isFabricFiltered = isFabricFiltered
+        self.isGroupMessage = isGroupMessage
     }
 }

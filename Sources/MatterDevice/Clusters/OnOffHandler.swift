@@ -62,4 +62,27 @@ public struct OnOffHandler: ClusterHandler {
         }
         return .unsupportedWrite
     }
+
+    // MARK: - Event Generation
+
+    /// Generate a StateChange event for on/off/toggle commands.
+    ///
+    /// The event payload is a structure containing the new on/off state (tag 0).
+    public func generatedEvents(commandID: CommandID, endpointID: EndpointID, store: AttributeStore) -> [ClusterEvent] {
+        switch commandID {
+        case OnOffCluster.Command.off, OnOffCluster.Command.on, OnOffCluster.Command.toggle:
+            let isOn = store.get(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff)?.boolValue ?? false
+            let data = TLVElement.structure([
+                TLVElement.TLVField(tag: .contextSpecific(0), value: .bool(isOn))
+            ])
+            return [ClusterEvent(
+                eventID: OnOffCluster.Event.stateChange,
+                priority: .info,
+                data: data,
+                isUrgent: false
+            )]
+        default:
+            return []
+        }
+    }
 }

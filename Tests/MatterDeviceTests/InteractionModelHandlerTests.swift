@@ -66,7 +66,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 1)
         #expect(responses[0].0 == .reportData)
@@ -92,7 +92,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 1)
 
@@ -116,7 +116,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         let report = try ReportData.fromTLV(responses[0].1)
         #expect(report.attributeReports.count == 1)
@@ -141,7 +141,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 1)
         #expect(responses[0].0 == .writeResponse)
@@ -175,7 +175,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         let writeResponse = try WriteResponse.fromTLV(responses[0].1)
         #expect(writeResponse.writeResponses.count == 1)
@@ -198,7 +198,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 1)
         #expect(responses[0].0 == .invokeResponse)
@@ -291,7 +291,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         // Subscribe produces two responses: ReportData then SubscribeResponse
         #expect(responses.count == 2)
@@ -316,7 +316,7 @@ struct InteractionModelHandlerTests {
             payload: request.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         // Initial report
         let report = try ReportData.fromTLV(responses[0].1)
@@ -423,7 +423,7 @@ struct InteractionModelHandlerTests {
             payload: statusMsg.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.isEmpty)
     }
@@ -507,7 +507,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let report = try ReportData.fromTLV(responses[0].1)
         #expect(report.attributeReports.count == 1)
@@ -529,7 +529,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let report = try ReportData.fromTLV(responses[0].1)
         #expect(report.attributeReports.count == 1)
@@ -552,7 +552,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let report = try ReportData.fromTLV(responses[0].1)
         // All reports silently dropped — no error statuses either
@@ -580,7 +580,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let writeResponse = try WriteResponse.fromTLV(responses[0].1)
         #expect(writeResponse.writeResponses.count == 1)
@@ -619,7 +619,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let writeResponse = try WriteResponse.fromTLV(responses[0].1)
         #expect(writeResponse.writeResponses.count == 1)
@@ -645,7 +645,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let invokeResponse = try InvokeResponse.fromTLV(responses[0].1)
         #expect(invokeResponse.invokeResponses.count == 1)
@@ -671,7 +671,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric,
             requestContext: ctx
-        )
+        ).allPairs
 
         let writeResponse = try WriteResponse.fromTLV(responses[0].1)
         #expect(writeResponse.writeResponses[0].status == .success)
@@ -698,7 +698,7 @@ struct InteractionModelHandlerTests {
             sessionID: testSession,
             fabricIndex: testFabric
             // requestContext: nil (default)
-        )
+        ).allPairs
 
         let writeResponse = try WriteResponse.fromTLV(responses[0].1)
         #expect(writeResponse.writeResponses[0].status == .success)
@@ -707,24 +707,25 @@ struct InteractionModelHandlerTests {
         #expect(value == .bool(true))
     }
 
-    // MARK: - Unknown Opcode
+    // MARK: - Timed Request Opcode
 
-    @Test("Unknown opcode returns invalid action status")
-    func unknownOpcodeReturnsError() async throws {
+    @Test("TimedRequest returns success StatusResponse")
+    func timedRequestReturnsSuccess() async throws {
         let (handler, _, _) = makeTestHandler()
 
-        // timedRequest is not handled
+        let timedReq = TimedRequest(timeoutMs: 500)
         let responses = try await handler.handleMessage(
             opcode: .timedRequest,
-            payload: Data(),
+            payload: timedReq.tlvEncode(),
             sessionID: testSession,
-            fabricIndex: testFabric
-        )
+            fabricIndex: testFabric,
+            exchangeID: 99
+        ).allPairs
 
         #expect(responses.count == 1)
         #expect(responses[0].0 == .statusResponse)
 
         let status = try IMStatusResponse.fromTLV(responses[0].1)
-        #expect(status.status == StatusIB.invalidAction.status)
+        #expect(status.status == 0x00)
     }
 }

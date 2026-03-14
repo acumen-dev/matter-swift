@@ -22,6 +22,10 @@ public struct BasicInformationHandler: ClusterHandler {
     private let softwareVersionString: String
     private let serialNumber: String
     private let uniqueID: String
+    private let manufacturingDate: String
+    private let partNumber: String
+    private let productURL: String
+    private let productLabel: String
 
     public init(
         vendorName: String = "SwiftMatter",
@@ -31,7 +35,11 @@ public struct BasicInformationHandler: ClusterHandler {
         softwareVersion: UInt32 = 1,
         softwareVersionString: String = "1.0.0",
         serialNumber: String = "SM-0001",
-        uniqueID: String = "swift-matter-001"
+        uniqueID: String = "swift-matter-001",
+        manufacturingDate: String = "",
+        partNumber: String = "",
+        productURL: String = "",
+        productLabel: String = ""
     ) {
         self.vendorName = vendorName
         self.vendorID = vendorID
@@ -41,13 +49,17 @@ public struct BasicInformationHandler: ClusterHandler {
         self.softwareVersionString = softwareVersionString
         self.serialNumber = serialNumber
         self.uniqueID = uniqueID
+        self.manufacturingDate = manufacturingDate
+        self.partNumber = partNumber
+        self.productURL = productURL
+        self.productLabel = productLabel
     }
 
     // MARK: - ClusterHandler
 
     public func initialAttributes() -> [(AttributeID, TLVElement)] {
         let capMinima = BasicInformationCluster.CapabilityMinima()
-        return [
+        var attrs: [(AttributeID, TLVElement)] = [
             (BasicInformationCluster.Attribute.dataModelRevision, .unsignedInt(17)),
             (BasicInformationCluster.Attribute.vendorName, .utf8String(vendorName)),
             (BasicInformationCluster.Attribute.vendorID, .unsignedInt(UInt64(vendorID))),
@@ -63,6 +75,20 @@ public struct BasicInformationHandler: ClusterHandler {
             (BasicInformationCluster.Attribute.uniqueID, .utf8String(uniqueID)),
             (BasicInformationCluster.Attribute.capabilityMinima, capMinima.toTLVElement()),
         ]
+        // Optional attributes — only include if non-empty
+        if !manufacturingDate.isEmpty {
+            attrs.append((BasicInformationCluster.Attribute.manufacturingDate, .utf8String(manufacturingDate)))
+        }
+        if !partNumber.isEmpty {
+            attrs.append((BasicInformationCluster.Attribute.partNumber, .utf8String(partNumber)))
+        }
+        if !productURL.isEmpty {
+            attrs.append((BasicInformationCluster.Attribute.productURL, .utf8String(productURL)))
+        }
+        if !productLabel.isEmpty {
+            attrs.append((BasicInformationCluster.Attribute.productLabel, .utf8String(productLabel)))
+        }
+        return attrs
     }
 
     public func validateWrite(attributeID: AttributeID, value: TLVElement) -> WriteValidation {
@@ -76,5 +102,47 @@ public struct BasicInformationHandler: ClusterHandler {
         default:
             return .unsupportedWrite
         }
+    }
+
+    // MARK: - Event Factories
+
+    /// Create a StartUp event for this node.
+    ///
+    /// Emitted on device boot with the software version that just started.
+    public func startUpEvent(softwareVersion: UInt32) -> ClusterEvent {
+        ClusterEvent(
+            eventID: BasicInformationCluster.Event.startUp,
+            priority: .critical,
+            data: .structure([
+                TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(softwareVersion)))
+            ]),
+            isUrgent: false
+        )
+    }
+
+    /// Create a ShutDown event for this node.
+    ///
+    /// Emitted on graceful device shutdown.
+    public func shutDownEvent() -> ClusterEvent {
+        ClusterEvent(
+            eventID: BasicInformationCluster.Event.shutDown,
+            priority: .critical,
+            data: nil,
+            isUrgent: false
+        )
+    }
+
+    /// Create a Leave event for this node.
+    ///
+    /// Emitted when a fabric is removed from the device.
+    public func leaveEvent(fabricIndex: UInt8) -> ClusterEvent {
+        ClusterEvent(
+            eventID: BasicInformationCluster.Event.leave,
+            priority: .info,
+            data: .structure([
+                TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(fabricIndex)))
+            ]),
+            isUrgent: false
+        )
     }
 }

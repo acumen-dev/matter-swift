@@ -36,6 +36,13 @@ public enum GeneralCommissioningCluster {
         public static let commissioningCompleteResponse = CommandID(rawValue: 0x05)
     }
 
+    // MARK: - Event IDs
+
+    public enum Event {
+        /// CommissioningComplete event — emitted when commissioning completes. Priority: Info.
+        public static let commissioningComplete = EventID(rawValue: 0x02)
+    }
+
     // MARK: - Commissioning Error
 
     /// Error codes returned by General Commissioning commands.

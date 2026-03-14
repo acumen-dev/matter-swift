@@ -34,11 +34,23 @@ public struct ACLChecker: Sendable {
         public let subjectNodeID: UInt64
         /// The fabric index of the session.
         public let fabricIndex: FabricIndex
+        /// Whether this request arrived via a group-addressed message.
+        public let isGroupMessage: Bool
+        /// The group ID, present when `isGroupMessage` is `true`.
+        public let groupID: UInt16?
 
-        public init(isPASE: Bool, subjectNodeID: UInt64, fabricIndex: FabricIndex) {
+        public init(
+            isPASE: Bool,
+            subjectNodeID: UInt64,
+            fabricIndex: FabricIndex,
+            isGroupMessage: Bool = false,
+            groupID: UInt16? = nil
+        ) {
             self.isPASE = isPASE
             self.subjectNodeID = subjectNodeID
             self.fabricIndex = fabricIndex
+            self.isGroupMessage = isGroupMessage
+            self.groupID = groupID
         }
     }
 
@@ -67,6 +79,24 @@ public struct ACLChecker: Sendable {
         // Rule 1: PASE sessions bypass ACLs with implicit Administer
         if context.isPASE {
             return .allowed
+        }
+
+        // Group message ACL evaluation: use group-mode ACEs only
+        if context.isGroupMessage, let groupID = context.groupID {
+            for ace in acls {
+                guard ace.authMode == .group else { continue }
+                guard ace.privilege >= requiredPrivilege else { continue }
+                if !ace.subjects.isEmpty {
+                    // subjects contains group IDs for group-mode ACEs
+                    guard ace.subjects.contains(UInt64(groupID)) else { continue }
+                }
+                if let targets = ace.targets, !targets.isEmpty {
+                    let matched = targets.contains { matchesTarget($0, endpointID: endpointID, clusterID: clusterID) }
+                    guard matched else { continue }
+                }
+                return .allowed
+            }
+            return .denied
         }
 
         // Rule 2-4: Evaluate ACLs for CASE sessions

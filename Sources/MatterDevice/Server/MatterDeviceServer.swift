@@ -98,6 +98,11 @@ public actor MatterDeviceServer {
     /// Active CASE handshakes keyed by exchange ID.
     private var caseHandshakes: [UInt16: CASEHandshake] = [:]
 
+    /// Pending chunked report contexts keyed by exchange ID.
+    /// When a report is too large for a single UDP message, subsequent chunks
+    /// are sent one at a time as the client acknowledges each with a StatusResponse.
+    private var pendingChunkedReports: [UInt16: ChunkedReportContext] = [:]
+
     /// Established sessions keyed by local session ID.
     private var sessions: [UInt16: SessionEntry] = [:]
 
@@ -276,31 +281,50 @@ public actor MatterDeviceServer {
                 logger.info("Fail-safe timer expired")
             }
 
+            // Purge expired timed interaction windows
+            await bridge.timedRequestTracker.purgeExpired()
+
+            // Purge stale chunked write buffers
+            await bridge.chunkedWriteBuffer.purgeStale()
+
+            // Purge stale chunked invoke buffers
+            await bridge.chunkedInvokeBuffer.purgeStale()
+
             let reports = await bridge.pendingReports(now: now)
             for report in reports {
-                guard let reportData = await bridge.buildReport(for: report),
+                guard let chunks = await bridge.buildReport(for: report),
                       let entry = sessionEntry(for: report.sessionID) else {
                     continue
                 }
 
+                let exchangeID = allocateExchangeID()
+
                 do {
+                    // Send the first chunk
+                    guard let firstChunk = chunks.first else { continue }
                     let exchangeHeader = ExchangeHeader(
                         flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
-                        exchangeID: allocateExchangeID(),
+                        exchangeID: exchangeID,
                         protocolID: MatterProtocolID.interactionModel.rawValue
                     )
 
                     let encrypted = try SecureMessageCodec.encode(
                         exchangeHeader: exchangeHeader,
-                        payload: reportData,
+                        payload: firstChunk.tlvEncode(),
                         session: entry.session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
 
                     try await transport.send(encrypted, to: entry.address)
                     await bridge.reportSent(subscriptionID: report.subscriptionID)
-                    logger.debug("Sent subscription report \(report.subscriptionID) to \(entry.address)")
+                    logger.debug("Sent subscription report \(report.subscriptionID) chunk 1/\(chunks.count) to \(entry.address)")
+
+                    // If there are more chunks, store remainder for delivery on StatusResponse
+                    if chunks.count > 1 {
+                        let remainingChunks = Array(chunks.dropFirst())
+                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: remainingChunks)
+                    }
                 } catch {
                     logger.warning("Failed to send subscription report: \(error)")
                 }
@@ -316,6 +340,10 @@ public actor MatterDeviceServer {
 
         if header.isUnsecured {
             try await handleUnsecuredMessage(header: header, payload: remaining, from: sender)
+        } else if let groupID = header.destinationGroupID, header.securityFlags.sessionType == .group {
+            // Group-addressed message (DSIZ = 0x02, session type = group).
+            // Route to all member endpoints — no response is sent for group messages (spec §4.16.2).
+            try await handleGroupMessage(rawData: data, groupID: groupID, from: sender)
         } else if let entry = sessions[header.sessionID] {
             try await handleSecuredMessage(
                 rawData: data,
@@ -326,6 +354,88 @@ public actor MatterDeviceServer {
         } else {
             logger.debug("Dropping message for unknown session \(header.sessionID)")
         }
+    }
+
+    // MARK: - Group Message Routing
+
+    /// Route a group-addressed message to all member endpoints.
+    ///
+    /// Group messages are multicast — the device receives them because it has a session
+    /// established for the group key set. They are dispatched to every endpoint that is
+    /// a member of the group on the invoking fabric. Responses are suppressed (spec §4.16.2).
+    ///
+    /// - Note: Full group-key decryption requires matching the group session to a fabric
+    ///   via the group key sets installed by `GroupKeyManagementHandler`. For now this
+    ///   implementation uses the first available fabric session to decrypt the message
+    ///   and then fans out to member endpoints. This covers the single-fabric bridge case.
+    private func handleGroupMessage(rawData: Data, groupID: GroupID, from sender: MatterAddress) async throws {
+        logger.debug("Group message for group \(groupID.rawValue) — routing to member endpoints")
+
+        // Find a session that can decrypt this group message.
+        // In a single-fabric bridge the first CASE session is used. A full implementation
+        // would match the group ID to a key set via the GroupKeyMap attribute and derive
+        // the operational group key for decryption.
+        guard let entry = sessions.values.first(where: { $0.fabricIndex.rawValue != 0 }) else {
+            logger.debug("No CASE session available to decrypt group message for group \(groupID.rawValue)")
+            return
+        }
+
+        let fabricIndex = entry.fabricIndex
+        let memberEndpointIDs = bridge.groupMembershipTable.endpoints(
+            fabricIndex: fabricIndex.rawValue,
+            groupID: groupID.rawValue
+        )
+
+        guard !memberEndpointIDs.isEmpty else {
+            logger.debug("No member endpoints for group \(groupID.rawValue) on fabric \(fabricIndex)")
+            return
+        }
+
+        // Attempt to decrypt and decode the message using the CASE session.
+        // If decryption fails (wrong key), drop silently — not intended for us.
+        let (_, exchangeHeader, payload): (MessageHeader, ExchangeHeader, Data)
+        do {
+            (_, exchangeHeader, payload) = try SecureMessageCodec.decode(data: rawData, session: entry.session)
+        } catch {
+            logger.debug("Group message decryption failed for group \(groupID.rawValue): \(error)")
+            return
+        }
+
+        guard exchangeHeader.protocolID == MatterProtocolID.interactionModel.rawValue,
+              let opcode = InteractionModelOpcode(rawValue: exchangeHeader.protocolOpcode) else {
+            logger.debug("Group message is not an IM message for group \(groupID.rawValue)")
+            return
+        }
+
+        // Build a request context that marks this as a group message (no response).
+        let requestContext = IMRequestContext(
+            checkerContext: ACLChecker.RequestContext(
+                isPASE: false,
+                subjectNodeID: entry.session.peerNodeID.rawValue,
+                fabricIndex: fabricIndex,
+                isGroupMessage: true,
+                groupID: groupID.rawValue
+            ),
+            acls: bridge.commissioningState.committedACLs[fabricIndex] ?? [],
+            isGroupMessage: true
+        )
+
+        bridge.commissioningState.invokingFabricIndex = fabricIndex
+
+        // Dispatch the IM operation to each member endpoint, discarding responses.
+        // For group invokes each endpoint processes the command independently.
+        for endpointIDRaw in memberEndpointIDs {
+            let _ = try? await bridge.handleIM(
+                opcode: opcode,
+                payload: payload,
+                sessionID: entry.session.localSessionID,
+                fabricIndex: fabricIndex,
+                exchangeID: exchangeHeader.exchangeID,
+                requestContext: requestContext
+            )
+            logger.debug("Dispatched group message to endpoint \(endpointIDRaw) for group \(groupID.rawValue)")
+        }
+        // No response sent — group messages are fire-and-forget (spec §4.16.2.1)
     }
 
     // MARK: - Unsecured Message Handling (PASE)
@@ -501,6 +611,13 @@ public actor MatterDeviceServer {
         )
 
         paseHandshakes.removeValue(forKey: exchangeID)
+
+        // Store attestation challenge for use in AttestationRequest handling.
+        // The attestation key (bytes 32-47 of HKDF output) is the challenge value.
+        if let attKey = session.attestationKey {
+            let challengeData = attKey.withUnsafeBytes { Data($0) }
+            bridge.commissioningState.attestationChallenge = challengeData
+        }
 
         // Send status report success
         let statusReport = StatusReportMessage(
@@ -688,33 +805,119 @@ public actor MatterDeviceServer {
             // Set invoking fabric context for commands that need it
             bridge.commissioningState.invokingFabricIndex = fabricIndex
 
-            let responses = try await bridge.handleIM(
+            // Check if this is a StatusResponse on an exchange with pending chunks
+            if opcode == .statusResponse, var context = pendingChunkedReports[exchangeHeader.exchangeID] {
+                // Client acknowledged the previous chunk — send the next one
+                if let nextChunk = context.nextChunk() {
+                    let chunkHeader = ExchangeHeader(
+                        flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                        protocolOpcode: InteractionModelOpcode.reportData.rawValue,
+                        exchangeID: exchangeHeader.exchangeID,
+                        protocolID: MatterProtocolID.interactionModel.rawValue
+                    )
+                    let encrypted = try SecureMessageCodec.encode(
+                        exchangeHeader: chunkHeader,
+                        payload: nextChunk.tlvEncode(),
+                        session: session,
+                        sourceNodeID: NodeID(rawValue: 0)
+                    )
+                    try await transport.send(encrypted, to: address)
+                }
+
+                if context.isComplete {
+                    pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                    // Send any trailing responses (e.g., SubscribeResponse after final chunk)
+                    for (trailingOpcode, trailingData) in context.trailingResponses {
+                        let trailingHeader = ExchangeHeader(
+                            flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                            protocolOpcode: trailingOpcode.rawValue,
+                            exchangeID: exchangeHeader.exchangeID,
+                            protocolID: MatterProtocolID.interactionModel.rawValue
+                        )
+                        let encrypted = try SecureMessageCodec.encode(
+                            exchangeHeader: trailingHeader,
+                            payload: trailingData,
+                            session: session,
+                            sourceNodeID: NodeID(rawValue: 0)
+                        )
+                        try await transport.send(encrypted, to: address)
+                    }
+                } else {
+                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                }
+                return
+            }
+
+            let result = try await bridge.handleIM(
                 opcode: opcode,
                 payload: payload,
                 sessionID: session.localSessionID,
                 fabricIndex: fabricIndex,
+                exchangeID: exchangeHeader.exchangeID,
                 requestContext: requestContext
             )
 
-            for (responseOpcode, responseData) in responses {
-                let responseExchangeHeader = ExchangeHeader(
-                    flags: ExchangeFlags(
-                        initiator: false,
-                        reliableDelivery: true
-                    ),
-                    protocolOpcode: responseOpcode.rawValue,
-                    exchangeID: exchangeHeader.exchangeID,
-                    protocolID: MatterProtocolID.interactionModel.rawValue
-                )
+            switch result {
+            case .responses(let pairs):
+                for (responseOpcode, responseData) in pairs {
+                    let responseExchangeHeader = ExchangeHeader(
+                        flags: ExchangeFlags(
+                            initiator: false,
+                            reliableDelivery: true
+                        ),
+                        protocolOpcode: responseOpcode.rawValue,
+                        exchangeID: exchangeHeader.exchangeID,
+                        protocolID: MatterProtocolID.interactionModel.rawValue
+                    )
 
-                let encrypted = try SecureMessageCodec.encode(
-                    exchangeHeader: responseExchangeHeader,
-                    payload: responseData,
-                    session: session,
-                    sourceNodeID: NodeID(rawValue: 0)
-                )
+                    let encrypted = try SecureMessageCodec.encode(
+                        exchangeHeader: responseExchangeHeader,
+                        payload: responseData,
+                        session: session,
+                        sourceNodeID: NodeID(rawValue: 0)
+                    )
 
-                try await transport.send(encrypted, to: address)
+                    try await transport.send(encrypted, to: address)
+                }
+
+            case .chunkedReport(var context):
+                // Send first chunk immediately
+                if let firstChunk = context.nextChunk() {
+                    let chunkHeader = ExchangeHeader(
+                        flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                        protocolOpcode: InteractionModelOpcode.reportData.rawValue,
+                        exchangeID: exchangeHeader.exchangeID,
+                        protocolID: MatterProtocolID.interactionModel.rawValue
+                    )
+                    let encrypted = try SecureMessageCodec.encode(
+                        exchangeHeader: chunkHeader,
+                        payload: firstChunk.tlvEncode(),
+                        session: session,
+                        sourceNodeID: NodeID(rawValue: 0)
+                    )
+                    try await transport.send(encrypted, to: address)
+                }
+                // Store remaining chunks for delivery on subsequent StatusResponse messages
+                if !context.isComplete {
+                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                } else if !context.trailingResponses.isEmpty {
+                    // Single chunk but has trailing responses — send them now
+                    for (trailingOpcode, trailingData) in context.trailingResponses {
+                        let trailingHeader = ExchangeHeader(
+                            flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                            protocolOpcode: trailingOpcode.rawValue,
+                            exchangeID: exchangeHeader.exchangeID,
+                            protocolID: MatterProtocolID.interactionModel.rawValue
+                        )
+                        let encrypted = try SecureMessageCodec.encode(
+                            exchangeHeader: trailingHeader,
+                            payload: trailingData,
+                            session: session,
+                            sourceNodeID: NodeID(rawValue: 0)
+                        )
+                        try await transport.send(encrypted, to: address)
+                    }
+                }
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {
             // Handle secure channel messages (e.g., MRP acks, close session)

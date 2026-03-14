@@ -34,16 +34,22 @@ public struct ReadRequest: Sendable, Equatable {
 
     public let attributeRequests: [AttributePath]
     public let eventRequests: [EventPath]
+    public let eventFilters: [EventFilterIB]
     public let isFabricFiltered: Bool
+    public let dataVersionFilters: [DataVersionFilter]
 
     public init(
         attributeRequests: [AttributePath] = [],
         eventRequests: [EventPath] = [],
-        isFabricFiltered: Bool = true
+        eventFilters: [EventFilterIB] = [],
+        isFabricFiltered: Bool = true,
+        dataVersionFilters: [DataVersionFilter] = []
     ) {
         self.attributeRequests = attributeRequests
         self.eventRequests = eventRequests
+        self.eventFilters = eventFilters
         self.isFabricFiltered = isFabricFiltered
+        self.dataVersionFilters = dataVersionFilters
     }
 
     public func tlvEncode() -> Data {
@@ -67,7 +73,21 @@ public struct ReadRequest: Sendable, Equatable {
             ))
         }
 
+        if !eventFilters.isEmpty {
+            fields.append(.init(
+                tag: .contextSpecific(Tag.eventFilters),
+                value: .array(eventFilters.map { $0.toTLVElement() })
+            ))
+        }
+
         fields.append(.init(tag: .contextSpecific(Tag.isFabricFiltered), value: .bool(isFabricFiltered)))
+
+        if !dataVersionFilters.isEmpty {
+            fields.append(.init(
+                tag: .contextSpecific(Tag.dataVersionFilters),
+                value: .array(dataVersionFilters.map { $0.toTLVElement() })
+            ))
+        }
 
         return .structure(fields)
     }
@@ -94,12 +114,26 @@ public struct ReadRequest: Sendable, Equatable {
             eventPaths = try elements.map { try EventPath.fromTLVElement($0) }
         }
 
+        var eventFilters: [EventFilterIB] = []
+        if let filterField = fields.first(where: { $0.tag == .contextSpecific(Tag.eventFilters) }),
+           case .array(let elements) = filterField.value {
+            eventFilters = try elements.map { try EventFilterIB.fromTLVElement($0) }
+        }
+
         let isFabricFiltered = fields.first(where: { $0.tag == .contextSpecific(Tag.isFabricFiltered) })?.value.boolValue ?? true
+
+        var dvFilters: [DataVersionFilter] = []
+        if let dvField = fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersionFilters) }),
+           case .array(let elements) = dvField.value {
+            dvFilters = try elements.map { try DataVersionFilter.fromTLVElement($0) }
+        }
 
         return ReadRequest(
             attributeRequests: attrPaths,
             eventRequests: eventPaths,
-            isFabricFiltered: isFabricFiltered
+            eventFilters: eventFilters,
+            isFabricFiltered: isFabricFiltered,
+            dataVersionFilters: dvFilters
         )
     }
 }
@@ -129,17 +163,20 @@ public struct ReportData: Sendable, Equatable {
 
     public let subscriptionID: SubscriptionID?
     public let attributeReports: [AttributeReportIB]
+    public let eventReports: [EventReportIB]
     public let moreChunkedMessages: Bool
     public let suppressResponse: Bool
 
     public init(
         subscriptionID: SubscriptionID? = nil,
         attributeReports: [AttributeReportIB] = [],
+        eventReports: [EventReportIB] = [],
         moreChunkedMessages: Bool = false,
         suppressResponse: Bool = false
     ) {
         self.subscriptionID = subscriptionID
         self.attributeReports = attributeReports
+        self.eventReports = eventReports
         self.moreChunkedMessages = moreChunkedMessages
         self.suppressResponse = suppressResponse
     }
@@ -159,6 +196,13 @@ public struct ReportData: Sendable, Equatable {
             fields.append(.init(
                 tag: .contextSpecific(Tag.attributeReports),
                 value: .array(attributeReports.map { $0.toTLVElement() })
+            ))
+        }
+
+        if !eventReports.isEmpty {
+            fields.append(.init(
+                tag: .contextSpecific(Tag.eventReports),
+                value: .array(eventReports.map { $0.toTLVElement() })
             ))
         }
 
@@ -190,12 +234,19 @@ public struct ReportData: Sendable, Equatable {
             reports = try elements.map { try AttributeReportIB.fromTLVElement($0) }
         }
 
+        var evReports: [EventReportIB] = []
+        if let evField = fields.first(where: { $0.tag == .contextSpecific(Tag.eventReports) }),
+           case .array(let elements) = evField.value {
+            evReports = try elements.map { try EventReportIB.fromTLVElement($0) }
+        }
+
         let more = fields.first(where: { $0.tag == .contextSpecific(Tag.moreChunkedMessages) })?.value.boolValue ?? false
         let suppress = fields.first(where: { $0.tag == .contextSpecific(Tag.suppressResponse) })?.value.boolValue ?? false
 
         return ReportData(
             subscriptionID: subID,
             attributeReports: reports,
+            eventReports: evReports,
             moreChunkedMessages: more,
             suppressResponse: suppress
         )
@@ -586,6 +637,7 @@ public struct WriteResponse: Sendable, Equatable {
 ///   0: suppressResponse (bool)
 ///   1: timedRequest (bool)
 ///   2: invokeRequests (array of CommandDataIB)
+///   3: moreChunkedMessages (bool, optional)
 /// }
 /// ```
 public struct InvokeRequest: Sendable, Equatable {
@@ -594,20 +646,25 @@ public struct InvokeRequest: Sendable, Equatable {
         static let suppressResponse: UInt8 = 0
         static let timedRequest: UInt8 = 1
         static let invokeRequests: UInt8 = 2
+        static let moreChunkedMessages: UInt8 = 3
     }
 
     public let suppressResponse: Bool
     public let timedRequest: Bool
     public let invokeRequests: [CommandDataIB]
+    /// True when this is an intermediate chunk in a multi-message invoke sequence (§8.6.3).
+    public let moreChunkedMessages: Bool
 
     public init(
         suppressResponse: Bool = false,
         timedRequest: Bool = false,
-        invokeRequests: [CommandDataIB]
+        invokeRequests: [CommandDataIB],
+        moreChunkedMessages: Bool = false
     ) {
         self.suppressResponse = suppressResponse
         self.timedRequest = timedRequest
         self.invokeRequests = invokeRequests
+        self.moreChunkedMessages = moreChunkedMessages
     }
 
     public func tlvEncode() -> Data {
@@ -615,14 +672,18 @@ public struct InvokeRequest: Sendable, Equatable {
     }
 
     public func toTLVElement() -> TLVElement {
-        .structure([
+        var fields: [TLVElement.TLVField] = [
             .init(tag: .contextSpecific(Tag.suppressResponse), value: .bool(suppressResponse)),
             .init(tag: .contextSpecific(Tag.timedRequest), value: .bool(timedRequest)),
             .init(
                 tag: .contextSpecific(Tag.invokeRequests),
                 value: .array(invokeRequests.map { $0.toTLVElement() })
             )
-        ])
+        ]
+        if moreChunkedMessages {
+            fields.append(.init(tag: .contextSpecific(Tag.moreChunkedMessages), value: .bool(true)))
+        }
+        return .structure(fields)
     }
 
     public static func fromTLV(_ data: Data) throws -> InvokeRequest {
@@ -637,6 +698,7 @@ public struct InvokeRequest: Sendable, Equatable {
 
         let suppress = fields.first(where: { $0.tag == .contextSpecific(Tag.suppressResponse) })?.value.boolValue ?? false
         let timed = fields.first(where: { $0.tag == .contextSpecific(Tag.timedRequest) })?.value.boolValue ?? false
+        let more = fields.first(where: { $0.tag == .contextSpecific(Tag.moreChunkedMessages) })?.value.boolValue ?? false
 
         var cmds: [CommandDataIB] = []
         if let field = fields.first(where: { $0.tag == .contextSpecific(Tag.invokeRequests) }),
@@ -644,7 +706,7 @@ public struct InvokeRequest: Sendable, Equatable {
             cmds = try elements.map { try CommandDataIB.fromTLVElement($0) }
         }
 
-        return InvokeRequest(suppressResponse: suppress, timedRequest: timed, invokeRequests: cmds)
+        return InvokeRequest(suppressResponse: suppress, timedRequest: timed, invokeRequests: cmds, moreChunkedMessages: more)
     }
 }
 
@@ -909,6 +971,7 @@ public struct IMStatusResponse: Sendable, Equatable {
 ///   2: maxIntervalCeiling (unsigned int)
 ///   3: attributeRequests (array of AttributePath, optional)
 ///   4: eventRequests (array of EventPath, optional)
+///   5: eventFilters (array of EventFilter, optional)
 ///   7: isFabricFiltered (bool)
 /// }
 /// ```
@@ -920,6 +983,8 @@ public struct SubscribeRequest: Sendable, Equatable {
         static let maxIntervalCeiling: UInt8 = 2
         static let attributeRequests: UInt8 = 3
         static let eventRequests: UInt8 = 4
+        static let eventFilters: UInt8 = 5
+        static let dataVersionFilters: UInt8 = 6
         static let isFabricFiltered: UInt8 = 7
     }
 
@@ -928,6 +993,8 @@ public struct SubscribeRequest: Sendable, Equatable {
     public let maxIntervalCeiling: UInt16
     public let attributeRequests: [AttributePath]
     public let eventRequests: [EventPath]
+    public let eventFilters: [EventFilterIB]
+    public let dataVersionFilters: [DataVersionFilter]
     public let isFabricFiltered: Bool
 
     public init(
@@ -936,6 +1003,8 @@ public struct SubscribeRequest: Sendable, Equatable {
         maxIntervalCeiling: UInt16,
         attributeRequests: [AttributePath] = [],
         eventRequests: [EventPath] = [],
+        eventFilters: [EventFilterIB] = [],
+        dataVersionFilters: [DataVersionFilter] = [],
         isFabricFiltered: Bool = true
     ) {
         self.keepSubscriptions = keepSubscriptions
@@ -943,6 +1012,8 @@ public struct SubscribeRequest: Sendable, Equatable {
         self.maxIntervalCeiling = maxIntervalCeiling
         self.attributeRequests = attributeRequests
         self.eventRequests = eventRequests
+        self.eventFilters = eventFilters
+        self.dataVersionFilters = dataVersionFilters
         self.isFabricFiltered = isFabricFiltered
     }
 
@@ -968,6 +1039,20 @@ public struct SubscribeRequest: Sendable, Equatable {
             fields.append(.init(
                 tag: .contextSpecific(Tag.eventRequests),
                 value: .array(eventRequests.map { $0.toTLVElement() })
+            ))
+        }
+
+        if !eventFilters.isEmpty {
+            fields.append(.init(
+                tag: .contextSpecific(Tag.eventFilters),
+                value: .array(eventFilters.map { $0.toTLVElement() })
+            ))
+        }
+
+        if !dataVersionFilters.isEmpty {
+            fields.append(.init(
+                tag: .contextSpecific(Tag.dataVersionFilters),
+                value: .array(dataVersionFilters.map { $0.toTLVElement() })
             ))
         }
 
@@ -1007,6 +1092,18 @@ public struct SubscribeRequest: Sendable, Equatable {
             eventPaths = try elements.map { try EventPath.fromTLVElement($0) }
         }
 
+        var eventFilters: [EventFilterIB] = []
+        if let filterField = fields.first(where: { $0.tag == .contextSpecific(Tag.eventFilters) }),
+           case .array(let elements) = filterField.value {
+            eventFilters = try elements.map { try EventFilterIB.fromTLVElement($0) }
+        }
+
+        var dvFilters: [DataVersionFilter] = []
+        if let dvField = fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersionFilters) }),
+           case .array(let elements) = dvField.value {
+            dvFilters = try elements.map { try DataVersionFilter.fromTLVElement($0) }
+        }
+
         let isFabricFiltered = fields.first(where: { $0.tag == .contextSpecific(Tag.isFabricFiltered) })?.value.boolValue ?? true
 
         return SubscribeRequest(
@@ -1015,7 +1112,130 @@ public struct SubscribeRequest: Sendable, Equatable {
             maxIntervalCeiling: UInt16(maxCeiling),
             attributeRequests: attrPaths,
             eventRequests: eventPaths,
+            eventFilters: eventFilters,
+            dataVersionFilters: dvFilters,
             isFabricFiltered: isFabricFiltered
+        )
+    }
+}
+
+// MARK: - Timed Request
+
+/// Timed interaction request — establishes a time-bounded window for a subsequent
+/// write or invoke.
+///
+/// ```
+/// Structure {
+///   0: timeout (unsigned int — milliseconds)
+/// }
+/// ```
+public struct TimedRequest: Sendable, Equatable {
+
+    private enum Tag {
+        static let timeoutMs: UInt8 = 0
+    }
+
+    /// Timeout in milliseconds. The subsequent write or invoke must arrive within this window.
+    public let timeoutMs: UInt16
+
+    public init(timeoutMs: UInt16) {
+        self.timeoutMs = timeoutMs
+    }
+
+    public func tlvEncode() -> Data {
+        TLVEncoder.encode(.structure([
+            .init(tag: .contextSpecific(Tag.timeoutMs), value: .unsignedInt(UInt64(timeoutMs)))
+        ]))
+    }
+
+    public static func fromTLV(_ data: Data) throws -> TimedRequest {
+        let (_, element) = try TLVDecoder.decode(data)
+        guard case .structure(let fields) = element,
+              let ms = fields.first(where: { $0.tag == .contextSpecific(Tag.timeoutMs) })?.value.uintValue else {
+            throw IMError.invalidMessage("TimedRequest: expected structure with timeout")
+        }
+        return TimedRequest(timeoutMs: UInt16(min(ms, UInt64(UInt16.max))))
+    }
+}
+
+// MARK: - Data Version Filter
+
+/// A client-supplied data version filter for a specific cluster path.
+///
+/// If the server's current `dataVersion` for `(endpointID, clusterID)` matches the
+/// client's cached `dataVersion`, the server omits all attributes for that cluster
+/// from the response — the cluster's data has not changed since the client last read it.
+///
+/// Per Matter spec §8.5.1.
+///
+/// TLV structure:
+/// ```
+/// Structure {
+///   0: path (Structure { 0: endpointID (unsigned int), 1: clusterID (unsigned int) })
+///   1: dataVersion (unsigned int)
+/// }
+/// ```
+public struct DataVersionFilter: Sendable, Equatable {
+
+    private enum Tag {
+        static let path: UInt8 = 0
+        static let dataVersion: UInt8 = 1
+    }
+
+    private enum PathTag {
+        static let endpointID: UInt8 = 0
+        static let clusterID: UInt8 = 1
+    }
+
+    /// The endpoint containing the cluster to filter.
+    public let endpointID: EndpointID
+    /// The cluster to filter.
+    public let clusterID: ClusterID
+    /// The client's cached data version for this cluster.
+    public let dataVersion: UInt32
+
+    public init(endpointID: EndpointID, clusterID: ClusterID, dataVersion: UInt32) {
+        self.endpointID = endpointID
+        self.clusterID = clusterID
+        self.dataVersion = dataVersion
+    }
+
+    public func toTLVElement() -> TLVElement {
+        let pathElement = TLVElement.structure([
+            .init(tag: .contextSpecific(PathTag.endpointID), value: .unsignedInt(UInt64(endpointID.rawValue))),
+            .init(tag: .contextSpecific(PathTag.clusterID), value: .unsignedInt(UInt64(clusterID.rawValue)))
+        ])
+        return .structure([
+            .init(tag: .contextSpecific(Tag.path), value: pathElement),
+            .init(tag: .contextSpecific(Tag.dataVersion), value: .unsignedInt(UInt64(dataVersion)))
+        ])
+    }
+
+    public static func fromTLVElement(_ element: TLVElement) throws -> DataVersionFilter {
+        guard case .structure(let fields) = element else {
+            throw IMError.invalidMessage("DataVersionFilter: expected structure")
+        }
+
+        guard let pathField = fields.first(where: { $0.tag == .contextSpecific(Tag.path) }) else {
+            throw IMError.invalidMessage("DataVersionFilter: missing path")
+        }
+        guard case .structure(let pathFields) = pathField.value else {
+            throw IMError.invalidMessage("DataVersionFilter: path must be a structure")
+        }
+        guard let epRaw = pathFields.first(where: { $0.tag == .contextSpecific(PathTag.endpointID) })?.value.uintValue else {
+            throw IMError.invalidMessage("DataVersionFilter: missing endpointID in path")
+        }
+        guard let clRaw = pathFields.first(where: { $0.tag == .contextSpecific(PathTag.clusterID) })?.value.uintValue else {
+            throw IMError.invalidMessage("DataVersionFilter: missing clusterID in path")
+        }
+        guard let dvRaw = fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersion) })?.value.uintValue else {
+            throw IMError.invalidMessage("DataVersionFilter: missing dataVersion")
+        }
+
+        return DataVersionFilter(
+            endpointID: EndpointID(rawValue: UInt16(epRaw)),
+            clusterID: ClusterID(rawValue: UInt32(clRaw)),
+            dataVersion: UInt32(dvRaw)
         )
     }
 }

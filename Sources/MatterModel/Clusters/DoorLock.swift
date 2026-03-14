@@ -28,4 +28,17 @@ public enum DoorLockCluster {
         /// Unlock the door.
         public static let unlockDoor = CommandID(rawValue: 0x01)
     }
+
+    // MARK: - Event IDs
+
+    public enum Event {
+        /// DoorLockAlarm event — emitted when a door lock alarm condition is detected.
+        ///
+        /// Payload: Structure { 0: alarmCode (UInt8) }
+        public static let doorLockAlarm = EventID(rawValue: 0x0000)
+        /// LockOperation event — emitted when the lock state changes due to a lock/unlock command.
+        ///
+        /// Payload: Structure { 0: lockState (UInt8): 1 = Locked, 2 = Unlocked }
+        public static let lockOperation = EventID(rawValue: 0x0002)
+    }
 }

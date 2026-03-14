@@ -38,12 +38,31 @@ public enum BasicInformationCluster {
         public static let softwareVersion       = AttributeID(rawValue: 0x0009)
         /// Software version string. String (read-only, max 64 chars).
         public static let softwareVersionString = AttributeID(rawValue: 0x000A)
+        /// Manufacturing date. String (optional, read-only, max 16 chars).
+        public static let manufacturingDate     = AttributeID(rawValue: 0x000B)
+        /// Part number. String (optional, read-only, max 32 chars).
+        public static let partNumber            = AttributeID(rawValue: 0x000C)
+        /// Product URL. String (optional, read-only, max 256 chars).
+        public static let productURL            = AttributeID(rawValue: 0x000D)
+        /// Product label. String (optional, read-only, max 64 chars).
+        public static let productLabel          = AttributeID(rawValue: 0x000E)
         /// Serial number. String (read-only, max 32 chars).
         public static let serialNumber          = AttributeID(rawValue: 0x000F)
         /// Unique ID. String (read-only, max 32 chars).
         public static let uniqueID              = AttributeID(rawValue: 0x0012)
         /// Capability minima. Structure (read-only).
         public static let capabilityMinima      = AttributeID(rawValue: 0x0013)
+    }
+
+    // MARK: - Event IDs
+
+    public enum Event {
+        /// StartUp event — emitted on device boot. Priority: Critical.
+        public static let startUp  = EventID(rawValue: 0x00)
+        /// ShutDown event — emitted on graceful shutdown. Priority: Critical.
+        public static let shutDown = EventID(rawValue: 0x01)
+        /// Leave event — emitted when a fabric is removed. Priority: Info.
+        public static let leave    = EventID(rawValue: 0x02)
     }
 
     // MARK: - Capability Minima

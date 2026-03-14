@@ -52,6 +52,12 @@ extension MatterMessage {
 
     /// Maximum Matter message size over UDP.
     public static let maxUDPPayloadSize = 1280
+
+    /// Overhead added by encryption (exchange header, MIC, framing).
+    public static let encryptedMessageOverhead = 42
+
+    /// Maximum usable payload size for Interaction Model messages over UDP.
+    public static let maxIMPayloadSize = 1232
 }
 
 // MARK: - Encoding (Unsecured)

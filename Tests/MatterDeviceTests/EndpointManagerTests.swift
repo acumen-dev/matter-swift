@@ -221,12 +221,12 @@ struct EndpointManagerTests {
     // MARK: - Command Tests
 
     @Test("Invoke On command changes attribute in store")
-    func invokeOnCommand() throws {
+    func invokeOnCommand() async throws {
         let (manager, store) = makeManager()
         let ep = EndpointID(rawValue: 3)
         manager.addEndpoint(makeOnOffEndpoint(id: ep))
 
-        _ = try manager.handleCommand(
+        _ = try await manager.handleCommand(
             path: CommandPath(endpointID: ep, clusterID: .onOff, commandID: OnOffCluster.Command.on),
             fields: nil
         )
@@ -236,13 +236,13 @@ struct EndpointManagerTests {
     }
 
     @Test("Invoke Toggle command flips state")
-    func invokeToggleCommand() throws {
+    func invokeToggleCommand() async throws {
         let (manager, store) = makeManager()
         let ep = EndpointID(rawValue: 3)
         manager.addEndpoint(makeOnOffEndpoint(id: ep))
 
         // Initial state is false, toggle should make it true
-        _ = try manager.handleCommand(
+        _ = try await manager.handleCommand(
             path: CommandPath(endpointID: ep, clusterID: .onOff, commandID: OnOffCluster.Command.toggle),
             fields: nil
         )
@@ -251,7 +251,7 @@ struct EndpointManagerTests {
         #expect(value1 == .bool(true))
 
         // Toggle again should make it false
-        _ = try manager.handleCommand(
+        _ = try await manager.handleCommand(
             path: CommandPath(endpointID: ep, clusterID: .onOff, commandID: OnOffCluster.Command.toggle),
             fields: nil
         )
@@ -260,16 +260,16 @@ struct EndpointManagerTests {
         #expect(value2 == .bool(false))
     }
 
-    @Test("Handle command on non-existent endpoint returns nil")
-    func commandNonExistentEndpoint() throws {
+    @Test("Handle command on non-existent endpoint returns nil response")
+    func commandNonExistentEndpoint() async throws {
         let (manager, _) = makeManager()
 
-        let result = try manager.handleCommand(
+        let (response, _) = try await manager.handleCommand(
             path: CommandPath(endpointID: EndpointID(rawValue: 99), clusterID: .onOff, commandID: OnOffCluster.Command.on),
             fields: nil
         )
 
-        #expect(result == nil)
+        #expect(response == nil)
     }
 
     // MARK: - Remove & PartsList Tests
@@ -353,7 +353,7 @@ struct EndpointManagerTests {
     // MARK: - Multiple Endpoints
 
     @Test("Multiple endpoints work independently")
-    func multipleEndpointsIndependent() throws {
+    func multipleEndpointsIndependent() async throws {
         let (manager, store) = makeManager()
         let ep3 = EndpointID(rawValue: 3)
         let ep4 = EndpointID(rawValue: 4)
@@ -361,7 +361,7 @@ struct EndpointManagerTests {
         manager.addEndpoint(makeOnOffEndpoint(id: ep4))
 
         // Turn on ep3 only
-        _ = try manager.handleCommand(
+        _ = try await manager.handleCommand(
             path: CommandPath(endpointID: ep3, clusterID: .onOff, commandID: OnOffCluster.Command.on),
             fields: nil
         )

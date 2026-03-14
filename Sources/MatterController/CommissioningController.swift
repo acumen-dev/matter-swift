@@ -64,6 +64,10 @@ public struct CommissioningController: Sendable {
         /// Fabric index of the controller.
         public var fabricIndex: FabricIndex?
 
+        /// Attestation challenge from the PASE session keys (16 bytes).
+        /// Used to verify the attestation signature in the AttestationResponse.
+        public var attestationChallenge: Data?
+
         public init() {}
     }
 
@@ -135,6 +139,12 @@ public struct CommissioningController: Sendable {
         var ctx = context
         ctx.paseSession = session
         ctx.responderSessionID = responderSessionID
+
+        // Extract attestation challenge from the session keys (attestationKey bytes).
+        // Used later in attestation validation (§11.17.6.1).
+        if let attKey = session.attestationKey {
+            ctx.attestationChallenge = attKey.withUnsafeBytes { Data($0) }
+        }
 
         return (pake3, ctx)
     }
@@ -389,6 +399,139 @@ public struct CommissioningController: Sendable {
             fabricIndex: fabricIndex,
             vendorID: vendorID
         )
+    }
+
+    // MARK: - Attestation Validation
+
+    /// Build a `CertificateChainRequest` invoke to retrieve the DAC from the device.
+    ///
+    /// - Parameter certificateType: 1 = DAC, 2 = PAI.
+    /// - Returns: TLV-encoded InvokeRequest.
+    public func buildCertificateChainRequest(certificateType: UInt8 = 1) -> Data {
+        IMClient.invokeCommandRequest(
+            endpointID: .root,
+            clusterID: ClusterID(rawValue: 0x003E),
+            commandID: OperationalCredentialsCluster.Command.certificateChainRequest,
+            commandFields: .structure([
+                .init(tag: .contextSpecific(0), value: .unsignedInt(UInt64(certificateType)))
+            ])
+        )
+    }
+
+    /// Build an `AttestationRequest` invoke with a random 32-byte nonce.
+    ///
+    /// - Returns: Tuple of (TLV-encoded InvokeRequest, nonce sent).
+    public func buildAttestationRequest() -> (message: Data, nonce: Data) {
+        var nonceBytes = [UInt8](repeating: 0, count: 32)
+        for i in 0..<32 { nonceBytes[i] = UInt8.random(in: 0...255) }
+        let nonce = Data(nonceBytes)
+
+        let message = IMClient.invokeCommandRequest(
+            endpointID: .root,
+            clusterID: ClusterID(rawValue: 0x003E),
+            commandID: OperationalCredentialsCluster.Command.attestationRequest,
+            commandFields: .structure([
+                .init(tag: .contextSpecific(0), value: .octetString(nonce))
+            ])
+        )
+
+        return (message, nonce)
+    }
+
+    /// Parse the `CertificateChainResponse` and return the raw DER certificate bytes.
+    public func handleCertificateChainResponse(_ response: Data) throws -> Data {
+        let responseElement = try IMClient.parseInvokeResponse(response)
+
+        guard let element = responseElement,
+              case .structure(let fields) = element,
+              let certData = fields.first(where: { $0.tag == .contextSpecific(0) })?.value.dataValue else {
+            throw ControllerError.attestationValidationFailed("CertificateChainResponse missing certificate data")
+        }
+
+        return certData
+    }
+
+    /// Validate an `AttestationResponse` against the sent nonce and PASE session attestation challenge.
+    ///
+    /// Performs:
+    /// 1. Parses `attestationElements` TLV — verifies the echoed nonce matches `sentNonce`.
+    /// 2. Verifies `attestationSignature` using the DAC public key:
+    ///    `ECDSA-SHA256(dacPublicKey, attestationElements || attestationChallenge)`.
+    ///
+    /// - Parameters:
+    ///   - response: TLV-encoded InvokeResponse containing the AttestationResponse.
+    ///   - sentNonce: The 32-byte nonce originally sent in the AttestationRequest.
+    ///   - attestationChallenge: 16-byte challenge from the PASE session keys.
+    ///   - dacPublicKey: The device's DAC public key (P-256) retrieved via CertificateChainRequest.
+    /// - Throws: `ControllerError.attestationValidationFailed` if any check fails.
+    public func validateAttestationResponse(
+        response: Data,
+        sentNonce: Data,
+        attestationChallenge: Data,
+        dacPublicKey: P256.Signing.PublicKey
+    ) throws {
+        let responseElement = try IMClient.parseInvokeResponse(response)
+
+        guard let element = responseElement,
+              case .structure(let fields) = element else {
+            throw ControllerError.attestationValidationFailed("AttestationResponse: missing or invalid response element")
+        }
+
+        // Field 0: attestationElements (octet string containing TLV)
+        guard let attestationElementsData = fields.first(where: { $0.tag == .contextSpecific(0) })?.value.dataValue else {
+            throw ControllerError.attestationValidationFailed("AttestationResponse: missing attestationElements (tag 0)")
+        }
+
+        // Field 1: attestationSignature (DER-encoded ECDSA signature, 64 bytes raw)
+        guard let sigData = fields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue else {
+            throw ControllerError.attestationValidationFailed("AttestationResponse: missing attestationSignature (tag 1)")
+        }
+
+        // Decode attestationElements TLV and verify nonce echo (tag 2)
+        let (_, elementsElement) = try TLVDecoder.decode(attestationElementsData)
+        guard case .structure(let elemFields) = elementsElement else {
+            throw ControllerError.attestationValidationFailed("AttestationElements: expected TLV structure")
+        }
+
+        guard let echoedNonce = elemFields.first(where: { $0.tag == .contextSpecific(2) })?.value.dataValue else {
+            throw ControllerError.attestationValidationFailed("AttestationElements: missing nonce echo (tag 2)")
+        }
+
+        guard echoedNonce == sentNonce else {
+            throw ControllerError.attestationValidationFailed("AttestationElements: nonce mismatch — echoed nonce does not match sent nonce")
+        }
+
+        // Verify attestation signature: ECDSA-SHA256(dacKey, attestationElements || attestationChallenge)
+        let messageToVerify = attestationElementsData + attestationChallenge
+
+        do {
+            let sig = try P256.Signing.ECDSASignature(derRepresentation: sigData)
+            guard dacPublicKey.isValidSignature(sig, for: messageToVerify) else {
+                throw ControllerError.attestationValidationFailed("AttestationResponse: signature verification failed")
+            }
+        } catch let error as ControllerError {
+            throw error
+        } catch {
+            throw ControllerError.attestationValidationFailed("AttestationResponse: failed to parse signature — \(error)")
+        }
+    }
+
+    /// Extract the P-256 public key from a DER-encoded X.509 certificate.
+    ///
+    /// Searches for the uncompressed point marker (0x04) followed by 64 bytes
+    /// in the SubjectPublicKeyInfo structure of the certificate.
+    public func extractPublicKeyFromCertificate(_ derCert: Data) throws -> P256.Signing.PublicKey {
+        for i in 0..<derCert.count {
+            if derCert[derCert.startIndex + i] == 0x04 && i + 64 < derCert.count {
+                let pubKeyData = derCert[(derCert.startIndex + i)..<(derCert.startIndex + i + 65)]
+                do {
+                    return try P256.Signing.PublicKey(x963Representation: pubKeyData)
+                } catch {
+                    continue
+                }
+            }
+        }
+        throw ControllerError.attestationValidationFailed("Could not extract P-256 public key from DER certificate")
     }
 
     // MARK: - CSR Parsing

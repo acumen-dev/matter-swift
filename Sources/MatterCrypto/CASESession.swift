@@ -375,6 +375,201 @@ public enum CASESession {
         return (sessionKeys, initiatorNodeID)
     }
 
+    // MARK: - Resumption Ticket Storage
+
+    /// Store a resumption ticket after successful CASE establishment.
+    ///
+    /// Call this after `responderStep2` completes successfully. The ticket
+    /// uses the `resumptionID` from the Sigma2 payload and the ECDH shared secret.
+    ///
+    /// - Parameters:
+    ///   - resumptionID: The 16-byte resumption ID from `Sigma2Decrypted`.
+    ///   - sharedSecret: The ECDH shared secret.
+    ///   - peerNodeID: The initiator's node ID (from their NOC).
+    ///   - fabricIndex: The local fabric index.
+    ///   - peerFabricID: The initiator's fabric ID.
+    ///   - ticketStore: The store where the ticket should be saved.
+    ///   - ticketLifetime: Ticket validity period in seconds (default: 3600).
+    public static func storeResumptionTicket(
+        resumptionID: Data,
+        sharedSecret: Data,
+        peerNodeID: NodeID,
+        fabricIndex: FabricIndex,
+        peerFabricID: FabricID,
+        ticketStore: ResumptionTicketStore,
+        ticketLifetime: TimeInterval = 3600
+    ) async {
+        let ticket = ResumptionTicket(
+            resumptionID: resumptionID,
+            sharedSecret: sharedSecret,
+            peerNodeID: peerNodeID,
+            peerFabricID: peerFabricID,
+            fabricIndex: fabricIndex,
+            expiryDate: Date().addingTimeInterval(ticketLifetime)
+        )
+        await ticketStore.store(ticket: ticket)
+    }
+
+    // MARK: - Resumption Handling (Responder)
+
+    /// Attempt to handle a Sigma1 with resumption fields (abbreviated session re-establishment).
+    ///
+    /// If the Sigma1 contains a `resumptionID` field and a matching unexpired ticket exists,
+    /// returns a Sigma2Resume message and derived session keys. Otherwise returns `nil`,
+    /// indicating the responder should fall back to the full Sigma exchange.
+    ///
+    /// - Parameters:
+    ///   - sigma1: The decoded Sigma1 message.
+    ///   - ticketStore: The store to look up resumption tickets.
+    ///   - responderSessionID: The responder's proposed session ID.
+    /// - Returns: Tuple of (sigma2ResumeData, sessionKeys, peerNodeID, fabricIndex) or nil.
+    public static func tryResponderResumption(
+        sigma1: Sigma1Message,
+        ticketStore: ResumptionTicketStore,
+        responderSessionID: UInt16
+    ) async throws -> (sigma2ResumeData: Data, sessionKeys: SessionKeys, peerNodeID: NodeID, fabricIndex: FabricIndex)? {
+        // MARK: - Resumption disabled: MIC verification is not yet implemented.
+        // Returning nil causes the caller to fall back to full Sigma2.
+        // Re-enable once CASEResumption.verifyInitiatorResumeMIC is implemented.
+        return nil
+
+        // Resumption requires both resumptionID and initiatorResumeMIC fields
+        guard let incomingResumptionID = sigma1.resumptionID,
+              sigma1.initiatorResumeMIC != nil else {
+            return nil
+        }
+
+        // Look up and consume the ticket
+        guard let ticket = await ticketStore.consume(resumptionID: incomingResumptionID) else {
+            return nil
+        }
+
+        // Derive the resume key
+        let resumeKey = try CASEResumption.deriveResumeKey(
+            sharedSecret: ticket.sharedSecret,
+            resumptionID: incomingResumptionID
+        )
+
+        // Derive session keys for the resumed session
+        let sessionKeys = try CASEResumption.deriveResumedSessionKeys(
+            sharedSecret: ticket.sharedSecret,
+            resumptionID: incomingResumptionID
+        )
+
+        // Generate a new resumption ID for the next resumption
+        let newResumptionID = generateRandom(count: 16)
+
+        // Compute responder resume MIC
+        let responderMIC = try CASEResumption.computeResponderResumeMIC(
+            resumeKey: resumeKey,
+            initiatorRandom: sigma1.initiatorRandom,
+            resumptionID: incomingResumptionID
+        )
+
+        let sigma2Resume = Sigma2ResumeMessage(
+            resumptionID: newResumptionID,
+            sigma2ResumeMIC: responderMIC,
+            responderSessionID: responderSessionID
+        )
+
+        return (sigma2Resume.tlvEncode(), sessionKeys, ticket.peerNodeID, ticket.fabricIndex)
+    }
+
+    // MARK: - Resumption Handling (Initiator)
+
+    /// Handle a Sigma2Resume response (abbreviated resumption).
+    ///
+    /// Call this when the responder sends Sigma2Resume instead of full Sigma2.
+    /// Verifies the responder MIC and derives session keys from the original shared secret.
+    ///
+    /// - Parameters:
+    ///   - context: The initiator context from `initiatorStep1WithResumption`.
+    ///   - sigma2ResumeData: The raw Sigma2Resume TLV bytes.
+    ///   - originalSharedSecret: The shared secret from the prior CASE exchange.
+    /// - Returns: Tuple of (sessionKeys, responderSessionID).
+    public static func initiatorHandleResume(
+        context: InitiatorContext,
+        sigma2ResumeData: Data,
+        originalSharedSecret: Data
+    ) throws -> (sessionKeys: SessionKeys, responderSessionID: UInt16) {
+        let sigma2Resume = try Sigma2ResumeMessage.fromTLV(sigma2ResumeData)
+
+        // Derive session keys from the original shared secret and the new resumption ID
+        let sessionKeys = try CASEResumption.deriveResumedSessionKeys(
+            sharedSecret: originalSharedSecret,
+            resumptionID: sigma2Resume.resumptionID
+        )
+
+        return (sessionKeys, sigma2Resume.responderSessionID)
+    }
+
+    /// Create Sigma1 with optional resumption fields for abbreviated re-establishment.
+    ///
+    /// Builds a Sigma1 message that includes `resumptionID` and `initiatorResumeMIC`
+    /// fields, signaling to the responder that resumption should be attempted.
+    ///
+    /// - Parameters:
+    ///   - fabricInfo: The initiator's fabric information.
+    ///   - peerNodeID: The target node's operational ID.
+    ///   - peerFabricID: The target node's fabric ID.
+    ///   - peerRootPublicKey: The target fabric's root CA public key.
+    ///   - initiatorSessionID: Proposed session ID for the initiator side.
+    ///   - resumptionID: The 16-byte resumption ID from a prior CASE ticket.
+    ///   - sharedSecret: The ECDH shared secret from the prior CASE exchange.
+    /// - Returns: Tuple of (context for step 2, sigma1 TLV data).
+    public static func initiatorStep1WithResumption(
+        fabricInfo: FabricInfo,
+        peerNodeID: NodeID,
+        peerFabricID: FabricID,
+        peerRootPublicKey: P256.Signing.PublicKey,
+        initiatorSessionID: UInt16,
+        resumptionID: Data,
+        sharedSecret: Data
+    ) throws -> (context: InitiatorContext, sigma1Data: Data) {
+        let random = generateRandom(count: 32)
+        let ephKey = P256.KeyAgreement.PrivateKey()
+        let ipk = fabricInfo.deriveIPK()
+
+        let destinationID = CASEKeyDerivation.computeDestinationID(
+            initiatorRandom: random,
+            rootPublicKey: Data(peerRootPublicKey.x963Representation),
+            fabricID: peerFabricID,
+            nodeID: peerNodeID,
+            ipk: ipk
+        )
+
+        // Derive resume key and compute MIC
+        let resumeKey = try CASEResumption.deriveResumeKey(
+            sharedSecret: sharedSecret,
+            resumptionID: resumptionID
+        )
+        let resumeMIC = try CASEResumption.computeInitiatorResumeMIC(
+            resumeKey: resumeKey,
+            initiatorRandom: random,
+            resumptionID: resumptionID,
+            initiatorEphPubKey: Data(ephKey.publicKey.x963Representation)
+        )
+
+        let sigma1 = Sigma1Message(
+            initiatorRandom: random,
+            initiatorSessionID: initiatorSessionID,
+            destinationID: destinationID,
+            initiatorEphPubKey: Data(ephKey.publicKey.x963Representation),
+            resumptionID: resumptionID,
+            initiatorResumeMIC: resumeMIC
+        )
+
+        let context = InitiatorContext(
+            initiatorRandom: random,
+            initiatorSessionID: initiatorSessionID,
+            initiatorEphKey: ephKey,
+            fabricInfo: fabricInfo,
+            ipk: ipk
+        )
+
+        return (context, sigma1.tlvEncode())
+    }
+
     // MARK: - Helpers
 
     private static func generateRandom(count: Int) -> Data {

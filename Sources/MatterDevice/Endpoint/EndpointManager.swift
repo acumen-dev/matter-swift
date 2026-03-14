@@ -21,6 +21,11 @@ public final class EndpointManager: @unchecked Sendable {
     /// The aggregator endpoint ID (manages PartsList of dynamic endpoints).
     public static let aggregatorEndpoint = EndpointID(rawValue: 1)
 
+    /// Optional event store for recording cluster events.
+    ///
+    /// Set this after initialisation to enable event recording when commands are handled.
+    public var eventStore: EventStore?
+
     public init(store: AttributeStore) {
         self.store = store
     }
@@ -28,6 +33,9 @@ public final class EndpointManager: @unchecked Sendable {
     // MARK: - Endpoint Registration
 
     /// Register an endpoint. Writes initial attributes from all cluster handlers to the store.
+    ///
+    /// After writing initial attributes, the Descriptor cluster's `serverList` attribute is
+    /// updated to reflect the actual registered handler cluster IDs (sorted ascending).
     ///
     /// If this is a dynamic endpoint (not root or aggregator), the aggregator's
     /// Descriptor PartsList is updated to include the new endpoint.
@@ -45,6 +53,11 @@ public final class EndpointManager: @unchecked Sendable {
                 )
             }
         }
+
+        // Auto-populate the Descriptor serverList from the registered handler cluster IDs.
+        // This overwrites any static serverList set by DescriptorHandler.initialAttributes()
+        // so that the list always reflects the actual cluster handlers present.
+        updateServerClusterList(for: config)
 
         // Update aggregator PartsList if this isn't the root or aggregator itself
         if config.endpointID != EndpointID(rawValue: 0) && config.endpointID != Self.aggregatorEndpoint {
@@ -76,6 +89,13 @@ public final class EndpointManager: @unchecked Sendable {
         Array(endpoints.keys).sorted { $0.rawValue < $1.rawValue }
     }
 
+    /// Find the cluster handler for a specific (endpoint, cluster) pair.
+    ///
+    /// Returns `nil` if the endpoint does not exist or the cluster is not registered.
+    public func clusterHandler(endpointID: EndpointID, clusterID: ClusterID) -> (any ClusterHandler)? {
+        endpoints[endpointID]?.clusterHandlers.first(where: { $0.clusterID == clusterID })
+    }
+
     // MARK: - IM Operations
 
     /// Read attributes matching the given paths.
@@ -88,7 +108,20 @@ public final class EndpointManager: @unchecked Sendable {
     /// Per the Matter spec, error statuses (unsupportedEndpoint, unsupportedCluster,
     /// unsupportedAttribute) are only returned for targeted (non-wildcard) paths.
     /// Wildcard reads silently skip non-matching entries.
-    public func readAttributes(_ paths: [AttributePath], fabricFiltered: Bool = true) -> [AttributeReportIB] {
+    ///
+    /// When `fabricFiltered` is `true` and `fabricIndex` is non-nil, fabric-scoped
+    /// attributes (as reported by each cluster's `isFabricScoped(attributeID:)`) are
+    /// filtered through `filterFabricScopedAttribute(attributeID:value:fabricIndex:)`.
+    ///
+    /// When `dataVersionFilters` is non-empty, clusters whose server-side `dataVersion`
+    /// matches the client's cached version are silently omitted from the response
+    /// (per Matter spec §8.5.1).
+    public func readAttributes(
+        _ paths: [AttributePath],
+        fabricFiltered: Bool = true,
+        fabricIndex: FabricIndex? = nil,
+        dataVersionFilters: [DataVersionFilter] = []
+    ) -> [AttributeReportIB] {
         var reports: [AttributeReportIB] = []
 
         // Track whether the original path contains any wildcard component.
@@ -134,10 +167,27 @@ public final class EndpointManager: @unchecked Sendable {
                         continue
                     }
 
+                    // Data version filtering (§8.5.1): if the client's cached dataVersion matches
+                    // the server's current dataVersion, skip all attributes for this cluster.
+                    if let filter = dataVersionFilters.first(where: { $0.endpointID == endpointID && $0.clusterID == clusterID }) {
+                        let currentVersion = store.dataVersion(endpoint: endpointID, cluster: clusterID)
+                        if filter.dataVersion == currentVersion.rawValue {
+                            continue
+                        }
+                    }
+
+                    // Resolve the cluster handler once for this (endpoint, cluster) pair — used for fabric filtering.
+                    let clusterHandler = endpoints[endpointID]?.clusterHandlers.first(where: { $0.clusterID == clusterID })
+
                     // Determine target attributes
                     if let attributeID = path.attributeID {
                         // Specific attribute
-                        if let value = store.get(endpoint: endpointID, cluster: clusterID, attribute: attributeID) {
+                        if var value = store.get(endpoint: endpointID, cluster: clusterID, attribute: attributeID) {
+                            // Apply fabric-scoped filtering when requested
+                            if fabricFiltered, let fi = fabricIndex, let handler = clusterHandler,
+                               handler.isFabricScoped(attributeID: attributeID) {
+                                value = handler.filterFabricScopedAttribute(attributeID: attributeID, value: value, fabricIndex: fi)
+                            }
                             reports.append(AttributeReportIB(attributeData: AttributeDataIB(
                                 dataVersion: store.dataVersion(endpoint: endpointID, cluster: clusterID),
                                 path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
@@ -153,7 +203,13 @@ public final class EndpointManager: @unchecked Sendable {
                         // Wildcard attribute: all attributes in this cluster
                         let allAttrs = store.allAttributes(endpoint: endpointID, cluster: clusterID)
                         let dataVersion = store.dataVersion(endpoint: endpointID, cluster: clusterID)
-                        for (attributeID, value) in allAttrs {
+                        for (attributeID, rawValue) in allAttrs {
+                            var value = rawValue
+                            // Apply fabric-scoped filtering when requested
+                            if fabricFiltered, let fi = fabricIndex, let handler = clusterHandler,
+                               handler.isFabricScoped(attributeID: attributeID) {
+                                value = handler.filterFabricScopedAttribute(attributeID: attributeID, value: value, fabricIndex: fi)
+                            }
                             reports.append(AttributeReportIB(attributeData: AttributeDataIB(
                                 dataVersion: dataVersion,
                                 path: AttributePath(endpointID: endpointID, clusterID: clusterID, attributeID: attributeID),
@@ -210,23 +266,90 @@ public final class EndpointManager: @unchecked Sendable {
 
     /// Handle a command invocation. Routes to the appropriate cluster handler.
     ///
-    /// Returns `nil` if the endpoint or cluster doesn't exist — the caller should
-    /// return an unsupported-endpoint or unsupported-cluster status.
-    public func handleCommand(path: CommandPath, fields: TLVElement?) throws -> TLVElement? {
+    /// After the command is handled, any events returned by `generatedEvents` are
+    /// recorded in `eventStore` (if set). Returns recorded events so the caller can
+    /// notify subscriptions.
+    ///
+    /// Returns `nil` response payload if the endpoint or cluster doesn't exist — the
+    /// caller should return an unsupported-endpoint or unsupported-cluster status.
+    public func handleCommand(path: CommandPath, fields: TLVElement?) async throws -> (response: TLVElement?, recordedEvents: [StoredEvent]) {
         guard let config = endpoints[path.endpointID] else {
-            return nil
+            return (nil, [])
         }
 
         guard let handler = config.clusterHandlers.first(where: { $0.clusterID == path.clusterID }) else {
-            return nil
+            return (nil, [])
         }
 
-        return try handler.handleCommand(
+        let response = try handler.handleCommand(
             commandID: path.commandID,
             fields: fields,
             store: store,
             endpointID: path.endpointID
         )
+
+        // Collect and record generated events
+        let clusterEvents = handler.generatedEvents(
+            commandID: path.commandID,
+            endpointID: path.endpointID,
+            store: store
+        )
+
+        var recorded: [StoredEvent] = []
+        if let evStore = eventStore, !clusterEvents.isEmpty {
+            let timestampMs = UInt64(Date().timeIntervalSince1970 * 1000)
+            for clusterEvent in clusterEvents {
+                let number = await evStore.record(
+                    endpointID: path.endpointID,
+                    clusterID: path.clusterID,
+                    eventID: clusterEvent.eventID,
+                    priority: clusterEvent.priority,
+                    timestampMs: timestampMs,
+                    data: clusterEvent.data,
+                    isUrgent: clusterEvent.isUrgent
+                )
+                recorded.append(StoredEvent(
+                    endpointID: path.endpointID,
+                    clusterID: path.clusterID,
+                    eventID: clusterEvent.eventID,
+                    eventNumber: number,
+                    priority: clusterEvent.priority,
+                    timestampMs: timestampMs,
+                    data: clusterEvent.data,
+                    isUrgent: clusterEvent.isUrgent
+                ))
+            }
+        }
+
+        return (response, recorded)
+    }
+
+    /// Read events matching the given paths and optional minimum event number.
+    ///
+    /// Returns an array of `EventReportIB` suitable for inclusion in a `ReportData` message.
+    /// If no `eventStore` is configured, returns an empty array.
+    ///
+    /// - Parameters:
+    ///   - paths: Event paths to match (nil fields are wildcards).
+    ///   - eventMin: If set, only return events with event number >= this value.
+    public func readEvents(_ paths: [EventPath], eventMin: EventNumber? = nil) async -> [EventReportIB] {
+        guard let evStore = eventStore else { return [] }
+        let events = await evStore.query(paths: paths, eventMin: eventMin)
+        return events.map { stored in
+            let eventPath = EventPath(
+                endpointID: stored.endpointID,
+                clusterID: stored.clusterID,
+                eventID: stored.eventID
+            )
+            let data = EventDataIB(
+                path: eventPath,
+                eventNumber: stored.eventNumber,
+                priority: stored.priority,
+                epochTimestampMs: stored.timestampMs > 0 ? stored.timestampMs : nil,
+                data: stored.data
+            )
+            return EventReportIB(eventData: data)
+        }
     }
 
     // MARK: - Internal
@@ -242,6 +365,24 @@ public final class EndpointManager: @unchecked Sendable {
             cluster: .descriptor,
             attribute: DescriptorCluster.Attribute.partsList,
             value: partsListValue
+        )
+    }
+
+    /// Update the Descriptor cluster's `serverList` attribute for an endpoint to reflect
+    /// the actual registered cluster handler IDs (sorted ascending).
+    ///
+    /// This is called after `addEndpoint` so that the server list is always in sync with
+    /// the registered handlers, overriding any static list passed to `DescriptorHandler`.
+    private func updateServerClusterList(for config: EndpointConfig) {
+        let clusterIDs = config.clusterHandlers
+            .map { $0.clusterID.rawValue }
+            .sorted()
+            .map { TLVElement.unsignedInt(UInt64($0)) }
+        store.set(
+            endpoint: config.endpointID,
+            cluster: .descriptor,
+            attribute: DescriptorCluster.Attribute.serverList,
+            value: .array(clusterIDs)
         )
     }
 }

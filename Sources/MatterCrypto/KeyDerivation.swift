@@ -53,6 +53,38 @@ public enum KeyDerivation {
         )
     }
 
+    /// Derive a group operational key from an epoch key per Matter spec §4.16.2.2.1.
+    ///
+    /// Uses HKDF-SHA256 with:
+    /// - `salt`: compressedFabricID as 8-byte big-endian Data
+    /// - `info`: "GroupKey v1.0" UTF-8
+    /// - `outputByteCount`: 16 (128-bit AES key)
+    ///
+    /// - Parameters:
+    ///   - epochKey: The 16-byte epoch key from the GroupKeySet.
+    ///   - compressedFabricID: The compressed fabric ID (8 bytes, big-endian).
+    /// - Returns: A 16-byte symmetric key suitable for AES-128-CCM group message encryption.
+    public static func deriveGroupOperationalKey(epochKey: Data, compressedFabricID: UInt64) -> SymmetricKey {
+        let ikm = SymmetricKey(data: epochKey)
+        // Salt: compressedFabricID as 8-byte big-endian
+        var saltBytes = Data(count: 8)
+        saltBytes[0] = UInt8((compressedFabricID >> 56) & 0xFF)
+        saltBytes[1] = UInt8((compressedFabricID >> 48) & 0xFF)
+        saltBytes[2] = UInt8((compressedFabricID >> 40) & 0xFF)
+        saltBytes[3] = UInt8((compressedFabricID >> 32) & 0xFF)
+        saltBytes[4] = UInt8((compressedFabricID >> 24) & 0xFF)
+        saltBytes[5] = UInt8((compressedFabricID >> 16) & 0xFF)
+        saltBytes[6] = UInt8((compressedFabricID >> 8) & 0xFF)
+        saltBytes[7] = UInt8(compressedFabricID & 0xFF)
+        let info = Data("GroupKey v1.0".utf8)
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: ikm,
+            salt: saltBytes,
+            info: info,
+            outputByteCount: 16
+        )
+    }
+
     /// Derive SPAKE2+ confirmation keys from Ka.
     ///
     /// Produces 32 bytes:

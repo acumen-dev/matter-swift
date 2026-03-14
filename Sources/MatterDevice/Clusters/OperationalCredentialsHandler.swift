@@ -42,6 +42,12 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         endpointID: EndpointID
     ) throws -> TLVElement? {
         switch commandID {
+        case OperationalCredentialsCluster.Command.attestationRequest:
+            return try handleAttestationRequest(fields: fields)
+
+        case OperationalCredentialsCluster.Command.certificateChainRequest:
+            return try handleCertificateChainRequest(fields: fields)
+
         case OperationalCredentialsCluster.Command.csrRequest:
             return try handleCSRRequest(fields: fields)
 
@@ -62,6 +68,85 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         }
     }
 
+    // MARK: - AttestationRequest
+
+    /// Handle AttestationRequest command (0x00).
+    ///
+    /// Per Matter spec §11.17.6.1:
+    /// - Parses attestationNonce from the request
+    /// - Builds attestationElements TLV (CD, nonce, timestamp)
+    /// - Signs attestationElements || attestationChallenge with DAC key
+    /// - Returns AttestationResponse (0x01)
+    private func handleAttestationRequest(fields: TLVElement?) throws -> TLVElement {
+        guard let fields,
+              case .structure(let structFields) = fields,
+              let nonce = structFields.first(where: { $0.tag == .contextSpecific(0) })?.value.dataValue else {
+            // Return empty structure — commissioner will reject without valid elements
+            return TLVElement.structure([])
+        }
+
+        // Get attestation credentials from commissioning state
+        guard let credentials = commissioningState.attestationCredentials else {
+            return TLVElement.structure([])
+        }
+
+        // Build attestationElements TLV per Matter spec §11.17.6.2:
+        // Structure { 1: certificationDeclaration, 2: attestationNonce, 3: timestamp }
+        let timestamp: UInt32 = 0  // Matter epoch seconds — 0 for test devices
+        let attestationElements = TLVEncoder.encode(
+            .structure([
+                .init(tag: .contextSpecific(1), value: .octetString(credentials.certificationDeclaration)),
+                .init(tag: .contextSpecific(2), value: .octetString(nonce)),
+                .init(tag: .contextSpecific(3), value: .unsignedInt(UInt64(timestamp))),
+            ])
+        )
+
+        // Sign attestationElements || attestationChallenge with DAC private key
+        let challenge = commissioningState.attestationChallenge ?? Data()
+        let messageToSign = attestationElements + challenge
+        let signature = try credentials.dacPrivateKey.signature(for: messageToSign)
+
+        // Return AttestationResponse: { 0: attestationElements, 1: attestationSignature }
+        return TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .octetString(attestationElements)),
+            .init(tag: .contextSpecific(1), value: .octetString(Data(signature.derRepresentation))),
+        ])
+    }
+
+    // MARK: - CertificateChainRequest
+
+    /// Handle CertificateChainRequest command (0x02).
+    ///
+    /// Per Matter spec §11.17.6.3:
+    /// - certificateType 1 = DAC
+    /// - certificateType 2 = PAI
+    /// Returns CertificateChainResponse (0x03): { 0: certificate (DER bytes) }
+    private func handleCertificateChainRequest(fields: TLVElement?) throws -> TLVElement {
+        guard let fields,
+              case .structure(let structFields) = fields,
+              let certTypeValue = structFields.first(where: { $0.tag == .contextSpecific(0) })?.value.uintValue else {
+            return TLVElement.structure([])
+        }
+
+        guard let credentials = commissioningState.attestationCredentials else {
+            return TLVElement.structure([])
+        }
+
+        let certData: Data
+        switch UInt8(certTypeValue) {
+        case 1:
+            certData = credentials.dacCertificate
+        case 2:
+            certData = credentials.paiCertificate
+        default:
+            return TLVElement.structure([])
+        }
+
+        return TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .octetString(certData)),
+        ])
+    }
+
     // MARK: - CSRRequest
 
     private func handleCSRRequest(fields: TLVElement?) throws -> TLVElement {
@@ -78,12 +163,8 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         // Generate new operational key pair
         let opKey = commissioningState.generateOperationalKey(csrNonce: request.csrNonce)
 
-        // Build NOCSRElements TLV:
-        // Structure { 1: csr (octet string), 2: csrNonce (octet string) }
-        // The CSR is a DER-encoded PKCS#10 containing the public key.
-        // For simplicity, we encode just the raw public key (65 bytes, uncompressed P-256).
-        // Real Matter devices would produce a proper PKCS#10 CSR.
-        let csrData = buildSimpleCSR(publicKey: opKey.publicKey)
+        // Build a proper DER-encoded PKCS#10 CSR with the operational key
+        let csrData = try PKCS10CSRBuilder.buildCSR(privateKey: opKey)
 
         let nocsrElements = TLVEncoder.encode(
             .structure([
@@ -92,12 +173,23 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
             ])
         )
 
-        // Sign with a dummy attestation key (test/dev only — real devices use DAC)
-        let signature = try opKey.signature(for: nocsrElements)
+        // Sign nocsrElements || attestationChallenge with DAC key if available,
+        // otherwise fall back to the operational key (test/dev only).
+        let challenge = commissioningState.attestationChallenge ?? Data()
+        let messageToSign = nocsrElements + challenge
+
+        let attestationSignature: Data
+        if let credentials = commissioningState.attestationCredentials {
+            let sig = try credentials.dacPrivateKey.signature(for: messageToSign)
+            attestationSignature = Data(sig.derRepresentation)
+        } else {
+            let sig = try opKey.signature(for: messageToSign)
+            attestationSignature = Data(sig.derRepresentation)
+        }
 
         let response = OperationalCredentialsCluster.CSRResponse(
             nocsrElements: nocsrElements,
-            attestationSignature: Data(signature.derRepresentation)
+            attestationSignature: attestationSignature
         )
 
         return response.toTLVElement()
@@ -245,6 +337,42 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         ).toTLVElement()
     }
 
+    // MARK: - Fabric Scoping
+
+    /// NOCs list, fabrics list, and currentFabricIndex are all fabric-scoped.
+    public func isFabricScoped(attributeID: AttributeID) -> Bool {
+        attributeID == OperationalCredentialsCluster.Attribute.nocs
+            || attributeID == OperationalCredentialsCluster.Attribute.fabrics
+            || attributeID == OperationalCredentialsCluster.Attribute.currentFabricIndex
+    }
+
+    /// Filter fabric-scoped OperationalCredentials attributes.
+    ///
+    /// - NOCs list: filter entries by fabricIndex field (context tag `0xFE`).
+    /// - Fabrics list: filter entries by fabricIndex field (context tag `0xFE`).
+    /// - currentFabricIndex: return the requesting fabric's index directly.
+    public func filterFabricScopedAttribute(attributeID: AttributeID, value: TLVElement, fabricIndex: FabricIndex) -> TLVElement {
+        switch attributeID {
+        case OperationalCredentialsCluster.Attribute.nocs,
+             OperationalCredentialsCluster.Attribute.fabrics:
+            guard case .array(let elements) = value else { return value }
+            let filtered = elements.filter { element in
+                guard case .structure(let fields) = element,
+                      let fiValue = fields.first(where: { $0.tag == .contextSpecific(0xFE) })?.value.uintValue else {
+                    return false
+                }
+                return UInt8(fiValue) == fabricIndex.rawValue
+            }
+            return .array(filtered)
+
+        case OperationalCredentialsCluster.Attribute.currentFabricIndex:
+            return .unsignedInt(UInt64(fabricIndex.rawValue))
+
+        default:
+            return value
+        }
+    }
+
     // MARK: - Attribute Updates
 
     /// Update OperationalCredentials cluster attributes to reflect current fabric state.
@@ -266,50 +394,4 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         ).toTLVElement()
     }
 
-    /// Build a simple CSR-like structure containing the raw public key.
-    ///
-    /// Real Matter devices produce a proper DER-encoded PKCS#10 CSR.
-    /// For our bridge, we encode a minimal structure that the commissioner
-    /// can parse to extract the public key (uncompressed P-256, 65 bytes).
-    private func buildSimpleCSR(publicKey: P256.Signing.PublicKey) -> Data {
-        // Minimal DER PKCS#10 CSR structure
-        // For compatibility with CommissioningController.handleCSRResponse(),
-        // we produce a real PKCS#10 CSR-like DER structure.
-        // The public key is at a known offset that the controller parses.
-        let pubKeyData = Data(publicKey.x963Representation) // 65 bytes uncompressed
-        return buildDERCSR(publicKey: pubKeyData)
-    }
-
-    /// Build a minimal DER-encoded PKCS#10 CSR.
-    ///
-    /// Structure: SEQUENCE { SEQUENCE { version, subject, subjectPKInfo } }
-    /// The commissioner only needs to extract the public key from subjectPKInfo.
-    private func buildDERCSR(publicKey: Data) -> Data {
-        // SubjectPublicKeyInfo for P-256
-        let algOID: [UInt8] = [
-            0x30, 0x13,             // SEQUENCE (19 bytes)
-            0x06, 0x07,             // OID: 1.2.840.10045.2.1 (EC public key)
-            0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01,
-            0x06, 0x08,             // OID: 1.2.840.10045.3.1.7 (P-256)
-            0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07
-        ]
-
-        // BIT STRING wrapper for the public key
-        let bitString: [UInt8] = [0x03, UInt8(publicKey.count + 1), 0x00] + [UInt8](publicKey)
-
-        // SubjectPublicKeyInfo
-        let spkiContent = algOID + bitString
-        let spki: [UInt8] = [0x30, UInt8(spkiContent.count)] + spkiContent
-
-        // CertificationRequestInfo
-        let version: [UInt8] = [0x02, 0x01, 0x00]  // INTEGER 0
-        let subject: [UInt8] = [0x30, 0x00]          // Empty SEQUENCE (no subject DN)
-        let criContent = version + subject + spki
-        let cri: [UInt8] = [0x30, UInt8(criContent.count)] + criContent
-
-        // Outer SEQUENCE (no signature — simplified for bridge use)
-        let outer: [UInt8] = [0x30, UInt8(cri.count)] + cri
-
-        return Data(outer)
-    }
 }

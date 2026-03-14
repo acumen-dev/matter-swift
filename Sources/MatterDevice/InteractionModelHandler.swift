@@ -6,6 +6,78 @@ import MatterTypes
 import MatterModel
 import MatterProtocol
 
+// MARK: - IMHandleResult
+
+/// The result of handling an Interaction Model message.
+///
+/// Simple responses (write, invoke, status) carry one or more `(opcode, data)` pairs.
+/// Large read/subscribe reports that exceed the UDP MTU carry a `ChunkedReportContext`
+/// that delivers chunks one at a time as the client acknowledges each with a StatusResponse.
+public enum IMHandleResult: Sendable {
+    /// One or more response messages ready to send immediately.
+    case responses([(InteractionModelOpcode, Data)])
+    /// A multi-chunk report — send the first chunk, then deliver subsequent chunks
+    /// each time the client sends a StatusResponse.
+    case chunkedReport(ChunkedReportContext)
+
+    /// Convenience accessor: extract the response pairs if this is a `.responses` result.
+    /// Returns nil if this is a chunked report.
+    public var responsePairs: [(InteractionModelOpcode, Data)]? {
+        if case .responses(let pairs) = self { return pairs }
+        return nil
+    }
+
+    /// Convenience accessor: returns all (opcode, data) pairs from a `.responses` result,
+    /// or the first chunk encoded as a single pair from a `.chunkedReport`.
+    /// Useful for tests that only need to inspect simple responses.
+    public var allPairs: [(InteractionModelOpcode, Data)] {
+        switch self {
+        case .responses(let pairs):
+            return pairs
+        case .chunkedReport(var context):
+            var pairs: [(InteractionModelOpcode, Data)] = []
+            while let chunk = context.nextChunk() {
+                pairs.append((.reportData, chunk.tlvEncode()))
+            }
+            for trailing in context.trailingResponses {
+                pairs.append(trailing)
+            }
+            return pairs
+        }
+    }
+}
+
+/// Tracks chunked report delivery state for a single exchange.
+///
+/// Created by `InteractionModelHandler` when a report exceeds the UDP MTU.
+/// The caller sends `nextChunk()` to retrieve the next chunk to transmit, and
+/// checks `isComplete` to know when all chunks have been delivered.
+///
+/// `trailingResponses` are sent after the final chunk (e.g., a `SubscribeResponse`
+/// that must follow the last report chunk).
+public struct ChunkedReportContext: Sendable {
+    /// All report chunks.
+    public let chunks: [ReportData]
+    /// Additional `(opcode, data)` pairs to send after the final chunk is acknowledged.
+    public let trailingResponses: [(InteractionModelOpcode, Data)]
+    /// Index of the next chunk to deliver via `nextChunk()`.
+    public private(set) var nextChunkIndex: Int = 0
+    /// True when all chunks have been delivered.
+    public var isComplete: Bool { nextChunkIndex >= chunks.count }
+
+    public init(chunks: [ReportData], trailingResponses: [(InteractionModelOpcode, Data)] = []) {
+        self.chunks = chunks
+        self.trailingResponses = trailingResponses
+    }
+
+    /// Return the next chunk and advance the index. Returns nil when exhausted.
+    public mutating func nextChunk() -> ReportData? {
+        guard nextChunkIndex < chunks.count else { return nil }
+        defer { nextChunkIndex += 1 }
+        return chunks[nextChunkIndex]
+    }
+}
+
 /// Server-side Interaction Model message handler.
 ///
 /// Receives decoded IM messages and produces responses using the `EndpointManager`
@@ -22,11 +94,19 @@ import MatterProtocol
 /// When no context is provided (nil), no ACL enforcement is applied — backward
 /// compatible for tests that don't need ACL testing.
 ///
+/// Timed interaction enforcement:
+/// - A `TimedRequest` message records a time-bounded window for an exchange.
+/// - Subsequent `WriteRequest` or `InvokeRequest` with `timedRequest = true` must arrive
+///   within the window; otherwise the request is rejected with `timedRequestMismatch`.
+/// - Commands whose handler returns `requiresTimedInteraction == true` must be preceded
+///   by a `TimedRequest`; without one the response carries `needsTimedInteraction`.
+///
 /// ```swift
 /// let handler = InteractionModelHandler(
 ///     endpoints: endpointManager,
 ///     subscriptions: subscriptionManager,
-///     store: attributeStore
+///     store: attributeStore,
+///     timedRequestTracker: timedRequestTracker
 /// )
 ///
 /// let responses = try await handler.handleMessage(
@@ -34,6 +114,7 @@ import MatterProtocol
 ///     payload: requestData,
 ///     sessionID: session.id,
 ///     fabricIndex: session.fabricIndex,
+///     exchangeID: exchangeHeader.exchangeID,
 ///     requestContext: aclContext
 /// )
 /// ```
@@ -42,11 +123,24 @@ public struct InteractionModelHandler: Sendable {
     private let endpoints: EndpointManager
     private let subscriptions: SubscriptionManager
     private let store: AttributeStore
+    private let timedRequestTracker: TimedRequestTracker
+    private let chunkedWriteBuffer: ChunkedWriteBuffer
+    private let chunkedInvokeBuffer: ChunkedInvokeBuffer
 
-    public init(endpoints: EndpointManager, subscriptions: SubscriptionManager, store: AttributeStore) {
+    public init(
+        endpoints: EndpointManager,
+        subscriptions: SubscriptionManager,
+        store: AttributeStore,
+        timedRequestTracker: TimedRequestTracker = TimedRequestTracker(),
+        chunkedWriteBuffer: ChunkedWriteBuffer = ChunkedWriteBuffer(),
+        chunkedInvokeBuffer: ChunkedInvokeBuffer = ChunkedInvokeBuffer()
+    ) {
         self.endpoints = endpoints
         self.subscriptions = subscriptions
         self.store = store
+        self.timedRequestTracker = timedRequestTracker
+        self.chunkedWriteBuffer = chunkedWriteBuffer
+        self.chunkedInvokeBuffer = chunkedInvokeBuffer
     }
 
     // MARK: - Message Dispatch
@@ -58,39 +152,56 @@ public struct InteractionModelHandler: Sendable {
     ///   - payload: TLV-encoded message body.
     ///   - sessionID: Session this message arrived on.
     ///   - fabricIndex: Fabric of the session.
+    ///   - exchangeID: Exchange this message belongs to (used for timed window tracking).
     ///   - requestContext: Session context for ACL enforcement. Nil means no enforcement.
-    /// - Returns: Array of (responseOpcode, responsePayload) to send back.
-    ///            Most operations return a single response, but subscribe returns two
-    ///            (initial ReportData + SubscribeResponse).
+    /// - Returns: `IMHandleResult` — either immediate response pairs or a chunked report context.
     public func handleMessage(
         opcode: InteractionModelOpcode,
         payload: Data,
         sessionID: UInt16,
         fabricIndex: FabricIndex,
+        exchangeID: UInt16 = 0,
         requestContext: IMRequestContext? = nil
-    ) async throws -> [(InteractionModelOpcode, Data)] {
+    ) async throws -> IMHandleResult {
         switch opcode {
         case .readRequest:
-            return try handleRead(payload: payload, requestContext: requestContext)
+            return try await handleRead(payload: payload, requestContext: requestContext)
         case .writeRequest:
-            return try await handleWrite(payload: payload, requestContext: requestContext)
+            return try await handleWrite(payload: payload, exchangeID: exchangeID, requestContext: requestContext)
         case .invokeRequest:
-            return try await handleInvoke(payload: payload, requestContext: requestContext)
+            return try await handleInvoke(payload: payload, exchangeID: exchangeID, requestContext: requestContext)
         case .subscribeRequest:
             return try await handleSubscribe(payload: payload, sessionID: sessionID, fabricIndex: fabricIndex, requestContext: requestContext)
         case .statusResponse:
             return try handleStatusResponse(payload: payload)
+        case .timedRequest:
+            return try await handleTimedRequest(payload: payload, exchangeID: exchangeID)
         default:
-            return [(.statusResponse, IMStatusResponse(status: StatusIB.invalidAction.status).tlvEncode())]
+            return .responses([(.statusResponse, IMStatusResponse(status: StatusIB.invalidAction.status).tlvEncode())])
         }
+    }
+
+    // MARK: - Timed Request
+
+    /// Handle a TimedRequest message by recording the timeout window for the exchange.
+    ///
+    /// Returns a success StatusResponse. The actual write or invoke that follows must
+    /// arrive within the window.
+    private func handleTimedRequest(
+        payload: Data,
+        exchangeID: UInt16
+    ) async throws -> IMHandleResult {
+        let request = try TimedRequest.fromTLV(payload)
+        await timedRequestTracker.recordTimedRequest(exchangeID: exchangeID, timeoutMs: request.timeoutMs)
+        return .responses([(.statusResponse, IMStatusResponse.success.tlvEncode())])
     }
 
     // MARK: - Read
 
-    /// Handle a ReadRequest by reading attributes from the endpoint manager.
+    /// Handle a ReadRequest by reading attributes and events from the endpoint manager.
     ///
-    /// Returns a single ReportData with `suppressResponse: true` (standalone read,
-    /// client does not send StatusResponse).
+    /// Returns a single ReportData with `suppressResponse: true` for small reports.
+    /// Large reports are split across multiple chunks using `ReportDataChunker`.
     ///
     /// ACL enforcement:
     /// - Each report is checked against the ACL with `View` privilege.
@@ -99,9 +210,15 @@ public struct InteractionModelHandler: Sendable {
     private func handleRead(
         payload: Data,
         requestContext: IMRequestContext?
-    ) throws -> [(InteractionModelOpcode, Data)] {
+    ) async throws -> IMHandleResult {
         let request = try ReadRequest.fromTLV(payload)
-        let reports = endpoints.readAttributes(request.attributeRequests, fabricFiltered: request.isFabricFiltered)
+        let fabricIndex = requestContext?.checkerContext.fabricIndex
+        let reports = endpoints.readAttributes(
+            request.attributeRequests,
+            fabricFiltered: request.isFabricFiltered,
+            fabricIndex: fabricIndex,
+            dataVersionFilters: request.dataVersionFilters
+        )
 
         // Build a set of wildcard request paths (nil endpointID = wildcard)
         let wildcardPaths = Set(
@@ -118,17 +235,39 @@ public struct InteractionModelHandler: Sendable {
             allWildcard: allWildcard
         )
 
-        let response = ReportData(
+        // Resolve event minimum from event filters (use the smallest eventMin across all filters)
+        let eventMin: EventNumber? = request.eventFilters.map(\.eventMin).min(by: { $0.rawValue < $1.rawValue })
+
+        // Read events matching requested paths
+        let eventReports = await endpoints.readEvents(request.eventRequests, eventMin: eventMin)
+
+        // Chunk the report data (suppressResponse=true on the final chunk for standalone reads)
+        let chunker = ReportDataChunker()
+        let chunks = chunker.chunk(
             subscriptionID: nil,
             attributeReports: filteredReports,
-            suppressResponse: true
+            eventReports: eventReports,
+            suppressResponseOnFinal: true
         )
-        return [(.reportData, response.tlvEncode())]
+
+        if chunks.count == 1 {
+            return .responses([(.reportData, chunks[0].tlvEncode())])
+        } else {
+            return .chunkedReport(ChunkedReportContext(chunks: chunks))
+        }
     }
 
     // MARK: - Write
 
     /// Handle a WriteRequest by writing attributes via the endpoint manager.
+    ///
+    /// Chunked write support:
+    /// - If `request.moreChunkedMessages == true`, the request is buffered until the
+    ///   final chunk arrives. Intermediate chunks receive a success StatusResponse.
+    ///
+    /// Timed write enforcement:
+    /// - If `request.timedRequest == true`, the exchange must have a valid timed window;
+    ///   otherwise all writes are rejected with `timedRequestMismatch` (0xCB).
     ///
     /// ACL enforcement:
     /// - Each write is checked before execution.
@@ -137,9 +276,30 @@ public struct InteractionModelHandler: Sendable {
     /// - Denied writes produce `unsupportedAccess` status without executing.
     private func handleWrite(
         payload: Data,
+        exchangeID: UInt16,
         requestContext: IMRequestContext?
-    ) async throws -> [(InteractionModelOpcode, Data)] {
-        let request = try WriteRequest.fromTLV(payload)
+    ) async throws -> IMHandleResult {
+        let rawRequest = try WriteRequest.fromTLV(payload)
+
+        // Handle chunked write reassembly
+        guard let request = await chunkedWriteBuffer.addChunk(exchangeID: exchangeID, request: rawRequest) else {
+            // More chunks expected — acknowledge with success StatusResponse
+            return .responses([(.statusResponse, IMStatusResponse.success.tlvEncode())])
+        }
+
+        // Timed interaction window enforcement
+        if request.timedRequest {
+            let windowResult = await timedRequestTracker.consumeTimedWindow(exchangeID: exchangeID)
+            if windowResult != .valid {
+                // Reject all writes — timedRequestMismatch (0xCB)
+                let timedMismatchStatus = StatusIB(status: IMStatusCode.timedRequestMismatch.rawValue)
+                let rejectedStatuses = request.writeRequests.map { writeReq in
+                    AttributeStatusIB(path: writeReq.path, status: timedMismatchStatus)
+                }
+                let response = WriteResponse(writeResponses: rejectedStatuses)
+                return .responses([(.writeResponse, response.tlvEncode())])
+            }
+        }
 
         if let ctx = requestContext {
             // Pre-filter writes: separate allowed from denied
@@ -186,7 +346,7 @@ public struct InteractionModelHandler: Sendable {
             }
 
             let response = WriteResponse(writeResponses: deniedStatuses + writeStatuses)
-            return [(.writeResponse, response.tlvEncode())]
+            return .responses([(.writeResponse, response.tlvEncode())])
         } else {
             // No ACL context — execute all writes
             let statuses = endpoints.writeAttributes(request.writeRequests)
@@ -197,7 +357,7 @@ public struct InteractionModelHandler: Sendable {
             }
 
             let response = WriteResponse(writeResponses: statuses)
-            return [(.writeResponse, response.tlvEncode())]
+            return .responses([(.writeResponse, response.tlvEncode())])
         }
     }
 
@@ -205,15 +365,46 @@ public struct InteractionModelHandler: Sendable {
 
     /// Handle an InvokeRequest by routing commands to cluster handlers.
     ///
+    /// Timed invoke enforcement:
+    /// - If `request.timedRequest == true`, the exchange must have a valid timed window;
+    ///   otherwise all commands are rejected with `timedRequestMismatch` (0xCB).
+    /// - Per-command: if a command requires timed interaction and `timedRequest == false`,
+    ///   that command is rejected with `needsTimedInteraction` (0xC6).
+    ///
     /// ACL enforcement:
     /// - Each command is checked before execution with `Operate` privilege.
     /// - Denied commands produce `unsupportedAccess` command status.
     private func handleInvoke(
         payload: Data,
+        exchangeID: UInt16,
         requestContext: IMRequestContext?
-    ) async throws -> [(InteractionModelOpcode, Data)] {
-        let request = try InvokeRequest.fromTLV(payload)
+    ) async throws -> IMHandleResult {
+        let rawRequest = try InvokeRequest.fromTLV(payload)
+
+        // Handle chunked invoke reassembly
+        guard let request = await chunkedInvokeBuffer.addChunk(exchangeID: exchangeID, request: rawRequest) else {
+            // More chunks expected — acknowledge with success StatusResponse
+            return .responses([(.statusResponse, IMStatusResponse.success.tlvEncode())])
+        }
+
         var invokeResponses: [InvokeResponseIB] = []
+
+        // Timed interaction window enforcement (whole-request check)
+        if request.timedRequest {
+            let windowResult = await timedRequestTracker.consumeTimedWindow(exchangeID: exchangeID)
+            if windowResult != .valid {
+                // Reject all commands — timedRequestMismatch (0xCB)
+                let timedMismatchStatus = StatusIB(status: IMStatusCode.timedRequestMismatch.rawValue)
+                let rejectedResponses = request.invokeRequests.map { cmd in
+                    InvokeResponseIB(status: CommandStatusIB(
+                        commandPath: cmd.commandPath,
+                        status: timedMismatchStatus
+                    ))
+                }
+                let response = InvokeResponse(invokeResponses: rejectedResponses)
+                return .responses([(.invokeResponse, response.tlvEncode())])
+            }
+        }
 
         for cmd in request.invokeRequests {
             // ACL check before execution
@@ -234,8 +425,24 @@ public struct InteractionModelHandler: Sendable {
                 }
             }
 
+            // Per-command timed interaction check:
+            // If the command requires a timed window but timedRequest was false, reject.
+            if !request.timedRequest {
+                let handler = endpoints.clusterHandler(
+                    endpointID: cmd.commandPath.endpointID,
+                    clusterID: cmd.commandPath.clusterID
+                )
+                if let handler, handler.requiresTimedInteraction(commandID: cmd.commandPath.commandID) {
+                    invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
+                        commandPath: cmd.commandPath,
+                        status: StatusIB(status: IMStatusCode.needsTimedInteraction.rawValue)
+                    )))
+                    continue
+                }
+            }
+
             do {
-                let result = try endpoints.handleCommand(path: cmd.commandPath, fields: cmd.commandFields)
+                let (result, recordedEvents) = try await endpoints.handleCommand(path: cmd.commandPath, fields: cmd.commandFields)
                 if let responseData = result {
                     // Command returned response data
                     invokeResponses.append(InvokeResponseIB(command: CommandDataIB(
@@ -248,6 +455,11 @@ public struct InteractionModelHandler: Sendable {
                         commandPath: cmd.commandPath,
                         status: .success
                     )))
+                }
+
+                // Notify subscriptions of events generated by this command
+                for event in recordedEvents {
+                    await subscriptions.eventRecorded(event)
                 }
             } catch {
                 invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
@@ -264,12 +476,15 @@ public struct InteractionModelHandler: Sendable {
         }
 
         let response = InvokeResponse(invokeResponses: invokeResponses)
-        return [(.invokeResponse, response.tlvEncode())]
+        return .responses([(.invokeResponse, response.tlvEncode())])
     }
 
     // MARK: - Subscribe
 
     /// Handle a SubscribeRequest by creating a subscription and returning the initial report.
+    ///
+    /// Large initial reports are split across multiple chunks using `ReportDataChunker`.
+    /// The `SubscribeResponse` is always sent after the final report chunk.
     ///
     /// ACL enforcement: Same as Read — the initial report is ACL-filtered.
     private func handleSubscribe(
@@ -277,7 +492,7 @@ public struct InteractionModelHandler: Sendable {
         sessionID: UInt16,
         fabricIndex: FabricIndex,
         requestContext: IMRequestContext?
-    ) async throws -> [(InteractionModelOpcode, Data)] {
+    ) async throws -> IMHandleResult {
         let request = try SubscribeRequest.fromTLV(payload)
 
         // Create subscription
@@ -288,7 +503,13 @@ public struct InteractionModelHandler: Sendable {
         )
 
         // Build initial report with all requested attributes
-        let reports = endpoints.readAttributes(request.attributeRequests, fabricFiltered: request.isFabricFiltered)
+        let subscribeFabricIndex = requestContext?.checkerContext.fabricIndex
+        let reports = endpoints.readAttributes(
+            request.attributeRequests,
+            fabricFiltered: request.isFabricFiltered,
+            fabricIndex: subscribeFabricIndex,
+            dataVersionFilters: request.dataVersionFilters
+        )
 
         // Build wildcard info for ACL filtering
         let wildcardPaths = Set(
@@ -305,21 +526,39 @@ public struct InteractionModelHandler: Sendable {
             allWildcard: allWildcard
         )
 
-        let initialReport = ReportData(
-            subscriptionID: subID,
-            attributeReports: filteredReports,
-            suppressResponse: false  // Client must send StatusResponse
-        )
+        // Read initial event reports for subscribed event paths
+        let eventMin: EventNumber? = request.eventFilters.map(\.eventMin).min(by: { $0.rawValue < $1.rawValue })
+        let eventReports = await endpoints.readEvents(request.eventRequests, eventMin: eventMin)
 
         let subResponse = SubscribeResponse(
             subscriptionID: subID,
             maxInterval: maxInterval
         )
 
-        return [
-            (.reportData, initialReport.tlvEncode()),
-            (.subscribeResponse, subResponse.tlvEncode())
-        ]
+        // Chunk the initial report (suppressResponse=false — client must ack each chunk)
+        let chunker = ReportDataChunker()
+        let chunks = chunker.chunk(
+            subscriptionID: subID,
+            attributeReports: filteredReports,
+            eventReports: eventReports,
+            suppressResponseOnFinal: false
+        )
+
+        if chunks.count == 1 {
+            // Single chunk — send both together
+            return .responses([
+                (.reportData, chunks[0].tlvEncode()),
+                (.subscribeResponse, subResponse.tlvEncode())
+            ])
+        } else {
+            // Multiple chunks — return as chunked report with subscribe response appended
+            // after the final chunk. We signal this by appending the SubscribeResponse
+            // data as a trailing response in the context.
+            return .chunkedReport(ChunkedReportContext(
+                chunks: chunks,
+                trailingResponses: [(.subscribeResponse, subResponse.tlvEncode())]
+            ))
+        }
     }
 
     // MARK: - Status Response
@@ -328,10 +567,10 @@ public struct InteractionModelHandler: Sendable {
     ///
     /// StatusResponse messages keep subscriptions alive. The status is decoded
     /// but no response message is needed.
-    private func handleStatusResponse(payload: Data) throws -> [(InteractionModelOpcode, Data)] {
+    private func handleStatusResponse(payload: Data) throws -> IMHandleResult {
         let _ = try IMStatusResponse.fromTLV(payload)
         // No response needed for status response acknowledgments
-        return []
+        return .responses([])
     }
 
     // MARK: - ACL Helpers

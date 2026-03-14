@@ -4,17 +4,17 @@
 import Foundation
 import MatterTypes
 import MatterModel
+import MatterCrypto
 
 /// Cluster handler for the Administrator Commissioning cluster (0x003C).
 ///
-/// Manages commissioning window lifecycle. Supports basic commissioning mode
-/// (advertised via mDNS with CM=1) with timeout enforcement. Enhanced
-/// commissioning with PAKE verifier injection is noted for future support.
+/// Manages commissioning window lifecycle. Supports both basic and enhanced
+/// commissioning window modes, with timeout enforcement.
 ///
 /// Per Matter spec §11.18:
+/// - `OpenCommissioningWindow` (enhanced mode) opens a window with an injected PAKE verifier
 /// - `OpenBasicCommissioningWindow` opens a time-limited window (180–900s)
 /// - `RevokeCommissioning` closes an open window
-/// - `OpenCommissioningWindow` (enhanced mode) is reserved for future implementation
 /// - Only one window can be open at a time
 public struct AdminCommissioningHandler: ClusterHandler, @unchecked Sendable {
 
@@ -51,6 +51,16 @@ public struct AdminCommissioningHandler: ClusterHandler, @unchecked Sendable {
         self.commissioningState = CommissioningState()
     }
 
+    // MARK: - Timed Interaction
+
+    /// OpenCommissioningWindow, OpenBasicCommissioningWindow, and RevokeCommissioning
+    /// are security-sensitive and require a timed interaction per §11.18.
+    public func requiresTimedInteraction(commandID: CommandID) -> Bool {
+        commandID == Command.openCommissioningWindow
+            || commandID == Command.openBasicCommissioningWindow
+            || commandID == Command.revokeCommissioning
+    }
+
     // MARK: - ClusterHandler
 
     public func initialAttributes() -> [(AttributeID, TLVElement)] {
@@ -79,12 +89,96 @@ public struct AdminCommissioningHandler: ClusterHandler, @unchecked Sendable {
             )
 
         case Command.openCommissioningWindow:
-            // Enhanced commissioning (PAKE verifier injection) — not yet supported
-            return nil
+            return try handleOpenCommissioningWindow(
+                fields: fields,
+                store: store,
+                endpointID: endpointID
+            )
 
         default:
             return nil
         }
+    }
+
+    // MARK: - OpenCommissioningWindow (Enhanced)
+
+    /// Handle OpenCommissioningWindow command (enhanced mode, §11.18.8.1).
+    ///
+    /// Command fields:
+    /// ```
+    /// Structure {
+    ///   0: commissioningTimeout (uint16, seconds)
+    ///   1: PAKEPasscodeVerifier (octet string, 97 bytes: W0[32] || L[65])
+    ///   2: discriminator (uint16, 12-bit)
+    ///   3: iterations (uint32, PBKDF2 iteration count)
+    ///   4: salt (octet string, 16–32 bytes)
+    /// }
+    /// ```
+    private func handleOpenCommissioningWindow(
+        fields: TLVElement?,
+        store: AttributeStore,
+        endpointID: EndpointID
+    ) throws -> TLVElement? {
+        // Reject if window already open
+        guard !commissioningState.isWindowOpen else {
+            return nil  // Busy — spec says return status BUSY
+        }
+
+        guard let fields,
+              case .structure(let structFields) = fields else {
+            return nil
+        }
+
+        // Parse commissioningTimeout (tag 0)
+        guard let timeoutValue = structFields.first(where: { $0.tag == .contextSpecific(0) })?.value.uintValue else {
+            return nil
+        }
+        let timeout = UInt16(min(max(timeoutValue, 180), 900))
+
+        // Parse PAKEPasscodeVerifier (tag 1) — 97 bytes: W0[32] || L[65]
+        guard let verifierData = structFields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue,
+              verifierData.count == 97 else {
+            return nil
+        }
+        let w0 = Data(verifierData[0..<32])
+        let L = Data(verifierData[32..<97])
+
+        // Parse discriminator (tag 2)
+        guard let discriminatorValue = structFields.first(where: { $0.tag == .contextSpecific(2) })?.value.uintValue else {
+            return nil
+        }
+        let discriminator = UInt16(discriminatorValue & 0x0FFF)  // Mask to 12 bits
+
+        // Parse iterations (tag 3)
+        guard let iterationsValue = structFields.first(where: { $0.tag == .contextSpecific(3) })?.value.uintValue else {
+            return nil
+        }
+        let iterations = UInt32(iterationsValue)
+
+        // Parse salt (tag 4) — 16–32 bytes
+        guard let salt = structFields.first(where: { $0.tag == .contextSpecific(4) })?.value.dataValue,
+              salt.count >= 16 && salt.count <= 32 else {
+            return nil
+        }
+
+        let injectedVerifier = InjectedPAKEVerifier(
+            w0: w0,
+            L: L,
+            discriminator: discriminator,
+            iterations: iterations,
+            salt: salt
+        )
+
+        commissioningState.openEnhancedWindow(
+            timeout: timeout,
+            verifier: injectedVerifier,
+            fabricIndex: commissioningState.windowAdminFabricIndex,
+            vendorId: commissioningState.windowAdminVendorId
+        )
+
+        updateWindowAttributes(store: store, endpointID: endpointID)
+
+        return nil
     }
 
     // MARK: - OpenBasicCommissioningWindow

@@ -20,10 +20,12 @@ extension ClusterID {
     public static let adminCommissioning            = ClusterID(rawValue: 0x003C)
     public static let operationalCredentials        = ClusterID(rawValue: 0x003E)
     public static let groupKeyManagement            = ClusterID(rawValue: 0x003F)
+    public static let timeSynchronization           = ClusterID(rawValue: 0x0038)
 
     // Bridge cluster
     public static let bridgedDeviceBasicInformation = ClusterID(rawValue: 0x0039)
     public static let fixedLabel                    = ClusterID(rawValue: 0x0040)
+    public static let binding                       = ClusterID(rawValue: 0x001E)
 
     // Application clusters
     public static let identify                      = ClusterID(rawValue: 0x0003)

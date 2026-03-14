@@ -35,4 +35,13 @@ public enum OnOffCluster {
         /// Toggle the device on/off state.
         public static let toggle = CommandID(rawValue: 0x02)
     }
+
+    // MARK: - Event IDs
+
+    public enum Event {
+        /// StateChange event — emitted when on/off state changes due to a command.
+        ///
+        /// Payload: Structure { 0: newState (bool) }
+        public static let stateChange = EventID(rawValue: 0x0000)
+    }
 }

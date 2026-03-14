@@ -38,7 +38,7 @@ struct BridgeSubscriptionTests {
             payload: subReq.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         let subResp = try SubscribeResponse.fromTLV(responses[1].1)
         return (bridge, light, subResp.subscriptionID)
@@ -68,7 +68,7 @@ struct BridgeSubscriptionTests {
             payload: subReq.tlvEncode(),
             sessionID: testSession,
             fabricIndex: testFabric
-        )
+        ).allPairs
 
         #expect(responses.count == 2)
         #expect(responses[0].0 == .reportData)
@@ -109,10 +109,12 @@ struct BridgeSubscriptionTests {
         let pending = await bridge.pendingReports()
         #expect(pending.count == 1)
 
-        let reportData = await bridge.buildReport(for: pending[0])
-        #expect(reportData != nil)
+        let reportChunks = await bridge.buildReport(for: pending[0])
+        #expect(reportChunks != nil)
+        let reportChunksList = try #require(reportChunks)
+        #expect(!reportChunksList.isEmpty)
 
-        let report = try ReportData.fromTLV(reportData!)
+        let report = reportChunksList[0]
         #expect(report.subscriptionID == subID)
         #expect(report.suppressResponse == false)
         #expect(report.attributeReports.count == 1)

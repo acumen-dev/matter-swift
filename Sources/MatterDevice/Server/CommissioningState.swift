@@ -40,6 +40,13 @@ public final class CommissioningState: @unchecked Sendable {
     /// Vendor ID of the admin that opened the current window.
     public private(set) var windowAdminVendorId: UInt16?
 
+    /// Injected PAKE verifier for an enhanced commissioning window (§11.18.8.1).
+    ///
+    /// When an `OpenCommissioningWindow` command includes a PAKE verifier, it is stored here
+    /// so that the PASE handler can use it instead of the device's default passcode-derived verifier.
+    /// Cleared when the window closes (via `closeWindow()`).
+    public private(set) var injectedPAKEVerifier: InjectedPAKEVerifier?
+
     // MARK: - Fail-Safe
 
     /// Whether the fail-safe timer is currently armed.
@@ -73,6 +80,13 @@ public final class CommissioningState: @unchecked Sendable {
 
     /// CSR nonce from the most recent CSRRequest.
     public private(set) var csrNonce: Data?
+
+    /// Device Attestation Credentials — set during server initialisation.
+    public var attestationCredentials: DeviceAttestationCredentials?
+
+    /// Attestation challenge derived from the active PASE session keys.
+    /// Set after PASE session establishment, used to sign attestation responses.
+    public var attestationChallenge: Data?
 
     // MARK: - Invoking Context
 
@@ -166,12 +180,40 @@ public final class CommissioningState: @unchecked Sendable {
         onWindowOpened?()
     }
 
+    /// Open an enhanced commissioning window with an injected PAKE verifier (§11.18.8.1).
+    ///
+    /// The injected verifier replaces the device's default passcode-derived verifier for any
+    /// PASE session that begins while this window is open. The window status is set to
+    /// `enhancedWindowOpen`.
+    ///
+    /// - Parameters:
+    ///   - timeout: Window duration in seconds (Matter spec: 180–900).
+    ///   - verifier: The injected PAKE verifier containing W0, L, discriminator, iterations, and salt.
+    ///   - fabricIndex: Fabric of the admin opening the window.
+    ///   - vendorId: Vendor ID of the admin opening the window.
+    ///   - now: Current time (injectable for testing).
+    public func openEnhancedWindow(
+        timeout: UInt16,
+        verifier: InjectedPAKEVerifier,
+        fabricIndex: FabricIndex? = nil,
+        vendorId: UInt16? = nil,
+        now: Date = Date()
+    ) {
+        windowStatus = .enhancedWindowOpen
+        windowExpiry = now.addingTimeInterval(TimeInterval(timeout))
+        windowAdminFabricIndex = fabricIndex
+        windowAdminVendorId = vendorId
+        injectedPAKEVerifier = verifier
+        onWindowOpened?()
+    }
+
     /// Close the commissioning window.
     public func closeWindow() {
         windowStatus = .notOpen
         windowExpiry = nil
         windowAdminFabricIndex = nil
         windowAdminVendorId = nil
+        injectedPAKEVerifier = nil
         onWindowClosed?()
     }
 
@@ -365,6 +407,45 @@ public final class CommissioningState: @unchecked Sendable {
         stagedAdminVendorId = nil
         stagedACLs = []
         // Keep operationalKey and csrNonce — they persist until next CSRRequest
+    }
+}
+
+// MARK: - Injected PAKE Verifier
+
+/// An injected PAKE verifier provided via the `OpenCommissioningWindow` command (§11.18.8.1).
+///
+/// Allows a commissioner to open an enhanced commissioning window by injecting a freshly-derived
+/// SPAKE2+ verifier (W0 || L), a discriminator, and PBKDF parameters. Any PASE session that
+/// begins while the enhanced window is open must use this verifier instead of the device's
+/// default passcode-derived verifier.
+public struct InjectedPAKEVerifier: Sendable {
+
+    /// W0 scalar — first 32 bytes of the 97-byte PAKEPasscodeVerifier field.
+    public let w0: Data
+
+    /// L point (uncompressed SEC1, 65 bytes) — remaining bytes of PAKEPasscodeVerifier.
+    public let L: Data
+
+    /// 12-bit discriminator for mDNS advertisement during the window (advisory).
+    public let discriminator: UInt16
+
+    /// PBKDF2 iteration count used to derive this verifier.
+    public let iterations: UInt32
+
+    /// PBKDF2 salt used to derive this verifier (16–32 bytes).
+    public let salt: Data
+
+    public init(w0: Data, L: Data, discriminator: UInt16, iterations: UInt32, salt: Data) {
+        self.w0 = w0
+        self.L = L
+        self.discriminator = discriminator
+        self.iterations = iterations
+        self.salt = salt
+    }
+
+    /// Build a `Spake2pVerifier` from the injected W0 and L values.
+    public func spake2pVerifier() -> Spake2pVerifier {
+        Spake2pVerifier(w0: w0, L: L)
     }
 }
 

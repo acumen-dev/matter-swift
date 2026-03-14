@@ -31,6 +31,9 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// CSR response could not be parsed.
     case invalidCSRResponse
 
+    /// Device attestation validation failed (nonce mismatch, invalid signature, etc.).
+    case attestationValidationFailed(String)
+
     // MARK: - Operational
 
     /// CASE session establishment failed.
