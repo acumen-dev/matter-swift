@@ -132,17 +132,18 @@ in `DataVersionFilteringTests`.
 - [x] Distinguish group-addressed messages from unicast in message processing
 - [x] Group membership table per endpoint
 - [x] Route group messages to member endpoints
-- [ ] Apply group ACL evaluation (AuthMode = Group)
+- [x] Apply group ACL evaluation (AuthMode = Group)
 - [x] Support GroupID in message header destination
 - [x] Suppress responses for group-cast messages (per spec) — `isGroupMessage` flag on IMRequestContext
 
 **Spec ref:** §4.16 — Group Communication
-**Status:** Mostly complete. `MatterDeviceServer.handleDatagram` detects group-addressed messages
+**Status:** Complete. `MatterDeviceServer.handleDatagram` detects group-addressed messages
 (DSIZ=0x02, session type=group) and routes to `handleGroupMessage`. That method looks up member
 endpoints via `GroupMembershipTable`, dispatches the IM operation to each, and suppresses responses
-(fire-and-forget per spec §4.16.2.1). Full group-key decryption (matching GroupID to key set via
-GroupKeyMap) is not yet implemented — currently uses the first CASE session for decryption, which
-covers the single-fabric bridge case. Group ACL evaluation (AuthMode=Group) is also pending.
+(fire-and-forget per spec §4.16.2.1). `ACLChecker.RequestContext` extended with `isGroupMessage`
+and `groupID` fields; `check()` evaluates ACEs with `authMode == .group` for group messages.
+Full group-key decryption (matching GroupID to key set via GroupKeyMap) is not yet implemented —
+currently uses the first CASE session for decryption, which covers the single-fabric bridge case.
 
 ### Proper PKCS#10 CSR Generation
 - [x] Generate real DER-encoded PKCS#10 CSR in OperationalCredentialsHandler
