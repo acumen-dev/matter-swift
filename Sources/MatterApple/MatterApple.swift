@@ -1,6 +1,7 @@
 // MatterApple.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 /// Apple platform transport implementations.
 ///
 /// Provides platform-specific networking using Apple frameworks:
@@ -11,3 +12,4 @@
 /// This module is only available on Apple platforms (macOS, iOS, tvOS, watchOS, visionOS).
 
 @_exported import MatterTransport
+#endif

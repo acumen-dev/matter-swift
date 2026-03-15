@@ -157,7 +157,10 @@ let package = Package(
                 "MatterDevice",
                 "MatterController",
                 "MatterTransport",
-                "MatterApple",
+                .target(name: "MatterApple",
+                        condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
+                .target(name: "MatterLinux",
+                        condition: .when(platforms: [.linux])),
             ]
         ),
 
@@ -185,7 +188,11 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterAppleTests",
-            dependencies: ["MatterApple", "MatterTransport"]
+            dependencies: [
+                .target(name: "MatterApple",
+                        condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
+                "MatterTransport",
+            ]
         ),
         .testTarget(
             name: "MatterLinuxTests",
@@ -196,7 +203,8 @@ let package = Package(
             dependencies: [
                 "MatterDevice",
                 "MatterController",
-                "MatterApple",
+                .target(name: "MatterApple",
+                        condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
                 "MatterCrypto",
                 "MatterProtocol",
                 "MatterTransport",

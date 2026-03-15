@@ -20,4 +20,8 @@
 @_exported import MatterDevice
 @_exported import MatterController
 @_exported import MatterTransport
+#if canImport(Darwin)
 @_exported import MatterApple
+#else
+@_exported import MatterLinux
+#endif

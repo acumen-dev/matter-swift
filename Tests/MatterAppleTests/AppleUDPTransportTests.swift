@@ -1,6 +1,7 @@
 // AppleUDPTransportTests.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 import Testing
 import Foundation
 import MatterApple
@@ -119,3 +120,4 @@ struct AppleUDPTransportTests {
         }
     }
 }
+#endif

@@ -1,6 +1,7 @@
 // AppleDiscovery.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 import Foundation
 import Network
 import MatterTransport
@@ -273,3 +274,4 @@ extension NWTXTRecord {
 public enum DiscoveryError: Error, Sendable {
     case resolveFailed(String)
 }
+#endif

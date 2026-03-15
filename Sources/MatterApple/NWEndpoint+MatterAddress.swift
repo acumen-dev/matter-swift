@@ -1,6 +1,7 @@
 // NWEndpoint+MatterAddress.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 import Foundation
 import Network
 import MatterTransport
@@ -39,3 +40,4 @@ extension NWEndpoint {
         .hostPort(host: NWEndpoint.Host(address.host), port: NWEndpoint.Port(rawValue: address.port)!)
     }
 }
+#endif

@@ -1,0 +1,53 @@
+# ci.yml
+# Runs on every push to main and on pull requests.
+# Tests both macOS (native) and Linux (Docker container).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── macOS ──────────────────────────────────────────────────────────────────
+  macos:
+    name: macOS
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test --parallel
+
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.1-noble
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test --parallel

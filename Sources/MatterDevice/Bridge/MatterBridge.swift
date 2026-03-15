@@ -169,7 +169,11 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged dimmable light (OnOff + LevelControl + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addDimmableLight(name: String) -> BridgedEndpoint {
+    public func addDimmableLight(
+        name: String,
+        onOffChanged: (@Sendable (Bool) -> Void)? = nil,
+        levelChanged: (@Sendable (UInt8) -> Void)? = nil
+    ) -> BridgedEndpoint {
         let epID = endpoints.nextEndpointID()
         let serverClusters: [ClusterID] = [.onOff, .levelControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
@@ -177,8 +181,8 @@ public final class MatterBridge: @unchecked Sendable {
             endpointID: epID,
             deviceTypes: [(.bridgedNode, 1), (.dimmableLight, 1)],
             clusterHandlers: [
-                OnOffHandler(),
-                LevelControlHandler(),
+                OnOffHandler(onChange: onOffChanged),
+                LevelControlHandler(onChange: levelChanged),
                 GroupsHandler(groupMembershipTable: groupMembershipTable, commissioningState: commissioningState),
                 IdentifyHandler(),
                 BridgedDeviceBasicInfoHandler(nodeLabel: name),
@@ -218,17 +222,27 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged color temperature light (OnOff + LevelControl + ColorControl + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addColorTemperatureLight(name: String) -> BridgedEndpoint {
+    public func addColorTemperatureLight(
+        name: String,
+        onOffChanged: (@Sendable (Bool) -> Void)? = nil,
+        levelChanged: (@Sendable (UInt8) -> Void)? = nil,
+        colorTemperatureChanged: (@Sendable (UInt16) -> Void)? = nil
+    ) -> BridgedEndpoint {
         let epID = endpoints.nextEndpointID()
         let serverClusters: [ClusterID] = [.onOff, .levelControl, .colorControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
+        let colorOnChange: (@Sendable (ColorControlChange) -> Void)? = colorTemperatureChanged.map { callback in
+            { @Sendable change in
+                if case .colorTemperature(let mireds) = change { callback(mireds) }
+            }
+        }
         let config = EndpointConfig(
             endpointID: epID,
             deviceTypes: [(.bridgedNode, 1), (.colorTemperatureLight, 1)],
             clusterHandlers: [
-                OnOffHandler(),
-                LevelControlHandler(),
-                ColorControlHandler(),
+                OnOffHandler(onChange: onOffChanged),
+                LevelControlHandler(onChange: levelChanged),
+                ColorControlHandler(onChange: colorOnChange),
                 GroupsHandler(groupMembershipTable: groupMembershipTable, commissioningState: commissioningState),
                 IdentifyHandler(),
                 BridgedDeviceBasicInfoHandler(nodeLabel: name),
@@ -244,17 +258,30 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged extended color light (OnOff + LevelControl + ColorControl + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addExtendedColorLight(name: String) -> BridgedEndpoint {
+    public func addExtendedColorLight(
+        name: String,
+        onOffChanged: (@Sendable (Bool) -> Void)? = nil,
+        levelChanged: (@Sendable (UInt8) -> Void)? = nil,
+        colorTemperatureChanged: (@Sendable (UInt16) -> Void)? = nil,
+        xyChanged: (@Sendable (UInt16, UInt16) -> Void)? = nil
+    ) -> BridgedEndpoint {
         let epID = endpoints.nextEndpointID()
         let serverClusters: [ClusterID] = [.onOff, .levelControl, .colorControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
+        let colorOnChange: (@Sendable (ColorControlChange) -> Void)? = (colorTemperatureChanged != nil || xyChanged != nil) ? { @Sendable change in
+            switch change {
+            case .colorTemperature(let mireds): colorTemperatureChanged?(mireds)
+            case .color(let x, let y): xyChanged?(x, y)
+            default: break
+            }
+        } : nil
         let config = EndpointConfig(
             endpointID: epID,
             deviceTypes: [(.bridgedNode, 1), (.extendedColorLight, 1)],
             clusterHandlers: [
-                OnOffHandler(),
-                LevelControlHandler(),
-                ColorControlHandler(),
+                OnOffHandler(onChange: onOffChanged),
+                LevelControlHandler(onChange: levelChanged),
+                ColorControlHandler(onChange: colorOnChange),
                 GroupsHandler(groupMembershipTable: groupMembershipTable, commissioningState: commissioningState),
                 IdentifyHandler(),
                 BridgedDeviceBasicInfoHandler(nodeLabel: name),
@@ -270,7 +297,10 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged on/off plug-in unit (OnOff + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addOnOffPlugInUnit(name: String) -> BridgedEndpoint {
+    public func addOnOffPlugInUnit(
+        name: String,
+        onOffChanged: (@Sendable (Bool) -> Void)? = nil
+    ) -> BridgedEndpoint {
         let epID = endpoints.nextEndpointID()
         let serverClusters: [ClusterID] = [.onOff, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
@@ -278,7 +308,7 @@ public final class MatterBridge: @unchecked Sendable {
             endpointID: epID,
             deviceTypes: [(.bridgedNode, 1), (.onOffPlugInUnit, 1)],
             clusterHandlers: [
-                OnOffHandler(),
+                OnOffHandler(onChange: onOffChanged),
                 GroupsHandler(groupMembershipTable: groupMembershipTable, commissioningState: commissioningState),
                 IdentifyHandler(),
                 BridgedDeviceBasicInfoHandler(nodeLabel: name),
@@ -318,7 +348,10 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged door lock (DoorLock + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addDoorLock(name: String) -> BridgedEndpoint {
+    public func addDoorLock(
+        name: String,
+        lockStateChanged: (@Sendable (UInt8) -> Void)? = nil
+    ) -> BridgedEndpoint {
         let epID = endpoints.nextEndpointID()
         let serverClusters: [ClusterID] = [.doorLock, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
@@ -326,7 +359,7 @@ public final class MatterBridge: @unchecked Sendable {
             endpointID: epID,
             deviceTypes: [(.bridgedNode, 1), (.doorLock, 1)],
             clusterHandlers: [
-                DoorLockHandler(),
+                DoorLockHandler(onChange: lockStateChanged),
                 GroupsHandler(groupMembershipTable: groupMembershipTable, commissioningState: commissioningState),
                 IdentifyHandler(),
                 BridgedDeviceBasicInfoHandler(nodeLabel: name),
@@ -366,7 +399,10 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged fan (FanControl + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addFan(name: String) -> BridgedEndpoint {
+    public func addFan(
+        name: String,
+        fanPercentChanged: (@Sendable (UInt8) -> Void)? = nil
+    ) -> BridgedEndpoint {
         let epID = endpoints.nextEndpointID()
         let serverClusters: [ClusterID] = [.fanControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
@@ -374,7 +410,11 @@ public final class MatterBridge: @unchecked Sendable {
             endpointID: epID,
             deviceTypes: [(.bridgedNode, 1), (.fan, 1)],
             clusterHandlers: [
-                FanControlHandler(),
+                FanControlHandler(onChange: fanPercentChanged.map { callback in
+                    { @Sendable change in
+                        if case .percentSetting(let pct) = change { callback(pct) }
+                    }
+                }),
                 GroupsHandler(groupMembershipTable: groupMembershipTable, commissioningState: commissioningState),
                 IdentifyHandler(),
                 BridgedDeviceBasicInfoHandler(nodeLabel: name),
