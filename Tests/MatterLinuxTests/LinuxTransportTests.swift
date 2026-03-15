@@ -7,7 +7,8 @@ import Foundation
 import MatterTransport
 import NIOCore
 
-@Suite("MatterLinux Tests")
+// Network tests bind real sockets; serialise to avoid port-sharing races.
+@Suite("MatterLinux Tests", .serialized)
 struct MatterLinuxTests {
 
     // MARK: - DNS Name Encoding
@@ -159,38 +160,42 @@ struct MatterLinuxTests {
 
     @Test("LinuxUDPTransport send/receive loopback")
     func udpLoopback() async throws {
-        let transport = LinuxUDPTransport()
-        try await transport.bind(port: 15541)
+        // Use two separate transports so the receive stream isn't consuming its
+        // own sends.  Bind both to ephemeral ports (port 0) so tests are
+        // independent of any fixed port.  Use IPv4 loopback; the dual-stack
+        // AF_INET6 socket accepts it via IPv4-mapped IPv6 internally.
+        let receiver = LinuxUDPTransport()
+        try await receiver.bind(port: 0)
+        let receiverPort = await receiver.boundPort() ?? 15541
+
+        let sender = LinuxUDPTransport()
+        try await sender.bind(port: 0)
 
         let testPayload = Data("hello-matter".utf8)
-        // The transport binds to "::" (AF_INET6). Send to the IPv6 loopback
-        // address "::1" — NIO rejects sending to an AF_INET sockaddr from an
-        // AF_INET6 socket with EINVAL.
-        let target = MatterAddress(host: "::1", port: 15541)
+        let target = MatterAddress(host: "127.0.0.1", port: receiverPort)
 
-        try await transport.send(testPayload, to: target)
+        try await sender.send(testPayload, to: target)
 
-        // Collect the first datagram with a 3-second timeout
-        let received: Data = try await withCheckedThrowingContinuation { cont in
-            Task {
-                var found = false
-                for await (data, _) in transport.receive() {
-                    if !found {
-                        found = true
-                        cont.resume(returning: data)
-                    }
-                    break
-                }
-                // Timeout
-                try await Task.sleep(for: .seconds(3))
-                if !found {
-                    cont.resume(throwing: CancellationError())
-                }
+        // Collect the first datagram with a 3-second timeout.
+        let stream = receiver.receive()
+        let received = await withTaskGroup(of: Data?.self) { group in
+            group.addTask {
+                for await (data, _) in stream { return data }
+                return nil
             }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+                return nil
+            }
+            let result = await group.next()!
+            group.cancelAll()
+            return result
         }
 
+        await receiver.close()
+        await sender.close()
+
         #expect(received == testPayload)
-        await transport.close()
     }
 
     // MARK: - MatterAddress / SocketAddress conversion
