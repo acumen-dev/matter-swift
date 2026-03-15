@@ -404,12 +404,16 @@ updated to include Groups cluster ID. 16 new tests in `GroupsHandlerTests`.
 **Spec ref:** §4.17 — BLE Transport
 
 ### Linux Transport
-- [ ] SwiftNIO UDP transport implementation
-- [ ] Avahi mDNS/DNS-SD integration
-- [ ] Alternative to MatterApple for non-Apple platforms
+- [x] SwiftNIO UDP transport implementation
+- [x] mDNS/DNS-SD integration (pure-Swift, no avahi dependency)
+- [x] Alternative to MatterApple for non-Apple platforms
 
-**Status:** Protocol abstractions exist (`MatterUDPTransport`, `MatterDiscovery`).
-Apple implementations in MatterApple module. Linux stubs mentioned in comments.
+**Status:** Complete. `MatterLinux` target added to Package.swift with `NIOCore` + `NIOPosix`
+dependencies. `LinuxUDPTransport` actor uses `DatagramBootstrap` bound to `"::"` (dual-stack
+IPv6). `LinuxDiscovery` actor implements pure-Swift mDNS (RFC 6762) over a multicast UDP
+socket (224.0.0.251:5353); advertises PTR/SRV/TXT records, browses via PTR queries, responds
+to incoming PTR queries. `MDNSMessage.swift` provides DNS wire-format encode/decode with
+pointer decompression. 5 tests in `MatterLinuxTests`.
 
 ### User Directed Commissioning (UDC)
 - [ ] UDC protocol messages (opcode defined, flow not implemented)

@@ -27,6 +27,8 @@ let package = Package(
         .library(name: "MatterTransport", targets: ["MatterTransport"]),
         // Apple platform transport (Network.framework, CryptoKit)
         .library(name: "MatterApple", targets: ["MatterApple"]),
+        // Linux platform transport (SwiftNIO, pure-Swift mDNS)
+        .library(name: "MatterLinux", targets: ["MatterLinux"]),
         // Convenience: re-exports everything for typical use
         .library(name: "SwiftMatter", targets: ["SwiftMatter"]),
     ],
@@ -36,6 +38,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
     ],
     targets: [
         // MARK: - Core Types
@@ -130,6 +133,18 @@ let package = Package(
             ]
         ),
 
+        // MARK: - Platform: Linux (SwiftNIO)
+
+        .target(
+            name: "MatterLinux",
+            dependencies: [
+                "MatterTransport",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+
         // MARK: - Convenience Re-export
 
         .target(
@@ -171,6 +186,10 @@ let package = Package(
         .testTarget(
             name: "MatterAppleTests",
             dependencies: ["MatterApple", "MatterTransport"]
+        ),
+        .testTarget(
+            name: "MatterLinuxTests",
+            dependencies: ["MatterLinux", "MatterTransport"]
         ),
         .testTarget(
             name: "IntegrationTests",
