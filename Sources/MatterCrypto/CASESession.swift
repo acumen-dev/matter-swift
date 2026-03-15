@@ -41,6 +41,8 @@ public enum CASESession {
         public let initiatorEphKey: P256.KeyAgreement.PrivateKey
         public let fabricInfo: FabricInfo
         public let ipk: Data
+        /// Set when resumption was attempted; used to verify the responder's Sigma2Resume MIC.
+        public let resumptionID: Data?
     }
 
     // MARK: - Responder Context
@@ -103,7 +105,8 @@ public enum CASESession {
             initiatorSessionID: initiatorSessionID,
             initiatorEphKey: ephKey,
             fabricInfo: fabricInfo,
-            ipk: ipk
+            ipk: ipk,
+            resumptionID: nil
         )
 
         return (context, sigma1.tlvEncode())
@@ -428,14 +431,9 @@ public enum CASESession {
         ticketStore: ResumptionTicketStore,
         responderSessionID: UInt16
     ) async throws -> (sigma2ResumeData: Data, sessionKeys: SessionKeys, peerNodeID: NodeID, fabricIndex: FabricIndex)? {
-        // MARK: - Resumption disabled: MIC verification is not yet implemented.
-        // Returning nil causes the caller to fall back to full Sigma2.
-        // Re-enable once CASEResumption.verifyInitiatorResumeMIC is implemented.
-        return nil
-
         // Resumption requires both resumptionID and initiatorResumeMIC fields
         guard let incomingResumptionID = sigma1.resumptionID,
-              sigma1.initiatorResumeMIC != nil else {
+              let initiatorMIC = sigma1.initiatorResumeMIC else {
             return nil
         }
 
@@ -449,6 +447,17 @@ public enum CASESession {
             sharedSecret: ticket.sharedSecret,
             resumptionID: incomingResumptionID
         )
+
+        // Verify the initiator's MIC before proceeding
+        guard try CASEResumption.verifyInitiatorResumeMIC(
+            resumeKey: resumeKey,
+            initiatorRandom: sigma1.initiatorRandom,
+            resumptionID: incomingResumptionID,
+            initiatorEphPubKey: sigma1.initiatorEphPubKey,
+            mic: initiatorMIC
+        ) else {
+            return nil
+        }
 
         // Derive session keys for the resumed session
         let sessionKeys = try CASEResumption.deriveResumedSessionKeys(
@@ -493,6 +502,22 @@ public enum CASESession {
         originalSharedSecret: Data
     ) throws -> (sessionKeys: SessionKeys, responderSessionID: UInt16) {
         let sigma2Resume = try Sigma2ResumeMessage.fromTLV(sigma2ResumeData)
+
+        // Verify the responder's MIC using the original resumption ID from Sigma1
+        if let originalResumptionID = context.resumptionID {
+            let resumeKey = try CASEResumption.deriveResumeKey(
+                sharedSecret: originalSharedSecret,
+                resumptionID: originalResumptionID
+            )
+            let expectedMIC = try CASEResumption.computeResponderResumeMIC(
+                resumeKey: resumeKey,
+                initiatorRandom: context.initiatorRandom,
+                resumptionID: originalResumptionID
+            )
+            guard expectedMIC == sigma2Resume.sigma2ResumeMIC else {
+                throw CASEError.decryptionFailed
+            }
+        }
 
         // Derive session keys from the original shared secret and the new resumption ID
         let sessionKeys = try CASEResumption.deriveResumedSessionKeys(
@@ -564,7 +589,8 @@ public enum CASESession {
             initiatorSessionID: initiatorSessionID,
             initiatorEphKey: ephKey,
             fabricInfo: fabricInfo,
-            ipk: ipk
+            ipk: ipk,
+            resumptionID: resumptionID
         )
 
         return (context, sigma1.tlvEncode())
