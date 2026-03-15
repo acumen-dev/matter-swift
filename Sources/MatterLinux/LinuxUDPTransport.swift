@@ -105,12 +105,7 @@ private final class MatterDatagramHandler: ChannelInboundHandler, @unchecked Sen
         let bytes = envelope.data.readBytes(length: envelope.data.readableBytes) ?? []
         let payload = Data(bytes)
 
-        let host: String
-        switch envelope.remoteAddress {
-        case .v4(let v4): host = v4.host
-        case .v6(let v6): host = v6.host
-        case .unixDomainSocket: return
-        }
+        guard let host = envelope.remoteAddress.ipAddress else { return }
         let port = UInt16(envelope.remoteAddress.port ?? 0)
         continuation.yield((payload, MatterAddress(host: host, port: port)))
     }

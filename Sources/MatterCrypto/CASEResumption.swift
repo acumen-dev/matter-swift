@@ -126,23 +126,23 @@ public enum CASEResumption {
     /// AES-128-CCM with empty plaintext — the 16-byte authentication tag serves as the MIC.
     ///
     /// - Key: resumeKey
-    /// - Nonce: "NCASE_SigmaS1" padded to 13 bytes
+    /// - Nonce: first 12 bytes of "NCASE_SigmaS1" (AES-GCM requires 12-byte nonces)
     /// - AAD: initiatorRandom || resumptionID || initiatorEphPubKey
-    ///
-    /// TODO: implement proper MIC using AES-128-CCM; currently returns a stub.
     public static func computeInitiatorResumeMIC(
         resumeKey: SymmetricKey,
         initiatorRandom: Data,
         resumptionID: Data,
         initiatorEphPubKey: Data
     ) throws -> Data {
-        // TODO: implement proper AES-128-CCM MIC
-        return Data(count: 16)
+        let nonce = Data("NCASE_SigmaS1".utf8).prefix(12)
+        var aad = Data()
+        aad.append(initiatorRandom)
+        aad.append(resumptionID)
+        aad.append(initiatorEphPubKey)
+        return try MessageEncryption.encrypt(plaintext: Data(), key: resumeKey, nonce: nonce, aad: aad)
     }
 
     /// Verify the initiator resume MIC.
-    ///
-    /// TODO: implement proper MIC verification using AES-128-CCM; currently returns true.
     public static func verifyInitiatorResumeMIC(
         resumeKey: SymmetricKey,
         initiatorRandom: Data,
@@ -150,8 +150,13 @@ public enum CASEResumption {
         initiatorEphPubKey: Data,
         mic: Data
     ) throws -> Bool {
-        // TODO: implement proper AES-128-CCM MIC verification
-        return true
+        let expected = try computeInitiatorResumeMIC(
+            resumeKey: resumeKey,
+            initiatorRandom: initiatorRandom,
+            resumptionID: resumptionID,
+            initiatorEphPubKey: initiatorEphPubKey
+        )
+        return expected == mic
     }
 
     /// Compute the responder resume MIC.
@@ -159,17 +164,18 @@ public enum CASEResumption {
     /// AES-128-CCM with empty plaintext — the 16-byte authentication tag serves as the MIC.
     ///
     /// - Key: resumeKey
-    /// - Nonce: "NCASE_SigmaS2" padded to 13 bytes
+    /// - Nonce: first 12 bytes of "NCASE_SigmaS2" (AES-GCM requires 12-byte nonces)
     /// - AAD: initiatorRandom || resumptionID
-    ///
-    /// TODO: implement proper MIC using AES-128-CCM; currently returns a stub.
     public static func computeResponderResumeMIC(
         resumeKey: SymmetricKey,
         initiatorRandom: Data,
         resumptionID: Data
     ) throws -> Data {
-        // TODO: implement proper AES-128-CCM MIC
-        return Data(count: 16)
+        let nonce = Data("NCASE_SigmaS2".utf8).prefix(12)
+        var aad = Data()
+        aad.append(initiatorRandom)
+        aad.append(resumptionID)
+        return try MessageEncryption.encrypt(plaintext: Data(), key: resumeKey, nonce: nonce, aad: aad)
     }
 
     // MARK: - Session Keys

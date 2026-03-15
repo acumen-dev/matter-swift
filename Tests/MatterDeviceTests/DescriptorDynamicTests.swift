@@ -200,11 +200,12 @@ struct DescriptorDynamicTests {
 
         let srvList = serverList(store: bridge.store, endpoint: light.endpointID)
 
-        // Dimmable light should have OnOff, LevelControl, Groups, BridgedDeviceBasicInformation, Descriptor
+        // Dimmable light should have OnOff, LevelControl, Groups, Identify, BridgedDeviceBasicInformation, Descriptor
         let expectedIDs: Set<UInt32> = [
             ClusterID.onOff.rawValue,
             ClusterID.levelControl.rawValue,
             ClusterID.groups.rawValue,
+            ClusterID.identify.rawValue,
             ClusterID.bridgedDeviceBasicInformation.rawValue,
             ClusterID.descriptor.rawValue
         ]
