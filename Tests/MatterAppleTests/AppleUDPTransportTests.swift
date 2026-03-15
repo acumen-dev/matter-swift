@@ -6,7 +6,10 @@ import Foundation
 import MatterApple
 import MatterTransport
 
-@Suite("AppleUDPTransport")
+// Network tests are serialized: they bind real sockets and using SO_REUSEPORT
+// means fixed-port tests can share a socket with a concurrent test, causing
+// the expected packet to be delivered to the wrong consumer.
+@Suite("AppleUDPTransport", .serialized)
 struct AppleUDPTransportTests {
 
     @Test("Bind to ephemeral port and close")
@@ -19,14 +22,15 @@ struct AppleUDPTransportTests {
     @Test("IPv4 loopback send and receive via IPv4-mapped socket")
     func ipv4LoopbackSendReceive() async throws {
         let receiver = AppleUDPTransport()
-        try await receiver.bind(port: 5541)
+        try await receiver.bind(port: 0)                          // ephemeral
+        let receiverPort = await receiver.boundPort() ?? 5541
 
         let sender = AppleUDPTransport()
         try await sender.bind(port: 0)
 
         let testData = Data([0x01, 0x02, 0x03, 0x04])
         // IPv4 address — transport converts to ::ffff:127.0.0.1 internally
-        let address = MatterAddress(host: "127.0.0.1", port: 5541)
+        let address = MatterAddress(host: "127.0.0.1", port: receiverPort)
 
         try await sender.send(testData, to: address)
 
@@ -54,14 +58,15 @@ struct AppleUDPTransportTests {
     @Test("IPv6 loopback send and receive")
     func ipv6LoopbackSendReceive() async throws {
         let receiver = AppleUDPTransport()
-        try await receiver.bind(port: 5542)
+        try await receiver.bind(port: 0)                          // ephemeral
+        let receiverPort = await receiver.boundPort() ?? 5542
 
         let sender = AppleUDPTransport()
         try await sender.bind(port: 0)
 
         let testData = Data([0xAA, 0xBB, 0xCC, 0xDD])
         // Native IPv6 loopback
-        let address = MatterAddress(host: "::1", port: 5542)
+        let address = MatterAddress(host: "::1", port: receiverPort)
 
         try await sender.send(testData, to: address)
 

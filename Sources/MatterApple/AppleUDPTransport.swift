@@ -109,6 +109,22 @@ public actor AppleUDPTransport: MatterUDPTransport {
         _receiveStream
     }
 
+    /// Returns the port the socket is currently bound to, or `nil` if not bound.
+    ///
+    /// Use after `bind(port: 0)` to discover the ephemeral port the OS assigned.
+    public func boundPort() -> UInt16? {
+        guard fd >= 0 else { return nil }
+        var addr = sockaddr_in6()
+        var addrLen = socklen_t(MemoryLayout<sockaddr_in6>.size)
+        let result = withUnsafeMutablePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                getsockname(fd, sockPtr, &addrLen)
+            }
+        }
+        guard result == 0 else { return nil }
+        return UInt16(bigEndian: addr.sin6_port)
+    }
+
     public func close() async {
         if fd >= 0 {
             Darwin.close(fd)
