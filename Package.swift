@@ -36,7 +36,6 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
     ],
     targets: [
         // MARK: - Core Types
@@ -121,12 +120,12 @@ let package = Package(
         ),
 
         // MARK: - Platform: Apple
+        // Note: MatterCrypto not needed here — crypto lives in the MatterCrypto module.
 
         .target(
             name: "MatterApple",
             dependencies: [
                 "MatterTransport",
-                "MatterCrypto",
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
