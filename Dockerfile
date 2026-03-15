@@ -6,7 +6,7 @@
 # Stage 2 (builder): compiles all targets.
 # Stage 3 (tester): default CMD runs the test suite.
 
-ARG SWIFT_VERSION=6.1
+ARG SWIFT_VERSION=6.2
 ARG UBUNTU_VERSION=noble
 
 FROM swift:${SWIFT_VERSION}-${UBUNTU_VERSION} AS deps

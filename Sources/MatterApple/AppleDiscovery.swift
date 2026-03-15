@@ -7,9 +7,15 @@ import Network
 import MatterTransport
 import Logging
 
-/// Apple platform mDNS/DNS-SD discovery using Network.framework.
+/// Apple platform mDNS/DNS-SD discovery using Network.framework (browsing/resolving)
+/// and NetService (advertising).
 ///
-/// Uses `NWBrowser` for browsing and `NWListener` for advertising.
+/// **Advertising** uses `NetService` which registers with `mDNSResponder` via IPC.
+/// This avoids binding to the service port — important because `AppleUDPTransport`
+/// already holds the Matter data socket on the same port.
+///
+/// **Browsing** and **resolving** use `NWBrowser` and `NWConnection` from
+/// Network.framework, which are better suited for asynchronous discovery.
 ///
 /// ```swift
 /// let discovery = AppleDiscovery()
@@ -33,22 +39,24 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
 
     // MARK: - Thread Safety
     //
-    // `advertiseListeners` and `browsers` are guarded by `lock`.
+    // `advertisedServices` and `browsers` are guarded by `lock`.
     // Rules:
     //   • Always acquire `lock` before reading or writing either collection.
-    //   • Never hold `lock` across an `await` or a Network.framework callback.
-    //   • Obtain the values to act on (cancel, etc.) under the lock, then act
-    //     outside the lock to avoid lock inversion with Network.framework internals.
+    //   • Never hold `lock` across an `await` or a callback.
 
     private let lock = NSLock()
 
     // MARK: - State
 
-    private let queue = DispatchQueue(label: "matter.discovery", qos: .userInitiated)
-    /// Active advertisements keyed by service name.
-    private var advertiseListeners: [String: NWListener] = [:]
+    /// Active advertisements keyed by service name. `NetService` keeps the DNS-SD
+    /// record alive with mDNSResponder as long as the object exists.
+    private var advertisedServices: [String: NetService] = [:]
     private var browsers: [NWBrowser] = []
+    private let queue = DispatchQueue(label: "matter.discovery", qos: .userInitiated)
     private let logger: Logger
+
+    /// Background run loop required by NetService for IPC with mDNSResponder.
+    private let serviceRunLoop: RunLoop
 
     // MARK: - Locking Helpers
 
@@ -62,65 +70,84 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
 
     public init(logger: Logger = Logger(label: "matter.apple.discovery")) {
         self.logger = logger
+
+        // Spin up a background thread with its own run loop.
+        // NetService.publish() must be called on a run-loop thread so that the
+        // underlying CFRunLoopSource can deliver IPC to mDNSResponder.
+        var capturedRunLoop: RunLoop?
+        let ready = DispatchSemaphore(value: 0)
+        let thread = Thread {
+            capturedRunLoop = RunLoop.current
+            // Add a dummy Port as a persistent input source. Without at least one
+            // source, RunLoop.run() returns immediately — causing any blocks
+            // scheduled via perform(inModes:block:) after the signal to be lost.
+            let keepAlivePort = Port()
+            RunLoop.current.add(keepAlivePort, forMode: .default)
+            ready.signal()
+            RunLoop.current.run()   // Runs until the process exits
+        }
+        thread.name = "matter.discovery.runloop"
+        thread.qualityOfService = .userInitiated
+        thread.start()
+        ready.wait()
+        serviceRunLoop = capturedRunLoop!
     }
 
     // MARK: - MatterDiscovery
 
     public func advertise(service: MatterServiceRecord) async throws {
-        let params = NWParameters.udp
-        params.allowLocalEndpointReuse = true
-
-        let nwPort = NWEndpoint.Port(rawValue: service.port) ?? .any
-        let listener = try NWListener(using: params, on: nwPort)
-
-        let txtRecord = NWTXTRecord.from(service.txtRecords)
-        listener.service = NWListener.Service(
-            name: service.name,
-            type: service.serviceType.rawValue,
-            domain: "local.",
-            txtRecord: txtRecord
-        )
-
-        // Accept but immediately cancel any inbound connections — we're
-        // only using the listener for its service advertisement.
-        listener.newConnectionHandler = { connection in
-            connection.cancel()
+        // Cancel any existing advertisement for this name (under lock).
+        let existing = withLock { () -> NetService? in
+            let s = advertisedServices[service.name]
+            advertisedServices.removeValue(forKey: service.name)
+            return s
+        }
+        if let s = existing {
+            let box = NetServiceBox(s)
+            scheduleOnServiceRunLoop { box.value.stop() }
         }
 
-        // Cancel any existing listener with the same name (under lock).
-        // The new listener is not stored until it reaches .ready state.
-        withLock { advertiseListeners[service.name]?.cancel() }
+        // Build TXT record payload.
+        let txtDict = service.txtRecords.mapValues { $0.data(using: .utf8) ?? Data() }
+        let txtData = NetService.data(fromTXTRecord: txtDict)
 
-        listener.start(queue: queue)
+        // Build the service type string including any DNS-SD subtypes.
+        // Format: "_primary._proto,_sub1,_sub2" — registers under _sub1._sub._primary._proto etc.
+        // Matter commissionable discovery requires subtypes like _CM, _L<disc>, _S<shortDisc>.
+        let typeString: String
+        if service.subtypes.isEmpty {
+            typeString = service.serviceType.rawValue
+        } else {
+            typeString = service.serviceType.rawValue + "," + service.subtypes.joined(separator: ",")
+        }
 
-        // Wait for listener to reach ready state. Use a `resumed` flag to
-        // guard against double-resume if the listener transitions through
-        // multiple states (e.g. .ready then .cancelled on stopAdvertising).
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            nonisolated(unsafe) var resumed = false
-            listener.stateUpdateHandler = { [weak self] state in
-                guard let self, !resumed else { return }
-                switch state {
-                case .ready:
-                    self.logger.info("Advertising '\(service.name)' as \(service.serviceType.rawValue)")
-                    resumed = true
-                    cont.resume()
-                case .failed(let error):
-                    self.logger.error("Advertise failed for '\(service.name)': \(error)")
-                    resumed = true
-                    cont.resume(throwing: error)
-                case .cancelled:
-                    self.logger.debug("Advertise cancelled: \(service.name)")
-                    resumed = true
-                    cont.resume(throwing: CancellationError())
-                default:
-                    break
-                }
+        // Create the NetService.
+        // NetService registers the DNS-SD SRV/TXT records with mDNSResponder
+        // via IPC — it does NOT bind to the service port. This avoids any
+        // conflict with the UDP transport socket on the same port.
+        let ns = NetService(
+            domain: "local.",
+            type: typeString,
+            name: service.name,
+            port: Int32(service.port)
+        )
+        ns.setTXTRecord(txtData)
+
+        // Store before scheduling so stopAdvertising() can cancel it immediately.
+        withLock { advertisedServices[service.name] = ns }
+
+        // Schedule publish on the run-loop thread and await its execution.
+        let box = NetServiceBox(ns)
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            scheduleOnServiceRunLoop {
+                box.value.schedule(in: .current, forMode: .default)
+                box.value.publish()
+                cont.resume()
             }
         }
 
-        // Store the listener only on success (under lock).
-        withLock { self.advertiseListeners[service.name] = listener }
+        let subtypeDesc = service.subtypes.isEmpty ? "" : " subtypes=[\(service.subtypes.joined(separator: ","))]"
+        logger.info("Advertising '\(service.name)' as \(service.serviceType.rawValue)\(subtypeDesc) on port \(service.port)")
     }
 
     public func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord> {
@@ -205,24 +232,34 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
     }
 
     public func stopAdvertising() async {
-        let toCancel = withLock { () -> [NWListener] in
-            let all = Array(advertiseListeners.values)
-            advertiseListeners.removeAll()
+        let toStop = withLock { () -> [NetService] in
+            let all = Array(advertisedServices.values)
+            advertisedServices.removeAll()
             return all
         }
-        toCancel.forEach { $0.cancel() }
+        for s in toStop {
+            let box = NetServiceBox(s)
+            scheduleOnServiceRunLoop { box.value.stop() }
+        }
     }
 
     public func stopAdvertising(name: String) async {
-        let listener = withLock { () -> NWListener? in
-            let l = advertiseListeners[name]
-            advertiseListeners.removeValue(forKey: name)
-            return l
+        let s = withLock { () -> NetService? in
+            let ns = advertisedServices[name]
+            advertisedServices.removeValue(forKey: name)
+            return ns
         }
-        listener?.cancel()
+        if let ns = s {
+            let box = NetServiceBox(ns)
+            scheduleOnServiceRunLoop { box.value.stop() }
+        }
     }
 
-    // MARK: - Internal
+    // MARK: - Private
+
+    private func scheduleOnServiceRunLoop(_ block: @escaping @Sendable () -> Void) {
+        serviceRunLoop.perform(inModes: [.default], block: block)
+    }
 
     /// Convert an `NWBrowser.Result` to a `MatterServiceRecord`.
     private func serviceRecord(
@@ -233,8 +270,6 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
             return nil
         }
 
-        // Extract TXT records from browse result metadata.
-        // NWTXTRecord conforms to Collection with Element = (key: String, value: Entry).
         var txtRecords: [String: String] = [:]
         if case .bonjour(let txtRecord) = result.metadata {
             for (key, entry) in txtRecord {
@@ -247,24 +282,10 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
         return MatterServiceRecord(
             name: name,
             serviceType: type,
-            host: "",   // Resolved later via resolve()
-            port: 0,    // Resolved later via resolve()
+            host: "",
+            port: 0,
             txtRecords: txtRecords
         )
-    }
-}
-
-// MARK: - NWTXTRecord Helpers
-
-extension NWTXTRecord {
-
-    /// Create an `NWTXTRecord` from a dictionary.
-    static func from(_ dictionary: [String: String]) -> NWTXTRecord {
-        var record = NWTXTRecord()
-        for (key, value) in dictionary {
-            record[key] = value
-        }
-        return record
     }
 }
 
@@ -273,5 +294,17 @@ extension NWTXTRecord {
 /// Errors specific to Apple platform discovery.
 public enum DiscoveryError: Error, Sendable {
     case resolveFailed(String)
+}
+
+// MARK: - Internal
+
+/// `@unchecked Sendable` box for `NetService`.
+///
+/// `NetService` predates Swift concurrency and does not conform to `Sendable`.
+/// All operations on the wrapped service are performed on the discovery run-loop
+/// thread, so concurrent access never occurs in practice.
+private struct NetServiceBox: @unchecked Sendable {
+    let value: NetService
+    init(_ value: NetService) { self.value = value }
 }
 #endif

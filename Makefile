@@ -1,7 +1,7 @@
 # Makefile — SwiftMatter build and test targets
 # Copyright 2026 Monagle Pty Ltd
 
-SWIFT_IMAGE  ?= swift:6.1-noble
+SWIFT_IMAGE  ?= swift:6.2-noble
 PROJECT_NAME  = swiftmatter
 PROJECT_DIR   = $(shell pwd)
 
