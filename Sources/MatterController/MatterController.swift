@@ -754,7 +754,7 @@ public actor MatterController {
     ///
     /// Gets or establishes a session, runs the operation. On failure,
     /// invalidates the session, re-establishes, and retries once.
-    private func withSessionRetry<T>(
+    private func withSessionRetry<T: Sendable>(
         nodeID: NodeID,
         operation: (SecureSession, MatterAddress) async throws -> T
     ) async throws -> T {

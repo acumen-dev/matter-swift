@@ -1,6 +1,7 @@
 // TestUDPChannel.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Darwin)
 import Foundation
 import MatterTransport
 
@@ -153,3 +154,4 @@ final class TestUDPChannel: @unchecked Sendable {
         case receiveFailed(Int32)
     }
 }
+#endif

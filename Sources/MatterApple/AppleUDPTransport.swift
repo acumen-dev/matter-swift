@@ -1,6 +1,7 @@
 // AppleUDPTransport.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 import Foundation
 import MatterTransport
 import Logging
@@ -248,3 +249,4 @@ enum TransportError: Error {
     case notBound
     case invalidAddress(String)
 }
+#endif
