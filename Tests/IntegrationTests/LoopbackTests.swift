@@ -1,6 +1,7 @@
 // LoopbackTests.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 import Testing
 import Foundation
 import Crypto
@@ -530,3 +531,4 @@ final class StubDiscovery: MatterDiscovery, @unchecked Sendable {
     }
     func stopAdvertising() async {}
 }
+#endif

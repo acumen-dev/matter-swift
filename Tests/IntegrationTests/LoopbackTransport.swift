@@ -1,6 +1,7 @@
 // LoopbackTransport.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Darwin)
 import Foundation
 import MatterTransport
 
@@ -154,3 +155,4 @@ enum LoopbackTransportError: Error {
     case sendFailed(Int32)
     case notBound
 }
+#endif

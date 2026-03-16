@@ -32,12 +32,19 @@ struct MatterDeviceServerTests {
         let boundPort = transport.boundPort
         #expect(boundPort == 5540)
 
+        // The initial advertisement is posted from a Task spawned by openBasicWindow;
+        // poll until it arrives so Linux schedulers (which are less eager than macOS)
+        // don't cause a spurious failure.
+        try await waitForAdvertisedCount(discovery, atLeast: 1)
+
         // Verify discovery was called
         let services = await discovery.advertisedServices
         #expect(services.count == 1)
-        #expect(services[0].serviceType == .commissionable)
-        #expect(services[0].txtRecords["D"] == "3840")
-        #expect(services[0].txtRecords["CM"] == "1")
+        if services.count >= 1 {
+            #expect(services[0].serviceType == .commissionable)
+            #expect(services[0].txtRecords["D"] == "3840")
+            #expect(services[0].txtRecords["CM"] == "1")
+        }
 
         await server.stop()
     }
@@ -93,7 +100,13 @@ struct MatterDeviceServerTests {
 
         // Step 1: Send PBKDFParamRequest
         var initiatorRandom = Data(count: 32)
-        initiatorRandom.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        initiatorRandom.withUnsafeMutableBytes { buf in
+            var rng = SystemRandomNumberGenerator()
+            buf.storeBytes(of: rng.next(), toByteOffset: 0,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 8,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 16, as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 24, as: UInt64.self)
+        }
 
         let pbkdfRequest = PASEMessages.PBKDFParamRequest(
             initiatorRandom: initiatorRandom,
@@ -270,6 +283,19 @@ struct MatterDeviceServerTests {
         while transport.sentCount < count {
             guard ContinuousClock.now < deadline else { return }
             try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// Poll until the mock discovery has at least `count` advertised services, or timeout.
+    private func waitForAdvertisedCount(
+        _ discovery: MockServerDiscovery,
+        atLeast count: Int,
+        timeout: Duration = .seconds(5)
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while await discovery.advertisedServices.count < count {
+            guard ContinuousClock.now < deadline else { return }
+            try await Task.sleep(for: .milliseconds(20))
         }
     }
 

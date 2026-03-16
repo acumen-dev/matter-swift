@@ -187,31 +187,22 @@ public actor MatterDeviceServer {
             }
         }
 
-        // Set initial window state based on fabric count
-        if bridge.commissioningState.fabrics.isEmpty {
-            // No fabrics — device is uncommissioned, open basic window
-            bridge.commissioningState.openBasicWindow(timeout: 900)
-        }
-        // Otherwise window stays closed (secure default)
-
         // Bind UDP transport
         try await transport.bind(port: config.port)
 
-        // Advertise via mDNS — CM reflects current window state
-        let cmValue = bridge.commissioningState.isWindowOpen ? "1" : "0"
-        let txtRecords = [
-            "D": "\(config.discriminator)",
-            "VP": "\(config.vendorId)+\(config.productId)",
-            "CM": cmValue,
-        ]
-
-        try await discovery.advertise(service: MatterServiceRecord(
-            name: "SwiftMatter-\(config.discriminator)",
-            serviceType: .commissionable,
-            host: "",
-            port: config.port,
-            txtRecords: txtRecords
-        ))
+        // Set initial window state based on fabric count.
+        // For uncommissioned devices, openBasicWindow fires onWindowOpened → Task { advertise CM=1 }.
+        // For commissioned devices, advertise CM=0 directly.
+        // Do NOT call advertise() here as well — that would race with the onWindowOpened Task
+        // and cause EADDRINUSE when both try to bind the same port concurrently.
+        if bridge.commissioningState.fabrics.isEmpty {
+            // No fabrics — device is uncommissioned, open basic window.
+            // The onWindowOpened callback (set above) will handle mDNS advertisement.
+            bridge.commissioningState.openBasicWindow(timeout: 900)
+        } else {
+            // Already commissioned — advertise commissionable with CM=0 (window closed).
+            await updateCommissioningAdvertisement(open: false)
+        }
 
         logger.info("Device server started on port \(config.port)")
 
@@ -485,7 +476,13 @@ public actor MatterDeviceServer {
 
         let responderSessionID = allocateSessionID()
         var responderRandom = Data(count: 32)
-        responderRandom.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        responderRandom.withUnsafeMutableBytes { buf in
+            var rng = SystemRandomNumberGenerator()
+            buf.storeBytes(of: rng.next(), toByteOffset: 0,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 8,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 16, as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 24, as: UInt64.self)
+        }
 
         let response = PASEMessages.PBKDFParamResponse(
             initiatorRandom: request.initiatorRandom,
@@ -984,7 +981,13 @@ public actor MatterDeviceServer {
 
     private func generateRandomSalt() -> Data {
         var salt = Data(count: 32)
-        salt.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        salt.withUnsafeMutableBytes { buf in
+            var rng = SystemRandomNumberGenerator()
+            buf.storeBytes(of: rng.next(), toByteOffset: 0,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 8,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 16, as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 24, as: UInt64.self)
+        }
         return salt
     }
 
@@ -1008,11 +1011,20 @@ public actor MatterDeviceServer {
     /// Update mDNS commissionable advertisement based on window state.
     private func updateCommissioningAdvertisement(open: Bool) async {
         let cmValue = open ? "1" : "0"
+        let shortDisc = (config.discriminator >> 8) & 0x0F
         let txtRecords = [
-            "D": "\(config.discriminator)",
+            "D":  "\(config.discriminator)",
             "VP": "\(config.vendorId)+\(config.productId)",
             "CM": cmValue,
+            "DN": "SwiftMatter Bridge",
         ]
+
+        // DNS-SD subtypes required for Matter commissioning discovery (Matter spec §4.3.1.1).
+        // Apple Home browses for _L<disc>._sub._matterc._udp to find devices by discriminator.
+        // _CM subtype signals that the commissioning window is open.
+        let subtypes: [String] = open
+            ? ["_CM", "_L\(config.discriminator)", "_S\(shortDisc)"]
+            : []
 
         do {
             try await discovery.advertise(service: MatterServiceRecord(
@@ -1020,7 +1032,8 @@ public actor MatterDeviceServer {
                 serviceType: .commissionable,
                 host: "",
                 port: config.port,
-                txtRecords: txtRecords
+                txtRecords: txtRecords,
+                subtypes: subtypes
             ))
             logger.debug("Updated commissionable mDNS: CM=\(cmValue)")
         } catch {

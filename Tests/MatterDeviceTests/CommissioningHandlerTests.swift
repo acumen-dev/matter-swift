@@ -224,7 +224,13 @@ struct OperationalCredentialsHandlerTests {
         populateStore(store, handler: handler, endpoint: ep0)
 
         var nonce = Data(count: 32)
-        nonce.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        nonce.withUnsafeMutableBytes { buf in
+            var rng = SystemRandomNumberGenerator()
+            buf.storeBytes(of: rng.next(), toByteOffset: 0,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 8,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 16, as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 24, as: UInt64.self)
+        }
 
         let request = OperationalCredentialsCluster.CSRRequest(csrNonce: nonce)
         let response = try handler.handleCommand(
@@ -252,7 +258,13 @@ struct OperationalCredentialsHandlerTests {
         populateStore(store, handler: handler, endpoint: ep0)
 
         var nonce = Data(count: 32)
-        nonce.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+        nonce.withUnsafeMutableBytes { buf in
+            var rng = SystemRandomNumberGenerator()
+            buf.storeBytes(of: rng.next(), toByteOffset: 0,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 8,  as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 16, as: UInt64.self)
+            buf.storeBytes(of: rng.next(), toByteOffset: 24, as: UInt64.self)
+        }
 
         let request = OperationalCredentialsCluster.CSRRequest(csrNonce: nonce)
         let response = try handler.handleCommand(

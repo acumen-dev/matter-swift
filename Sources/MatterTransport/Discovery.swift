@@ -20,19 +20,28 @@ public struct MatterServiceRecord: Sendable {
     public let host: String
     public let port: UInt16
     public let txtRecords: [String: String]
+    /// DNS-SD subtypes to register alongside the primary service type.
+    ///
+    /// For commissionable discovery, pass subtypes like `["_CM", "_L3840", "_S15"]`.
+    /// These are appended to the `regtype` as `_matterc._udp,_CM,_L3840,_S15`, which
+    /// registers under `_CM._sub._matterc._udp` etc. — required for Apple Home to locate
+    /// the device after reading the QR code discriminator.
+    public let subtypes: [String]
 
     public init(
         name: String,
         serviceType: MatterServiceType,
         host: String,
         port: UInt16,
-        txtRecords: [String: String] = [:]
+        txtRecords: [String: String] = [:],
+        subtypes: [String] = []
     ) {
         self.name = name
         self.serviceType = serviceType
         self.host = host
         self.port = port
         self.txtRecords = txtRecords
+        self.subtypes = subtypes
     }
 }
 

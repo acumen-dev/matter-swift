@@ -1,6 +1,7 @@
 // AppleDiscoveryTests.swift
 // Copyright 2026 Monagle Pty Ltd
 
+#if canImport(Network)
 import Testing
 import Foundation
 import Network
@@ -114,3 +115,4 @@ struct AppleDiscoveryTests {
         #expect(txtRecord["CM"] == "1")
     }
 }
+#endif

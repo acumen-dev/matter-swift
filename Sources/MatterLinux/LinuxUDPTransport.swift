@@ -48,6 +48,12 @@ public actor LinuxUDPTransport: MatterUDPTransport {
             throw LinuxTransportError.notBound
         }
 
+        // Use SocketAddress(ipAddress:port:) which relies on inet_pton rather
+        // than getaddrinfo.  getaddrinfo rejects port 0 on some Linux
+        // configurations (including certain Docker base images), so this path
+        // is required for ephemeral-port (port 0) support.
+        let bindAddress = try SocketAddress(ipAddress: "::", port: Int(port))
+
         let handler = MatterDatagramHandler(continuation: cont)
         let ch = try await DatagramBootstrap(group: group)
             .channelOption(.socketOption(.so_reuseaddr), value: 1)
@@ -56,7 +62,7 @@ public actor LinuxUDPTransport: MatterUDPTransport {
                     try channel.pipeline.syncOperations.addHandler(handler)
                 }
             }
-            .bind(host: "::", port: Int(port))
+            .bind(to: bindAddress)
             .get()
 
         self.channel = ch
@@ -65,13 +71,33 @@ public actor LinuxUDPTransport: MatterUDPTransport {
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
         guard let ch = channel else { throw LinuxTransportError.notBound }
-        guard let socketAddress = try? SocketAddress(ipAddress: address.host, port: Int(address.port)) else {
+
+        // The channel is bound to "::" (AF_INET6 dual-stack).  Sending to a
+        // plain IPv4 SocketAddress from an AF_INET6 socket raises EINVAL on
+        // Linux.  Map IPv4 targets to their IPv4-mapped IPv6 form first.
+        guard let raw = try? SocketAddress(ipAddress: address.host, port: Int(address.port)) else {
             throw LinuxTransportError.invalidAddress(address.host)
         }
+        let socketAddress: SocketAddress
+        if case .v4 = raw {
+            guard let mapped = try? SocketAddress(ipAddress: "::ffff:\(address.host)", port: Int(address.port)) else {
+                throw LinuxTransportError.invalidAddress(address.host)
+            }
+            socketAddress = mapped
+        } else {
+            socketAddress = raw
+        }
+
         var buffer = ch.allocator.buffer(capacity: data.count)
         buffer.writeBytes(data)
         let envelope = AddressedEnvelope(remoteAddress: socketAddress, data: buffer)
         try await ch.writeAndFlush(envelope).get()
+    }
+
+    /// Returns the port the transport is currently bound to, or `nil` if not yet bound.
+    public func boundPort() -> UInt16? {
+        guard let port = channel?.localAddress?.port else { return nil }
+        return UInt16(port)
     }
 
     /// Returns the pre-created receive stream. `nonisolated` because `receive()` is
