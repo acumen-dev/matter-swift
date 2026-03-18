@@ -112,6 +112,29 @@ struct ChipToolRunner: Sendable {
         ], timeout: timeout)
     }
 
+    /// Commission a device at a known IP address (bypasses mDNS discovery).
+    ///
+    /// Uses `chip-tool pairing already-discovered` which connects directly via IP,
+    /// avoiding multi-interface IPv6 link-local routing issues.
+    ///
+    /// Runs: `chip-tool pairing already-discovered <nodeID> <passcode> <ip> <port> --storage-directory <dir>`
+    func pairWithIP(
+        nodeID: UInt64,
+        passcode: UInt32,
+        host: String,
+        port: UInt16,
+        stateDir: URL,
+        timeout: TimeInterval = 60
+    ) throws -> RunResult {
+        try run([
+            "pairing", "already-discovered",
+            "\(nodeID)", "\(passcode)",
+            host, "\(port)",
+            "--bypass-attestation-verifier", "true",
+            "--storage-directory", stateDir.path,
+        ], timeout: timeout)
+    }
+
     /// Unpair / remove fabric from a commissioned device.
     ///
     /// Runs: `chip-tool pairing unpair <nodeID> --storage-directory <dir>`
