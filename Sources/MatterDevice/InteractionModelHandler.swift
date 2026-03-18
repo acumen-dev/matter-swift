@@ -555,9 +555,14 @@ public struct InteractionModelHandler: Sendable {
             allWildcard: allWildcard
         )
 
-        // Read initial event reports for subscribed event paths
-        let eventMin: EventNumber? = request.eventFilters.map(\.eventMin).min(by: { $0.rawValue < $1.rawValue })
-        let eventReports = await endpoints.readEvents(request.eventRequests, eventMin: eventMin)
+        // Read initial event reports for subscribed event paths (only if event paths were requested)
+        let eventReports: [EventReportIB]
+        if !request.eventRequests.isEmpty {
+            let eventMin: EventNumber? = request.eventFilters.map(\.eventMin).min(by: { $0.rawValue < $1.rawValue })
+            eventReports = await endpoints.readEvents(request.eventRequests, eventMin: eventMin)
+        } else {
+            eventReports = []
+        }
 
         let subResponse = SubscribeResponse(
             subscriptionID: subID,
