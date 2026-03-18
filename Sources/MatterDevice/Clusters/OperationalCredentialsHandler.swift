@@ -266,6 +266,20 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         commissioningState.stagedCaseAdminSubject = addNOC.caseAdminSubject
         commissioningState.stagedAdminVendorId = addNOC.adminVendorId
 
+        // Per Matter spec §11.17.6.8, the device SHALL create an initial ACL entry granting
+        // Administer privilege to the CaseAdminSubject. Without this, the CASE session that
+        // carries CommissioningComplete would be denied access.
+        do {
+            let adminACE = AccessControlCluster.AccessControlEntry(
+                privilege: .administer,
+                authMode: .case,
+                subjects: [addNOC.caseAdminSubject],
+                targets: nil,
+                fabricIndex: FabricIndex(rawValue: 0)  // Placeholder — stamped on commit
+            )
+            commissioningState.stagedACLs = [adminACE]
+        }
+
         // Per Matter spec §4.3.5, the device SHALL begin operational mDNS advertisement
         // immediately after the NOC is installed (staged), before CommissioningComplete.
         // This allows Apple Home (and other commissioners) to discover the device operationally.

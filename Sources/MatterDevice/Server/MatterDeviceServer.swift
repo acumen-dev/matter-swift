@@ -1223,14 +1223,23 @@ public actor MatterDeviceServer {
                 return
             }
 
-            // Construct ACL request context from session
+            // Construct ACL request context from session.
+            // During commissioning, the CASE session that carries CommissioningComplete
+            // arrives before ACLs are committed (they're still staged). Include staged
+            // ACLs when the fail-safe is armed so the commissioner can complete.
+            var acls = bridge.commissioningState.committedACLs[fabricIndex] ?? []
+            if acls.isEmpty && bridge.commissioningState.isFailSafeArmed
+                && !bridge.commissioningState.stagedACLs.isEmpty {
+                acls = bridge.commissioningState.stagedACLs
+            }
+            logger.debug("ACL check: session=\(session.establishment) fabric=\(fabricIndex) committed=\(bridge.commissioningState.committedACLs[fabricIndex]?.count ?? 0) staged=\(bridge.commissioningState.stagedACLs.count) using=\(acls.count)")
             let requestContext = IMRequestContext(
                 checkerContext: ACLChecker.RequestContext(
                     isPASE: session.establishment == .pase,
                     subjectNodeID: session.peerNodeID.rawValue,
                     fabricIndex: fabricIndex
                 ),
-                acls: bridge.commissioningState.committedACLs[fabricIndex] ?? []
+                acls: acls
             )
 
             // Set invoking fabric context for commands that need it
