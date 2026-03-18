@@ -125,6 +125,51 @@ struct CertificateConformanceTests {
     }
 }
 
+    // MARK: - RCAC → ICAC → NOC chain (Apple Home pattern)
+
+    @Test("Verify chip-cert-generated RCAC→ICAC→NOC chain with our tbsData()")
+    func verifyChipCertGeneratedChainWithICAC() throws {
+        guard let runner = ChipCertRunner.findBinary() else {
+            print("[SKIP] chip-cert not found — run: make ref-setup-cert")
+            return
+        }
+
+        // Generate a 3-cert chain with chip-cert (same pattern as Apple Home)
+        let (rcacTLV, icacTLV, nocTLV) = try runner.generateTestChain()
+
+        // Parse the TLV certs
+        let rcac = try MatterCertificate.fromTLV(rcacTLV)
+        let icac = try MatterCertificate.fromTLV(icacTLV)
+        let noc = try MatterCertificate.fromTLV(nocTLV)
+
+        // Verify each cert's DER TBS matches chip-cert's DER output
+        let rcacDER = try runner.convertTLVtoDER(rcacTLV)
+        let rcacChipCertTBS = try extractTBSFromDER(rcacDER)
+        let rcacOurTBS = rcac.tbsData()
+        #expect(rcacOurTBS == rcacChipCertTBS,
+            "RCAC TBS mismatch (\(rcacOurTBS.count)B vs \(rcacChipCertTBS.count)B)")
+
+        let icacDER = try runner.convertTLVtoDER(icacTLV)
+        let icacChipCertTBS = try extractTBSFromDER(icacDER)
+        let icacOurTBS = icac.tbsData()
+        #expect(icacOurTBS == icacChipCertTBS,
+            "ICAC TBS mismatch (\(icacOurTBS.count)B vs \(icacChipCertTBS.count)B)")
+
+        let nocDER = try runner.convertTLVtoDER(nocTLV)
+        let nocChipCertTBS = try extractTBSFromDER(nocDER)
+        let nocOurTBS = noc.tbsData()
+        #expect(nocOurTBS == nocChipCertTBS,
+            "NOC TBS mismatch (\(nocOurTBS.count)B vs \(nocChipCertTBS.count)B)")
+
+        // Verify the full chain validates with our implementation
+        #expect(rcac.verifySelfSigned(), "RCAC self-signature failed")
+        #expect(MatterCertificate.validateChain(noc: noc, icac: icac, rcac: rcac),
+            "3-cert chain validation failed")
+    }
+
+    // Note: "chip-cert validates our RCAC→ICAC→NOC chain" test deferred —
+    // requires a generateICAC() method (generateNOC produces wrong extensions for an ICAC).
+
 // MARK: - Attestation Certificate Conformance
 
 @Suite("Attestation Certificate Conformance (chip-cert)")

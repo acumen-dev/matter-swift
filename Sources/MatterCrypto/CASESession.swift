@@ -393,11 +393,6 @@ public enum CASESession {
         let chainValid: Bool
         if let icacData = sigma3Decrypted.initiatorICAC {
             let initiatorICAC = try MatterCertificate.fromTLV(icacData)
-            let rcacSelfSigned = initiatorRCAC.verifySelfSigned()
-            let rcacKey = try? initiatorRCAC.subjectPublicKey()
-            let icacVerifiedByRcac = rcacKey.map { initiatorICAC.verify(with: $0) } ?? false
-            let icacIssuerMatchesRcac = initiatorICAC.issuer == initiatorRCAC.subject
-            let icacKey = try? initiatorICAC.subjectPublicKey()
             chainValid = MatterCertificate.validateChain(noc: initiatorNOC, icac: initiatorICAC, rcac: initiatorRCAC)
         } else {
             chainValid = MatterCertificate.validateChain(noc: initiatorNOC, rcac: initiatorRCAC)
