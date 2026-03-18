@@ -131,11 +131,17 @@ public actor MatterDeviceServer {
     /// Ethernet) that is unreachable from its Wi-Fi network segment.
     private var paseCommissioningInterface: String?
 
+    /// MRP exchange manager for retransmission tracking.
+    private let exchangeManager: ExchangeManager
+
     /// Receive loop task.
     private var receiveTask: Task<Void, Never>?
 
     /// Subscription report loop task.
     private var reportTask: Task<Void, Never>?
+
+    /// MRP retransmission loop task.
+    private var mrpTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -151,6 +157,12 @@ public actor MatterDeviceServer {
         self.discovery = discovery
         self.config = config
         self.logger = logger
+
+        // ExchangeManager needs a send handler — capture transport for retransmissions.
+        let t = transport
+        self.exchangeManager = ExchangeManager { data, address in
+            try await t.send(data, to: address)
+        }
     }
 
     // MARK: - Lifecycle
@@ -286,6 +298,12 @@ public actor MatterDeviceServer {
             guard let self else { return }
             await self.reportLoop()
         }
+
+        // Start MRP retransmission loop
+        mrpTask = Task { [weak self] in
+            guard let self else { return }
+            await self.mrpLoop()
+        }
     }
 
     /// Stop the server: cancel loops, stop advertising, close transport.
@@ -294,6 +312,8 @@ public actor MatterDeviceServer {
         receiveTask = nil
         reportTask?.cancel()
         reportTask = nil
+        mrpTask?.cancel()
+        mrpTask = nil
 
         await discovery.stopAdvertising()
         await transport.close()
@@ -390,6 +410,54 @@ public actor MatterDeviceServer {
                 }
             }
         }
+    }
+
+    // MARK: - MRP Retransmit Loop
+
+    /// Periodically checks for pending MRP retransmissions and sends them.
+    ///
+    /// Matter's Message Reliability Protocol requires responses with `reliableDelivery=true`
+    /// to be retransmitted until the peer acknowledges them. Retransmissions use exponential
+    /// backoff per `MRPConfig` (300ms base, 1.6x multiplier, max 10 attempts).
+    private func mrpLoop() async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                break
+            }
+
+            let now = Date()
+
+            // Retransmit responses that haven't been ACKed
+            let pending = await exchangeManager.pendingRetransmissions(now: now)
+            for exchange in pending {
+                if let message = exchange.pendingMessage {
+                    do {
+                        try await transport.send(message, to: exchange.peerAddress)
+                        logger.debug("MRP retransmit #\(exchange.retransmitCount + 1) on exchange \(exchange.exchangeID) to \(exchange.peerAddress)")
+                    } catch {
+                        logger.warning("MRP retransmit failed on exchange \(exchange.exchangeID): \(error)")
+                    }
+                }
+                await exchangeManager.recordRetransmission(exchangeID: exchange.exchangeID, now: now)
+            }
+        }
+    }
+
+    // MARK: - MRP Helpers
+
+    /// Track a sent reliable message for MRP retransmission.
+    private func trackForRetransmission(
+        exchangeID: UInt16,
+        message: Data,
+        peerAddress: MatterAddress
+    ) async {
+        await exchangeManager.trackMessage(
+            exchangeID: exchangeID,
+            message: message,
+            peerAddress: peerAddress
+        )
     }
 
     // MARK: - Datagram Handling
@@ -524,7 +592,13 @@ public actor MatterDeviceServer {
             return
         }
 
-        logger.debug("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) ack=\(String(describing: exchangeHeader.acknowledgedMessageCounter)) bodyLen=\(body.count)")
+        // Process piggybacked ACK — cancel pending retransmission for this exchange
+        if let ackedCounter = exchangeHeader.acknowledgedMessageCounter {
+            await exchangeManager.recordAcknowledgment(exchangeID: exchangeHeader.exchangeID)
+            logger.debug("MRP ACK received for exchange \(exchangeHeader.exchangeID) counter=\(ackedCounter)")
+        }
+
+        logger.debug("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) bodyLen=\(body.count)")
 
         switch opcode {
         case .pbkdfParamRequest:
@@ -1209,6 +1283,11 @@ public actor MatterDeviceServer {
             session: session
         )
 
+        // Process piggybacked ACK — cancel pending retransmission for this exchange
+        if exchangeHeader.acknowledgedMessageCounter != nil {
+            await exchangeManager.recordAcknowledgment(exchangeID: exchangeHeader.exchangeID)
+        }
+
         logger.debug("Secured msg: session=\(session.localSessionID) exchange=\(exchangeHeader.exchangeID) proto=\(exchangeHeader.protocolID) opcode=\(exchangeHeader.protocolOpcode) counter=\(msgHeader.messageCounter) payload=\(payload.count)B")
 
         // ACK counter to piggyback on the first response for this message.
@@ -1324,6 +1403,11 @@ public actor MatterDeviceServer {
                     )
 
                     try await transport.send(encrypted, to: address)
+                    await trackForRetransmission(
+                        exchangeID: exchangeHeader.exchangeID,
+                        message: encrypted,
+                        peerAddress: address
+                    )
                 }
 
             case .chunkedReport(var context):

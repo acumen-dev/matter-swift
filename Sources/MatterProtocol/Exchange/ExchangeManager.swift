@@ -65,6 +65,27 @@ public actor ExchangeManager {
         return exchange
     }
 
+    /// Track a sent message for MRP retransmission on an exchange.
+    ///
+    /// Creates the exchange if it doesn't exist, then stores the raw message bytes
+    /// and schedules the first retransmission attempt.
+    public func trackMessage(
+        exchangeID: UInt16,
+        message: Data,
+        peerAddress: MatterAddress,
+        now: Date = Date()
+    ) {
+        if exchanges[exchangeID] == nil {
+            exchanges[exchangeID] = Exchange(
+                exchangeID: exchangeID,
+                role: .responder,
+                peerAddress: peerAddress,
+                mrpConfig: mrpConfig
+            )
+        }
+        exchanges[exchangeID]?.markPendingRetransmission(message: message, now: now)
+    }
+
     /// Close and remove an exchange.
     public func closeExchange(_ exchangeID: UInt16) {
         exchanges.removeValue(forKey: exchangeID)
