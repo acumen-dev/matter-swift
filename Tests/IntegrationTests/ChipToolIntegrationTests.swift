@@ -62,22 +62,16 @@ struct ChipToolIntegrationTests {
             Task { await server.stop() }
         }
 
-        // Wait for mDNS advertisement to propagate
-        try await Task.sleep(for: .seconds(2))
+        // Brief delay for server to start
+        try await Task.sleep(for: .milliseconds(500))
 
-        // Generate the manual pairing code for chip-tool
-        let payload = try SetupPayload(
-            vendorID: Self.serverConfig.vendorId,
-            productID: Self.serverConfig.productId,
-            discriminator: Self.serverConfig.discriminator,
-            passcode: Self.serverConfig.passcode
-        )
-        let pairingCode = payload.manualPairingCode
-
-        // Step 1: Commission with chip-tool
-        let pairResult = try chipTool.pairWithCode(
+        // Step 1: Commission with chip-tool via direct IP (bypasses mDNS,
+        // avoids multi-interface IPv6 link-local routing issues)
+        let pairResult = try chipTool.pairWithIP(
             nodeID: Self.nodeID,
-            setupPayload: pairingCode,
+            passcode: Self.serverConfig.passcode,
+            host: "127.0.0.1",
+            port: Self.serverConfig.port,
             stateDir: stateDir,
             timeout: 90
         )
@@ -133,19 +127,14 @@ struct ChipToolIntegrationTests {
             Task { await server.stop() }
         }
 
-        try await Task.sleep(for: .seconds(2))
+        try await Task.sleep(for: .milliseconds(500))
 
-        let payload = try SetupPayload(
-            vendorID: Self.serverConfig.vendorId,
-            productID: Self.serverConfig.productId,
-            discriminator: Self.serverConfig.discriminator,
-            passcode: Self.serverConfig.passcode
-        )
-
-        // Commission
-        let pairResult = try chipTool.pairWithCode(
+        // Commission via direct IP
+        let pairResult = try chipTool.pairWithIP(
             nodeID: Self.nodeID,
-            setupPayload: payload.manualPairingCode,
+            passcode: Self.serverConfig.passcode,
+            host: "127.0.0.1",
+            port: Self.serverConfig.port,
             stateDir: stateDir,
             timeout: 90
         )

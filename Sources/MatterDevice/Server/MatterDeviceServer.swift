@@ -185,6 +185,17 @@ public actor MatterDeviceServer {
             iterations: iterations
         )
 
+        // Generate Device Attestation Credentials (PAA → PAI → DAC chain) if not already set.
+        // These are used during commissioning for CertificateChainRequest and AttestationRequest.
+        if bridge.commissioningState.attestationCredentials == nil {
+            let dac = try DeviceAttestationCredentials.testCredentials(
+                vendorID: config.vendorId,
+                productID: config.productId
+            )
+            bridge.commissioningState.attestationCredentials = dac
+            logger.debug("Generated test attestation credentials (VID=0x\(String(config.vendorId, radix: 16)) PID=0x\(String(config.productId, radix: 16)))")
+        }
+
         // Rebuild CASE-ready fabric info from persisted fabrics
         for (_, fabric) in bridge.commissioningState.fabrics {
             onFabricCommitted(fabric)
@@ -404,8 +415,7 @@ public actor MatterDeviceServer {
             } catch {
                 // Decryption failure on an established session typically means a stale
                 // retransmit from a previous commissioning attempt (wrong session keys).
-                // Log at debug to avoid alarming noise; the receive loop continues.
-                logger.debug("Decryption failed for session \(header.sessionID) from \(sender): \(error) (likely stale retransmit)")
+                logger.warning("Secured message error for session \(header.sessionID) counter=\(header.messageCounter) from \(sender): \(error)")
             }
         } else {
             logger.debug("Dropping message for unknown session \(header.sessionID)")
@@ -1198,6 +1208,8 @@ public actor MatterDeviceServer {
             data: rawData,
             session: session
         )
+
+        logger.debug("Secured msg: session=\(session.localSessionID) exchange=\(exchangeHeader.exchangeID) proto=\(exchangeHeader.protocolID) opcode=\(exchangeHeader.protocolOpcode) counter=\(msgHeader.messageCounter) payload=\(payload.count)B")
 
         // ACK counter to piggyback on the first response for this message.
         // MRP requires ACKing any message with reliableDelivery=true; piggybacking
