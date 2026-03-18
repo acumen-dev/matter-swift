@@ -255,6 +255,8 @@ public struct MatterCertificate: Sendable, Equatable {
         var b = [UInt8](bytes)
         // Strip leading zeros (but keep at least one byte)
         while b.count > 1 && b[0] == 0x00 { b.removeFirst() }
+        // Note: Matter/CHIP SDK does NOT add the 0x00 positive-integer prefix
+        // that standard DER requires. This matches chip-cert behavior.
         return b
     }
 
@@ -559,8 +561,16 @@ public struct MatterDistinguishedName: Sendable, Equatable {
 
             let valueBytes: [UInt8]
             if let intVal = attr.intValue {
-                // Matter-specific: encode as 16-char uppercase hex
-                valueBytes = b.derUTF8String(String(format: "%016llX", intVal))
+                // Matter-specific integer attributes encoded as hex UTF8String.
+                // CASE Authenticated Tags (tag 22) are 32-bit → 8-char hex.
+                // All other Matter attributes are 64-bit → 16-char hex.
+                let hexStr: String
+                if attr.tag == Tag.caseAuthenticatedTag {
+                    hexStr = String(format: "%08X", UInt32(intVal))
+                } else {
+                    hexStr = String(format: "%016llX", intVal)
+                }
+                valueBytes = b.derUTF8String(hexStr)
             } else if let strVal = attr.stringValue {
                 // X.509 standard: encode string directly
                 valueBytes = b.derUTF8String(strVal)

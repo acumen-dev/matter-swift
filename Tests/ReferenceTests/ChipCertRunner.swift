@@ -209,11 +209,12 @@ struct ChipCertRunner: Sendable {
                 throw ChipCertError.conversionFailed("gen ICAC: \(result.stderr)")
             }
 
-            // Generate NOC signed by ICAC
+            // Generate NOC signed by ICAC (with CASE Authenticated Tag, like Apple Home)
             result = try run([
                 "gen-cert", "-t", "n",
                 "-c", nocCN,
                 "-i", nodeID, "-f", fabricID,
+                "-a", "0x596E4001",
                 "-V", "2025-01-01", "-l", "3650",
                 "-C", icacFile.path, "-K", icacKeyFile.path,
                 "-F", "chip",
