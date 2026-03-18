@@ -129,6 +129,9 @@ REQUIRED_SUBMODULES=(
     third_party/editline/repo
     third_party/nlfaultinjection/repo
     third_party/openthread/repo
+    third_party/libwebsockets/repo
+    third_party/nanopb/repo
+    third_party/perfetto/repo
 )
 
 submodule_ready() {
