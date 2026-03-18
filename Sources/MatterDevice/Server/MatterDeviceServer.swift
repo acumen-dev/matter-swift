@@ -380,10 +380,11 @@ public actor MatterDeviceServer {
                 let exchangeID = allocateExchangeID()
 
                 do {
-                    // Send the first chunk
+                    // Send the first chunk. Server-initiated subscription reports
+                    // use initiator=true because the server starts this exchange.
                     guard let firstChunk = chunks.first else { continue }
                     let exchangeHeader = ExchangeHeader(
-                        flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                        flags: ExchangeFlags(initiator: true, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
                         exchangeID: exchangeID,
                         protocolID: MatterProtocolID.interactionModel.rawValue
