@@ -155,19 +155,17 @@ struct ChipCertRunner: Sendable {
 
     // chip-cert validate-att-cert CLI (v1.4):
     //   chip-cert validate-att-cert -d <dac> -i <pai> -a <paa>
-    //   For test creds where PAI is self-signed, PAI serves as both PAI and PAA.
 
-    /// Validate attestation certificate chain (PAI → DAC).
-    /// For test credentials where the PAI is self-signed (acting as PAA+PAI),
-    /// the PAI is passed as both `-i` and `-a`.
-    func validateAttestationChain(dac dacDER: Data, pai paiDER: Data) throws -> RunResult {
+    /// Validate attestation certificate chain (PAA → PAI → DAC).
+    func validateAttestationChain(dac dacDER: Data, pai paiDER: Data, paa paaDER: Data) throws -> RunResult {
         try withTempDir { dir in
             let dacFile = dir.appendingPathComponent("dac.der")
             let paiFile = dir.appendingPathComponent("pai.der")
+            let paaFile = dir.appendingPathComponent("paa.der")
             try dacDER.write(to: dacFile)
             try paiDER.write(to: paiFile)
-            // Self-signed PAI acts as both PAI and PAA
-            return try run(["validate-att-cert", "-d", dacFile.path, "-i", paiFile.path, "-a", paiFile.path])
+            try paaDER.write(to: paaFile)
+            return try run(["validate-att-cert", "-d", dacFile.path, "-i", paiFile.path, "-a", paaFile.path])
         }
     }
 }

@@ -186,11 +186,8 @@ Note: AES-128-CCM is not directly in CryptoKit — use `_CryptoExtras` or implem
 - **Device Attestation Credentials**: X.509 PAI/DAC with correct Matter VID/PID OIDs in Subject DN
 - **PASE MRP session params**: Tag 5 (responderSessionParams) always included in PBKDFParamResponse
 
-### One remaining blocker
-
-**`certificateChainInvalid` in CASE Sigma3** — see "Critical Known Bug" section below.
-
-Certificate signature verification in `MatterCertificate.verify(with:)` always returns `false` because `tbsData()` returns TLV bytes but Matter cert signatures were computed over X.509 DER `TBSCertificate` bytes. The fix requires implementing X.509 DER generation using the `swift-asn1` dependency that is already present.
+- **Certificate DER TBS** (FIXED): `tbsData()` now produces X.509 DER `TBSCertificate` bytes, matching chip-cert byte-for-byte. Signatures use IEEE P1363 (rawRepresentation). Certificate chain validation works end-to-end.
+- **Reference test framework**: chip-cert conformance tests (TLV→DER conversion, NOC chain validation, TBS comparison) and crypto vector tests (AES-CCM, HKDF, HMAC, PBKDF2, SHA-256)
 
 ---
 
@@ -240,15 +237,17 @@ All three now accept `SharedSecret` (not `Data`) so `hkdfDerivedSymmetricKey()` 
 
 **Key changes:**
 
-1. **`rawTLV: Data?`** field added — preserved when parsing via `fromTLV()`. The field is `nil` for programmatically-constructed certs (e.g., generated test certs). This ensures `tbsData()` can return the exact bytes the issuer signed over.
+1. **`tbsData()` rewritten** — now produces X.509 DER `TBSCertificate` bytes using `PKCS10CSRBuilder` helpers. Maps Matter DN attributes to OIDs, Matter epoch times to UTCTime/GeneralizedTime, and Matter extensions to standard X.509 extensions. Output matches chip-cert byte-for-byte.
 
-2. **`tbsData()` scan approach** — when `rawTLV` is present, scans backward from the final `0x18` (end-of-container) to find the signature field (`0x30 0x0B <len>` prefix for context tag 11, octet string, 1-byte length). Slices `rawTLV[0..<signatureFieldStart] + [0x18]` as the TBS. This logic is **correct** but produces TLV bytes, not X.509 DER — see Critical Known Bug below.
+2. **`toX509Name()`** added to `MatterDistinguishedName` — converts Matter DN attributes to X.509 RDN sequences with OIDs under `1.3.6.1.4.1.37244.1.*` and 16-char hex UTF8String values.
 
-3. **`verify(with:)` diagnostic prints** — prints `[VERIFY-DIAG]` with full hex of the signature, TBS bytes, and public key before and after verification for offline analysis. Also compares raw-path TBS against re-encoded TBS. **Must be removed** after fix.
+3. **`toX509Extension()`** added to `CertificateExtension` — encodes each extension to X.509 DER with correct criticality flags (BasicConstraints, KeyUsage, EKU all critical).
 
-4. **`[TBS-DIAG]` prints** — inside `tbsData()` shows raw byte boundaries, tail scan candidates, and result. **Must be removed** after fix.
+4. **Signature format** — `generateRCAC()`/`generateNOC()` now use `sig.rawRepresentation` (IEEE P1363, 64 bytes) instead of `sig.derRepresentation`. `verify(with:)` tries P1363 first, falls back to DER.
 
-5. **Signature format fallback** — `verify(with:)` tries P1363 first, then DER. Prints which format was parsed. The fallback exists because old programmatically-generated test certs use DER; newly received certs from Apple Home use P1363.
+5. **Default validity dates** — `generateRCAC()`/`generateNOC()` default to current time → 10 years instead of epoch 0.
+
+6. **All diagnostic prints removed** — `[TBS-DIAG]`, `[VERIFY-DIAG]` removed from this file; `[CASE-DIAG]`, `[CASE-CHAIN]` removed from `CASESession.swift`.
 
 ### `Sources/MatterCrypto/FabricInfo.swift` (+114/-?)
 
@@ -424,102 +423,23 @@ Minor: API adjustments. **Note:** Phase 0 of the AcumenMatterBridge plan (callba
 
 ## Critical Known Bug: Certificate TBS Must Be X.509 DER
 
-**Root cause of all `certificateChainInvalid` errors in CASE Sigma3.**
+**FIXED.** `tbsData()` now produces X.509 DER `TBSCertificate` bytes that match chip-cert output byte-for-byte. Certificate signatures use IEEE P1363 format (`rawRepresentation`). All diagnostic prints removed.
 
-### Discovery
+### Implementation Details
 
-Debugging via `[TBS-DIAG]` / `[VERIFY-DIAG]` diagnostic prints in `MatterCertificate.swift` confirmed:
-- Raw TLV TBS bytes are extracted correctly from `rawTLV` (the scan finds the signature field at the right offset)
-- Re-encoded TLV TBS bytes are also tried
-- Both fail signature verification
+- `MatterCertificate.tbsData()` builds DER using `PKCS10CSRBuilder` helpers
+- `MatterDistinguishedName.toX509Name()` maps Matter DN attributes to OIDs under `1.3.6.1.4.1.37244.1.*` with 16-char hex UTF8String values
+- `CertificateExtension.toX509Extension()` encodes each extension with correct X.509 criticality flags
+- Time encoding: UTCTime (tag 0x17) for 2000-2049, GeneralizedTime (tag 0x18) for the 9999 no-expiry sentinel
+- Serial numbers encoded without positive-integer 0x00 prefix (matches CHIP SDK behavior)
+- `generateRCAC()`/`generateNOC()` default to current time → 10 years validity
 
-Cross-referencing matter.js source (`Certificate.ts`, `X509.ts`) revealed the root cause.
+### Reference Test Verification
 
-### Root Cause
-
-**Matter Operational Certificate signatures are computed over X.509 ASN.1 DER `TBSCertificate` bytes — not over Matter TLV bytes.**
-
-The signing workflow (from matter.js `X509.ts`):
-```
-Matter TLV fields
-  → matterToX509()              converts fields to X509.UnsignedCertificate struct
-  → X509.certificateToDer()     encodes struct as ASN.1 DER TBSCertificate
-  → crypto.signEcdsa(key, der)  ECDSA-P256 over SHA-256(DER TBSCertificate)
-```
-
-The Matter TLV cert is a compact *re-encoding* of an X.509 cert. The signature value in TLV field 11 is verbatim the ECDSA signature from the original X.509 cert — but the bytes it was signed over are the X.509 DER `TBSCertificate`, not any form of TLV.
-
-This is consistent with Matter spec §6.4.3: "A CHIP Certificate is created by taking an X.509v3 certificate and converting it to a compact TLV form."
-
-### Required Fix: `MatterCertificate.tbsData()` → X.509 DER
-
-Replace `tbsData()` with a method that produces the X.509 DER `TBSCertificate` bytes from the parsed TLV fields.
-
-`MatterCrypto` already depends on `swift-asn1` and `swift-certificates` — use these for DER construction.
-
-**DER TBSCertificate structure (RFC 5280):**
-```
-TBSCertificate ::= SEQUENCE {
-    version         [0] EXPLICIT INTEGER (= 2 for v3)
-    serialNumber    INTEGER
-    signature       AlgorithmIdentifier (ecdsa-with-SHA256)
-    issuer          Name (RDNSequence, using Matter OIDs)
-    validity        Validity (GeneralizedTime for Matter epoch)
-    subject         Name (RDNSequence)
-    subjectPublicKeyInfo  SubjectPublicKeyInfo (EC P-256, OID 1.2.840.10045.2.1)
-    extensions [3]  EXPLICIT Extensions
-}
-```
-
-**Matter-specific OIDs for Distinguished Name attributes:**
-```
-NodeId:              1.3.6.1.4.1.37244.1.1  (value: UTF8String of hex node ID, e.g. "000000000001B669")
-FirmwareSigningId:   1.3.6.1.4.1.37244.1.2
-IcacId:              1.3.6.1.4.1.37244.1.3
-RcacId:              1.3.6.1.4.1.37244.1.4  (value: UTF8String of hex root CA ID)
-FabricId:            1.3.6.1.4.1.37244.1.5  (value: UTF8String of hex fabric ID, e.g. "0000000000000001")
-NocCat:              1.3.6.1.4.1.37244.1.6
-
-VendorId:            1.3.6.1.4.1.37244.2.1  (value: UTF8String of 4-char uppercase hex, e.g. "FFF1")
-ProductId:           1.3.6.1.4.1.37244.2.2  (value: UTF8String of 4-char uppercase hex, e.g. "8000")
-```
-
-**Matter epoch:** Matter timestamps are seconds since 2000-01-01 00:00:00 UTC. Convert to Unix time by adding 946684800. Encode as X.509 `GeneralizedTime` (YYYYMMDDHHMMSSZ).
-
-**Extensions to map from Matter TLV to X.509:**
-- `BasicConstraints` (cA flag, pathLenConstraint) — from Matter extension type 1
-- `KeyUsage` — from Matter extension type 2
-- `ExtendedKeyUsage` — from Matter extension type 3
-- `SubjectKeyIdentifier` — from Matter extension type 4 (SHA-1 of public key — also needed for AKID)
-- `AuthorityKeyIdentifier` — from Matter extension type 5
-
-**Implementation guide using swift-asn1:**
-
-```swift
-import SwiftASN1
-
-public func tbsData() -> Data {
-    // Build DER TBSCertificate from parsed TLV fields.
-    // For each DN field in issuer/subject, use Matter OIDs for Matter-specific attributes
-    // and standard OIDs (2.5.4.3 commonName, 2.5.4.10 organizationName) for the rest.
-
-    // AlgorithmIdentifier for ecdsa-with-SHA256
-    // OID: 1.2.840.10045.4.3.2
-
-    // SubjectPublicKeyInfo for EC P-256
-    // Algorithm OID: 1.2.840.10045.2.1 (ecPublicKey)
-    // Parameters OID: 1.2.840.10045.3.1.7 (P-256 / secp256r1)
-    // Public key: uncompressed point (65 bytes starting with 0x04)
-
-    // Encode as DER and return
-}
-```
-
-### Diagnostic prints to remove after fix
-
-Remove all `[TBS-DIAG]`, `[VERIFY-DIAG]`, `[CASE-DIAG]`, and `[CASE-CHAIN]` print statements once verification works. Files containing them:
-- `Sources/MatterCrypto/MatterCertificate.swift` — `[TBS-DIAG]`, `[VERIFY-DIAG]`
-- `Sources/MatterCrypto/CASESession.swift` — `[CASE-DIAG]`, `[CASE-CHAIN]`
+The `ReferenceTests` target validates against the connectedhomeip SDK's `chip-cert` tool:
+- `make ref-setup-cert` — builds chip-cert from source
+- `make ref-test` — runs crypto vector + chip-cert conformance tests
+- Tests verify: TLV→DER conversion, DER TBS byte-for-byte match, NOC chain validation
 
 ---
 
@@ -650,7 +570,7 @@ chip-cert validate-cert -c <noc-der-file> -i <rcac-der-file>
 
 - **TLV tag encoding**: Context tags use 1 byte. Common profile tags use 2 bytes. Fully qualified tags use 6 bytes. Most protocol messages use context tags exclusively.
 
-- **Matter certificates are TLV *re-encodings* of X.509 certs**: The wire format is compact TLV, but the certificate *signature* was computed over the X.509 ASN.1 DER `TBSCertificate` bytes — not over any form of TLV. To verify a Matter cert signature, you must convert the TLV fields back to X.509 DER (`TBSCertificate` SEQUENCE) and verify against that. See "Critical Known Bug" section above.
+- **Matter certificates are TLV *re-encodings* of X.509 certs**: The wire format is compact TLV, but the certificate *signature* was computed over the X.509 ASN.1 DER `TBSCertificate` bytes — not over any form of TLV. `MatterCertificate.tbsData()` handles this conversion. Key implementation details: serial numbers are encoded without a positive-integer 0x00 prefix (matching CHIP SDK), times use UTCTime for 2000-2049 and GeneralizedTime for the 9999 no-expiry sentinel, and ExtendedKeyUsage is marked critical.
 
 - **Certificate signature format is IEEE P1363, not DER**: Matter spec §6.6.1 mandates 64-byte raw r‖s format for ECDSA signatures stored in TLV cert field 11. The old code used DER representation (`derRepresentation`) — it must be `rawRepresentation`.
 
