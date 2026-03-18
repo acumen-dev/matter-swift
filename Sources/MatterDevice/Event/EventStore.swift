@@ -128,11 +128,11 @@ public actor EventStore {
         paths: [EventPath],
         eventMin: EventNumber? = nil
     ) -> [StoredEvent] {
+        // No paths = no events requested
+        guard !paths.isEmpty else { return [] }
         let minNumber = eventMin?.rawValue ?? 0
         return orderedEvents().filter { event in
             guard event.eventNumber.rawValue >= minNumber else { return false }
-            // If no paths specified, return all events
-            if paths.isEmpty { return true }
             return paths.contains { path in
                 eventMatchesPath(event: event, path: path)
             }

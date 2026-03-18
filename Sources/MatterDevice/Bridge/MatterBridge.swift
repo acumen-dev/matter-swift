@@ -671,9 +671,14 @@ public final class MatterBridge: @unchecked Sendable {
             dataVersionFilters: dvFilters
         )
 
-        // Query events since the last reported event number
-        let eventMin = EventNumber(rawValue: lastEventNumber.rawValue + 1)
-        let eventReports = await endpoints.readEvents(eventPaths, eventMin: eventMin.rawValue > 1 ? eventMin : nil)
+        // Query events since the last reported event number (only if event paths were subscribed)
+        let eventReports: [EventReportIB]
+        if !eventPaths.isEmpty {
+            let eventMin = EventNumber(rawValue: lastEventNumber.rawValue + 1)
+            eventReports = await endpoints.readEvents(eventPaths, eventMin: eventMin.rawValue > 1 ? eventMin : nil)
+        } else {
+            eventReports = []
+        }
 
         // Update last event number if we got new events
         if let lastReport = eventReports.compactMap({ $0.eventData }).last {
