@@ -77,12 +77,12 @@ struct ChipToolIntegrationTests {
         )
 
         if !pairResult.succeeded {
-            // Log full chip-tool output for diagnosis
+            // Write chip-tool output to temp file for diagnosis
+            let logFile = FileManager.default.temporaryDirectory.appendingPathComponent("chip-tool-commission.log")
+            try? pairResult.stdout.write(to: logFile, atomically: true, encoding: .utf8)
             print("╔══════════════════════════════════════════════════")
             print("║ chip-tool pairing FAILED (exit code \(pairResult.exitCode))")
-            print("╠══════════════════════════════════════════════════")
-            print("║ stdout:\n\(pairResult.stdout)")
-            print("║ stderr:\n\(pairResult.stderr)")
+            print("║ Full output: \(logFile.path)")
             print("╚══════════════════════════════════════════════════")
         }
         #expect(pairResult.succeeded, "chip-tool commissioning should succeed")
