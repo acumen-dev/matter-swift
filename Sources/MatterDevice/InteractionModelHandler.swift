@@ -243,11 +243,15 @@ public struct InteractionModelHandler: Sendable {
             allWildcard: allWildcard
         )
 
-        // Resolve event minimum from event filters (use the smallest eventMin across all filters)
-        let eventMin: EventNumber? = request.eventFilters.map(\.eventMin).min(by: { $0.rawValue < $1.rawValue })
-
-        // Read events matching requested paths
-        let eventReports = await endpoints.readEvents(request.eventRequests, eventMin: eventMin)
+        // Read events only if the request includes event paths.
+        // An empty eventRequests array means the client didn't request events (e.g., `onoff read`).
+        let eventReports: [EventReportIB]
+        if !request.eventRequests.isEmpty {
+            let eventMin: EventNumber? = request.eventFilters.map(\.eventMin).min(by: { $0.rawValue < $1.rawValue })
+            eventReports = await endpoints.readEvents(request.eventRequests, eventMin: eventMin)
+        } else {
+            eventReports = []
+        }
 
         // Chunk the report data (suppressResponse=true on the final chunk for standalone reads)
         let chunker = ReportDataChunker()
