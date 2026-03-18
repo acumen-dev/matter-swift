@@ -18,11 +18,14 @@ public enum GeneralCommissioningCluster {
     // MARK: - Attribute IDs
 
     public enum Attribute {
-        public static let breadcrumb                 = AttributeID(rawValue: 0x0000)
-        public static let basicCommissioningInfo     = AttributeID(rawValue: 0x0001)
-        public static let regulatoryConfig           = AttributeID(rawValue: 0x0002)
-        public static let locationCapability         = AttributeID(rawValue: 0x0003)
-        public static let supportsConcurrentConnection = AttributeID(rawValue: 0x0004)
+        public static let breadcrumb                    = AttributeID(rawValue: 0x0000)
+        public static let basicCommissioningInfo        = AttributeID(rawValue: 0x0001)
+        public static let regulatoryConfig              = AttributeID(rawValue: 0x0002)
+        public static let locationCapability            = AttributeID(rawValue: 0x0003)
+        public static let supportsConcurrentConnection  = AttributeID(rawValue: 0x0004)
+        // Global attributes
+        public static let featureMap                    = AttributeID(rawValue: 0xFFFC)
+        public static let clusterRevision               = AttributeID(rawValue: 0xFFFD)
     }
 
     // MARK: - Command IDs

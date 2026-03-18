@@ -57,6 +57,8 @@ public struct DeviceAttestationCredentials: Sendable {
     /// Generate test/development attestation credentials.
     ///
     /// Creates a self-signed PAI certificate and a DAC signed by the PAI key.
+    /// Both certificates include the mandatory Matter VID/PID OIDs in their
+    /// Subject Distinguished Names per Matter Core Specification §6.3.5.
     /// The Certification Declaration is a TLV-encoded structure for development use.
     ///
     /// - Warning: These credentials are for development and testing only.
@@ -70,34 +72,58 @@ public struct DeviceAttestationCredentials: Sendable {
         vendorID: UInt16 = 0xFFF1,
         productID: UInt16 = 0x8000
     ) throws -> DeviceAttestationCredentials {
-        // Generate PAI key and self-signed PAI certificate
+        // Generate PAI key and self-signed PAI certificate.
+        //
+        // Per Matter spec §6.3.5.3, the PAI Subject DN MUST include:
+        //   - commonName (2.5.4.3)
+        //   - matterVendorId (1.3.6.1.4.1.37244.2.1) as 4-char uppercase hex
+        // BasicConstraints: cA=TRUE, pathLenConstraint=0 (can sign DACs, not further CAs)
         let paiKey = P256.Signing.PrivateKey()
         let paiCert = try buildX509Certificate(
             subjectCN: "Matter Test PAI",
             subjectO: "Test",
-            issuerCN: "Matter Test PAI",
+            subjectVID: vendorID,
+            subjectPID: nil,
+            issuerCN: "Matter Test PAI",   // self-signed
             issuerO: "Test",
+            issuerVID: vendorID,
             publicKey: paiKey.publicKey,
             signerKey: paiKey,
             isCA: true,
+            pathLenConstraint: 0,
             serialNumber: generateSerialNumber()
         )
 
-        // Generate DAC key and DAC certificate signed by PAI
+        // Generate DAC key and DAC certificate signed by PAI.
+        //
+        // Per Matter spec §6.3.5.4, the DAC Subject DN MUST include:
+        //   - commonName (2.5.4.3)
+        //   - matterVendorId (1.3.6.1.4.1.37244.2.1) as 4-char uppercase hex
+        //   - matterProductId (1.3.6.1.4.1.37244.2.2) as 4-char uppercase hex
+        // Issuer DN must match the PAI Subject DN exactly (same RDNs including VID).
         let dacKey = P256.Signing.PrivateKey()
         let dacCert = try buildX509Certificate(
             subjectCN: "Matter Test DAC",
             subjectO: "Test",
-            issuerCN: "Matter Test PAI",
+            subjectVID: vendorID,
+            subjectPID: productID,
+            issuerCN: "Matter Test PAI",   // must match PAI subject
             issuerO: "Test",
+            issuerVID: vendorID,            // must match PAI subject VID
             publicKey: dacKey.publicKey,
             signerKey: paiKey,
             isCA: false,
+            pathLenConstraint: nil,
             serialNumber: generateSerialNumber()
         )
 
-        // Build test Certification Declaration TLV
-        let cd = buildTestCertificationDeclaration(vendorID: vendorID, productID: productID)
+        // Build test Certification Declaration TLV wrapped in CMS SignedData (§6.3.5)
+        let cd = try buildTestCertificationDeclaration(
+            vendorID: vendorID,
+            productID: productID,
+            paiCert: paiCert,
+            paiKey: paiKey
+        )
 
         return DeviceAttestationCredentials(
             dacCertificate: dacCert,
@@ -116,21 +142,29 @@ public struct DeviceAttestationCredentials: Sendable {
     private static func buildX509Certificate(
         subjectCN: String,
         subjectO: String,
+        subjectVID: UInt16?,
+        subjectPID: UInt16?,
         issuerCN: String,
         issuerO: String,
+        issuerVID: UInt16?,
         publicKey: P256.Signing.PublicKey,
         signerKey: P256.Signing.PrivateKey,
         isCA: Bool,
+        pathLenConstraint: Int?,
         serialNumber: Data
     ) throws -> Data {
         // Build TBSCertificate (the part that gets signed)
         let tbs = buildTBSCertificate(
             subjectCN: subjectCN,
             subjectO: subjectO,
+            subjectVID: subjectVID,
+            subjectPID: subjectPID,
             issuerCN: issuerCN,
             issuerO: issuerO,
+            issuerVID: issuerVID,
             publicKey: publicKey,
             isCA: isCA,
+            pathLenConstraint: pathLenConstraint,
             serialNumber: serialNumber
         )
 
@@ -153,10 +187,14 @@ public struct DeviceAttestationCredentials: Sendable {
     private static func buildTBSCertificate(
         subjectCN: String,
         subjectO: String,
+        subjectVID: UInt16?,
+        subjectPID: UInt16?,
         issuerCN: String,
         issuerO: String,
+        issuerVID: UInt16?,
         publicKey: P256.Signing.PublicKey,
         isCA: Bool,
+        pathLenConstraint: Int?,
         serialNumber: Data
     ) -> Data {
         // version [0] EXPLICIT INTEGER v3 (2)
@@ -172,56 +210,94 @@ public struct DeviceAttestationCredentials: Sendable {
         )
 
         // issuer Name
-        let issuer = buildX509Name(cn: issuerCN, o: issuerO)
+        let issuer = buildX509Name(cn: issuerCN, o: issuerO, matterVID: issuerVID)
 
         // validity (2024-01-01 to 2034-01-01 in UTCTime format)
         let notBefore = PKCS10CSRBuilder.derTLV(tag: 0x17, content: [UInt8]("240101000000Z".utf8))
         let notAfter  = PKCS10CSRBuilder.derTLV(tag: 0x17, content: [UInt8]("340101000000Z".utf8))
         let validity  = PKCS10CSRBuilder.derSequence(notBefore + notAfter)
 
-        // subject Name
-        let subject = buildX509Name(cn: subjectCN, o: subjectO)
+        // subject Name — includes Matter VID (and PID for DAC)
+        let subject = buildX509Name(cn: subjectCN, o: subjectO,
+                                    matterVID: subjectVID, matterPID: subjectPID)
 
         // subjectPublicKeyInfo
         let spki = [UInt8](PKCS10CSRBuilder.buildSubjectPublicKeyInfo(publicKey: publicKey))
 
         // extensions [3] EXPLICIT
-        let extensions = buildX509Extensions(isCA: isCA)
+        let extensions = buildX509Extensions(isCA: isCA, pathLenConstraint: pathLenConstraint)
         let extensionsExplicit = PKCS10CSRBuilder.derContextConstructed(tag: 3, content: extensions)
 
         let tbsContent = version + serial + sigAlg + issuer + validity + subject + spki + extensionsExplicit
         return Data(PKCS10CSRBuilder.derSequence(tbsContent))
     }
 
-    /// Build an X.509 Name (RDN sequence) with O and CN.
-    private static func buildX509Name(cn: String, o: String) -> [UInt8] {
+    /// Build an X.509 Name (RDN sequence) with O, CN, and optional Matter VID/PID OID attributes.
+    ///
+    /// Matter spec §6.3.5 requires PAI Subject to include `matterVendorId` (OID 1.3.6.1.4.1.37244.2.1)
+    /// and DAC Subject to include both `matterVendorId` and `matterProductId` (OID 1.3.6.1.4.1.37244.2.2).
+    /// Values are encoded as 4-character uppercase hex strings (e.g. "FFF1" for VID 0xFFF1).
+    private static func buildX509Name(
+        cn: String,
+        o: String,
+        matterVID: UInt16? = nil,
+        matterPID: UInt16? = nil
+    ) -> [UInt8] {
+        let b = PKCS10CSRBuilder.self
+
         // organizationName (2.5.4.10)
-        let orgAttr = PKCS10CSRBuilder.derSequence(
-            PKCS10CSRBuilder.derOID(PKCS10CSRBuilder.oidOrganizationName) +
-            PKCS10CSRBuilder.derUTF8String(o)
-        )
-        let orgRDN = PKCS10CSRBuilder.derSet(orgAttr)
+        let orgAttr = b.derSequence(b.derOID(b.oidOrganizationName) + b.derUTF8String(o))
+        let orgRDN = b.derSet(orgAttr)
 
         // commonName (2.5.4.3)
-        let cnAttr = PKCS10CSRBuilder.derSequence(
-            PKCS10CSRBuilder.derOID(PKCS10CSRBuilder.oidCommonName) +
-            PKCS10CSRBuilder.derUTF8String(cn)
-        )
-        let cnRDN = PKCS10CSRBuilder.derSet(cnAttr)
+        let cnAttr = b.derSequence(b.derOID(b.oidCommonName) + b.derUTF8String(cn))
+        let cnRDN = b.derSet(cnAttr)
 
-        return PKCS10CSRBuilder.derSequence(orgRDN + cnRDN)
+        var rdns = orgRDN + cnRDN
+
+        // matterVendorId (1.3.6.1.4.1.37244.2.1) — mandatory for PAI and DAC
+        if let vid = matterVID {
+            let vidStr = String(format: "%04X", vid)
+            let vidAttr = b.derSequence(
+                b.derOID([1, 3, 6, 1, 4, 1, 37244, 2, 1]) + b.derUTF8String(vidStr))
+            rdns += b.derSet(vidAttr)
+        }
+
+        // matterProductId (1.3.6.1.4.1.37244.2.2) — mandatory for DAC
+        if let pid = matterPID {
+            let pidStr = String(format: "%04X", pid)
+            let pidAttr = b.derSequence(
+                b.derOID([1, 3, 6, 1, 4, 1, 37244, 2, 2]) + b.derUTF8String(pidStr))
+            rdns += b.derSet(pidAttr)
+        }
+
+        return b.derSequence(rdns)
     }
 
     /// Build X.509 v3 extensions (BasicConstraints, KeyUsage).
-    private static func buildX509Extensions(isCA: Bool) -> [UInt8] {
+    ///
+    /// For CA certificates:
+    ///   - BasicConstraints: critical, cA=TRUE, optional pathLenConstraint
+    ///   - PAI must have pathLenConstraint=0 (can sign DACs, not further intermediates)
+    ///
+    /// For end-entity certificates (DAC):
+    ///   - BasicConstraints: critical, empty (cA defaults to FALSE)
+    private static func buildX509Extensions(isCA: Bool, pathLenConstraint: Int? = nil) -> [UInt8] {
         // BasicConstraints OID: 2.5.29.19
         let bcOID: [UInt64] = [2, 5, 29, 19]
 
-        // BasicConstraints value: SEQUENCE { BOOLEAN(cA) } if CA, else SEQUENCE {} if end-entity
+        // BasicConstraints value
         let bcValue: [UInt8]
         if isCA {
-            // SEQUENCE { BOOLEAN TRUE }
-            bcValue = PKCS10CSRBuilder.derSequence([0x01, 0x01, 0xFF])
+            if let pathLen = pathLenConstraint {
+                // SEQUENCE { BOOLEAN TRUE, INTEGER pathLen }
+                // pathLen is encoded as a single byte (0..127 is sufficient for Matter)
+                let pathLenBytes: [UInt8] = [0x02, 0x01, UInt8(pathLen)]
+                bcValue = PKCS10CSRBuilder.derSequence([0x01, 0x01, 0xFF] + pathLenBytes)
+            } else {
+                // SEQUENCE { BOOLEAN TRUE }
+                bcValue = PKCS10CSRBuilder.derSequence([0x01, 0x01, 0xFF])
+            }
         } else {
             // SEQUENCE {} (empty — no pathLenConstraint, cA defaults to false)
             bcValue = PKCS10CSRBuilder.derSequence([])
@@ -241,11 +317,9 @@ public struct DeviceAttestationCredentials: Sendable {
         let kuOID: [UInt64] = [2, 5, 29, 15]
 
         // KeyUsage BIT STRING:
-        // For CA: keyCertSign (bit 5) + digitalSignature (bit 0) = 0xA0, 1 unused bit
-        // For end-entity: digitalSignature (bit 0) = 0x80, 0 unused bits  (within 0xA0 = bits 0,5... no wait)
         // X.509 KeyUsage: bit 0=digitalSignature, bit 5=keyCertSign, bit 6=cRLSign
-        // Encoded big-endian: first bit of first byte is bit 0 (MSB)
-        // digitalSignature = bit 0 in ASN.1 NAMED BIT STRING = 0x80 (MSB of first data byte)
+        // Encoded big-endian: MSB of first byte is bit 0
+        // digitalSignature = bit 0 = 0x80 in first byte
         // keyCertSign = bit 5 = 0x04 in first byte
         // cRLSign = bit 6 = 0x02 in first byte
         let kuBitStringContent: [UInt8]
@@ -290,41 +364,188 @@ public struct DeviceAttestationCredentials: Sendable {
 
     // MARK: - Certification Declaration
 
-    /// Build a minimal test Certification Declaration TLV.
+    /// Build a minimal test Certification Declaration TLV, wrapped in a CMS SignedData envelope.
     ///
-    /// The CD is a TLV-encoded structure containing vendor ID, product ID,
-    /// and other metadata. For test use, this is a plain TLV payload
-    /// (not CMS-wrapped). Real commissioners validate the full CMS signature chain.
+    /// Per Matter spec §6.3.5, the certificationDeclaration field in attestationElements
+    /// SHALL be a CMS SignedData structure with eContentType 1.3.6.1.4.1.37244.1.1.
+    /// The inner TLV payload (§6.3.1) is signed by the PAI private key; the PAI certificate
+    /// is included in the CMS certificates field so the commissioner can validate the chain.
     ///
-    /// Structure per Matter spec §6.3.1:
-    /// ```
-    /// Structure {
-    ///   1: formatVersion (unsigned int) = 1
-    ///   2: vendorId (unsigned int)
-    ///   3: [productId] (array of unsigned int)
-    ///   4: deviceTypeId (unsigned int) = 0x0016 (matter-bridge)
-    ///   5: certificateId (string) = "ZIG20142ZB330001-24"
-    ///   6: securityLevel (unsigned int) = 0
-    ///   7: securityInformation (unsigned int) = 0
-    ///   8: versionNumber (unsigned int) = 1
-    ///   9: certificationType (unsigned int) = 0 (development)
-    /// }
-    /// ```
+    /// Even with Matter App Debug Mode enabled on the commissioner, the CMS envelope must be
+    /// parseable — only the signature chain verification is relaxed, not the CMS parsing.
     private static func buildTestCertificationDeclaration(
         vendorID: UInt16,
-        productID: UInt16
-    ) -> Data {
-        let element = TLVElement.structure([
+        productID: UInt16,
+        paiCert: Data,
+        paiKey: P256.Signing.PrivateKey
+    ) throws -> Data {
+        // Inner TLV payload per §6.3.1
+        let tlvPayload = TLVEncoder.encode(TLVElement.structure([
             .init(tag: .contextSpecific(1), value: .unsignedInt(1)),
             .init(tag: .contextSpecific(2), value: .unsignedInt(UInt64(vendorID))),
             .init(tag: .contextSpecific(3), value: .array([.unsignedInt(UInt64(productID))])),
-            .init(tag: .contextSpecific(4), value: .unsignedInt(0x0016)),
+            .init(tag: .contextSpecific(4), value: .unsignedInt(0x000E)),   // device_type_id: Aggregator/Bridge
             .init(tag: .contextSpecific(5), value: .utf8String("ZIG20142ZB330001-24")),
             .init(tag: .contextSpecific(6), value: .unsignedInt(0)),
             .init(tag: .contextSpecific(7), value: .unsignedInt(0)),
             .init(tag: .contextSpecific(8), value: .unsignedInt(1)),
             .init(tag: .contextSpecific(9), value: .unsignedInt(0)),
-        ])
-        return TLVEncoder.encode(element)
+        ]))
+
+        return try buildCMSCertificationDeclaration(
+            tlvPayload: tlvPayload,
+            paiCert: paiCert,
+            paiKey: paiKey
+        )
     }
+
+    // MARK: - CMS SignedData Builder
+
+    /// Wrap a raw TLV Certification Declaration in a CMS SignedData envelope.
+    ///
+    /// Produces a DER-encoded ContentInfo containing a SignedData:
+    /// - eContentType: 1.3.6.1.4.1.37244.1.1 (Matter id-cd)
+    /// - eContent: [0] EXPLICIT OCTET STRING(tlvPayload)
+    /// - certificates: [0] IMPLICIT (PAI cert DER)
+    /// - signerInfos: ECDSA-SHA256 signature over the raw TLV, identified by
+    ///   IssuerAndSerialNumber from the PAI cert.
+    private static func buildCMSCertificationDeclaration(
+        tlvPayload: Data,
+        paiCert: Data,
+        paiKey: P256.Signing.PrivateKey
+    ) throws -> Data {
+        // Extract issuer Name TLV and serialNumber INTEGER TLV from PAI cert
+        let (issuerDER, serialDER) = try extractIssuerAndSerial(from: [UInt8](paiCert))
+
+        // Sign the raw TLV bytes with the PAI key.
+        // CMS without signedAttrs: signature covers the eContent bytes directly.
+        // CMS ECDSA signatures are DER-encoded (not raw r‖s).
+        let sig = try paiKey.signature(for: tlvPayload)
+        let derSig = [UInt8](sig.derRepresentation)
+
+        // OID constants
+        let oidSignedData:     [UInt64] = [1, 2, 840, 113549, 1, 7, 2]      // id-signedData
+        let oidSHA256:         [UInt64] = [2, 16, 840, 1, 101, 3, 4, 2, 1]  // sha-256
+        let oidECDSAwSHA256:   [UInt64] = [1, 2, 840, 10045, 4, 3, 2]       // ecdsa-with-SHA256
+        let oidMatterCertDecl: [UInt64] = [1, 3, 6, 1, 4, 1, 37244, 1, 1]  // Matter id-cd
+
+        let b = PKCS10CSRBuilder.self
+
+        // digestAlgorithms SET { SEQUENCE { sha-256, NULL } }
+        let digestAlgorithms = b.derSet(
+            b.derSequence(b.derOID(oidSHA256) + [0x05, 0x00])
+        )
+
+        // encapContentInfo SEQUENCE { OID, [0] EXPLICIT OCTET STRING }
+        let eContentOctetString = b.derTLV(tag: 0x04, content: [UInt8](tlvPayload))
+        let eContentExplicit    = b.derContextConstructed(tag: 0, content: eContentOctetString)
+        let encapContentInfo    = b.derSequence(b.derOID(oidMatterCertDecl) + eContentExplicit)
+
+        // certificates [0] IMPLICIT — wraps PAI cert DER bytes directly
+        let certificates = b.derContextConstructed(tag: 0, content: [UInt8](paiCert))
+
+        // IssuerAndSerialNumber SEQUENCE { issuer Name, serialNumber INTEGER }
+        let issuerAndSerial = b.derSequence(issuerDER + serialDER)
+
+        // SignerInfo SEQUENCE { version 1, sid, digestAlg, sigAlg, signature }
+        let siVersion  = b.derTLV(tag: 0x02, content: [0x01])  // INTEGER 1
+        let siDigestAlg = b.derSequence(b.derOID(oidSHA256) + [0x05, 0x00])
+        let siSigAlg   = b.derSequence(b.derOID(oidECDSAwSHA256))
+        let siSig      = b.derTLV(tag: 0x04, content: derSig)  // OCTET STRING
+        let signerInfo  = b.derSequence(siVersion + issuerAndSerial + siDigestAlg + siSigAlg + siSig)
+        let signerInfos = b.derSet(signerInfo)
+
+        // SignedData SEQUENCE { version 3, digestAlgorithms, encapContentInfo, [0] certs, signerInfos }
+        // Version 3 required because eContentType is not id-data (RFC 5652 §5.1)
+        let sdVersion  = b.derTLV(tag: 0x02, content: [0x03])  // INTEGER 3
+        let signedData = b.derSequence(
+            sdVersion + digestAlgorithms + encapContentInfo + certificates + signerInfos
+        )
+
+        // ContentInfo SEQUENCE { OID id-signedData, [0] EXPLICIT SignedData }
+        let contentInfo = b.derSequence(
+            b.derOID(oidSignedData) +
+            b.derContextConstructed(tag: 0, content: [UInt8](signedData))
+        )
+
+        return Data(contentInfo)
+    }
+
+    // MARK: - DER Certificate Parser
+
+    /// Extract the issuer Name TLV and serialNumber INTEGER TLV from a DER X.509 certificate.
+    ///
+    /// Returns both values as complete DER TLV byte arrays (tag + length + value),
+    /// suitable for direct inclusion in an IssuerAndSerialNumber structure.
+    private static func extractIssuerAndSerial(
+        from certDER: [UInt8]
+    ) throws -> (issuer: [UInt8], serial: [UInt8]) {
+        var i = 0
+
+        /// Read a DER length value at position i, advancing i past it.
+        func readLength() throws -> Int {
+            guard i < certDER.count else { throw DeviceAttestationError.invalidCertificateDER }
+            let first = Int(certDER[i]); i += 1
+            if first < 0x80 { return first }
+            let numBytes = first & 0x7F
+            guard numBytes <= 2, i + numBytes <= certDER.count else {
+                throw DeviceAttestationError.invalidCertificateDER
+            }
+            var len = 0
+            for _ in 0..<numBytes { len = (len << 8) | Int(certDER[i]); i += 1 }
+            return len
+        }
+
+        /// Skip one complete TLV at position i, advancing i past it.
+        func skipTLV() throws {
+            guard i < certDER.count else { throw DeviceAttestationError.invalidCertificateDER }
+            i += 1  // skip tag byte
+            let len = try readLength()
+            guard i + len <= certDER.count else { throw DeviceAttestationError.invalidCertificateDER }
+            i += len
+        }
+
+        // Certificate SEQUENCE (outermost)
+        guard certDER[i] == 0x30 else { throw DeviceAttestationError.invalidCertificateDER }
+        i += 1; _ = try readLength()
+
+        // TBSCertificate SEQUENCE
+        guard certDER[i] == 0x30 else { throw DeviceAttestationError.invalidCertificateDER }
+        i += 1; _ = try readLength()
+
+        // version [0] EXPLICIT — skip (tag 0xA0)
+        guard certDER[i] == 0xA0 else { throw DeviceAttestationError.invalidCertificateDER }
+        try skipTLV()
+
+        // serialNumber INTEGER — capture complete TLV (tag 0x02)
+        let serialStart = i
+        guard certDER[i] == 0x02 else { throw DeviceAttestationError.invalidCertificateDER }
+        i += 1
+        let serialLen = try readLength()
+        guard i + serialLen <= certDER.count else { throw DeviceAttestationError.invalidCertificateDER }
+        i += serialLen
+        let serialDER = Array(certDER[serialStart..<i])
+
+        // signature AlgorithmIdentifier SEQUENCE — skip
+        guard certDER[i] == 0x30 else { throw DeviceAttestationError.invalidCertificateDER }
+        try skipTLV()
+
+        // issuer Name SEQUENCE — capture complete TLV (tag 0x30)
+        let issuerStart = i
+        guard certDER[i] == 0x30 else { throw DeviceAttestationError.invalidCertificateDER }
+        i += 1
+        let issuerLen = try readLength()
+        guard i + issuerLen <= certDER.count else { throw DeviceAttestationError.invalidCertificateDER }
+        i += issuerLen
+        let issuerDER = Array(certDER[issuerStart..<i])
+
+        return (issuerDER, serialDER)
+    }
+}
+
+// MARK: - Errors
+
+private enum DeviceAttestationError: Error {
+    /// The DER encoding of the certificate is malformed or unexpected.
+    case invalidCertificateDER
 }

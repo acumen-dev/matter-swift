@@ -54,6 +54,9 @@ public actor MatterDeviceServer {
         /// Product ID.
         public let productId: UInt16
 
+        /// Device name shown in the controller UI during commissioning (DN TXT record).
+        public let deviceName: String
+
         /// PBKDF2 salt (16-32 bytes). Generated randomly if nil.
         public let salt: Data?
 
@@ -66,6 +69,7 @@ public actor MatterDeviceServer {
             port: UInt16 = 5540,
             vendorId: UInt16 = 0xFFF1,
             productId: UInt16 = 0x8000,
+            deviceName: String = "Matter Bridge",
             salt: Data? = nil,
             iterations: Int = 1000
         ) {
@@ -74,6 +78,7 @@ public actor MatterDeviceServer {
             self.port = port
             self.vendorId = vendorId
             self.productId = productId
+            self.deviceName = deviceName
             self.salt = salt
             self.iterations = iterations
         }
@@ -89,7 +94,11 @@ public actor MatterDeviceServer {
 
     private var verifier: Spake2pVerifier?
     private var salt: Data = Data()
-    private var unsecuredCounter: UInt32 = 0
+    private var iterations: Int = 1000
+    /// Unsecured session message counter. Per Matter spec §4.10.2.3 the initial value
+    /// MUST be a fresh random 32-bit value so the iPhone's per-peer replay-protection
+    /// window doesn't reject messages from a previous commissioning attempt.
+    private var unsecuredCounter: UInt32 = UInt32.random(in: 0...UInt32.max)
     private var nextSessionID: UInt16 = 1
 
     /// Active PASE handshakes keyed by exchange ID.
@@ -105,6 +114,22 @@ public actor MatterDeviceServer {
 
     /// Established sessions keyed by local session ID.
     private var sessions: [UInt16: SessionEntry] = [:]
+
+    /// Operational instance name advertised after AddNOC but before CommissioningComplete.
+    ///
+    /// Per Matter spec §4.3.5, the device SHALL start operational mDNS advertising after the
+    /// NOC is installed (staged). This name is used to withdraw the advertisement if the
+    /// fail-safe expires before CommissioningComplete is received.
+    private var stagedOperationalInstanceName: String?
+
+    /// Interface name on which the active PASE session was established.
+    ///
+    /// Captured from the PASE Pake3 sender address (e.g. `"fe80::...%en1"` → `"en1"`).
+    /// Passed as `preferredInterface` when advertising the operational mDNS record so that
+    /// `matter-bridge.local.` AAAA is registered only on this interface — preventing the
+    /// commissioner from receiving a link-local address for a different interface (e.g.
+    /// Ethernet) that is unreachable from its Wi-Fi network segment.
+    private var paseCommissioningInterface: String?
 
     /// Receive loop task.
     private var receiveTask: Task<Void, Never>?
@@ -132,19 +157,33 @@ public actor MatterDeviceServer {
 
     /// Start the server: compute verifier, bind UDP, advertise via mDNS, begin receive loop.
     public func start() async throws {
-        // Generate salt if not provided
-        salt = config.salt ?? generateRandomSalt()
+        // Load persisted state first — we need the PBKDF salt before computing the verifier.
+        // Controllers (e.g. Apple Home) cache PBKDF parameters after a successful PASE session
+        // and send `hasPBKDFParameters = true` on subsequent commissioning attempts. The server
+        // must respond with the same salt it used before, or SPAKE2+ will fail.
+        try await bridge.commissioningState.loadFromStore()
+        try await bridge.store.loadFromStore()
 
-        // Compute SPAKE2+ verifier from passcode
+        // Resolve salt: persisted (stable across restarts) > config-provided > random (first run)
+        let commState = bridge.commissioningState
+        if let persistedSalt = commState.pbkdfSalt {
+            salt = persistedSalt
+            iterations = commState.pbkdfIterations
+        } else {
+            salt = config.salt ?? generateRandomSalt()
+            iterations = config.iterations
+            commState.pbkdfSalt = salt
+            commState.pbkdfIterations = iterations
+            await commState.saveToStore()
+            logger.debug("Generated and persisted new PBKDF salt (\(salt.count) bytes, \(iterations) iterations)")
+        }
+
+        // Compute SPAKE2+ verifier from passcode + stable salt
         verifier = try Spake2p.computeVerifier(
             passcode: config.passcode,
             salt: salt,
-            iterations: config.iterations
+            iterations: iterations
         )
-
-        // Load persisted state (fabrics, ACLs, attributes)
-        try await bridge.commissioningState.loadFromStore()
-        try await bridge.store.loadFromStore()
 
         // Rebuild CASE-ready fabric info from persisted fabrics
         for (_, fabric) in bridge.commissioningState.fabrics {
@@ -159,6 +198,25 @@ public actor MatterDeviceServer {
                 await self.onFabricCommitted(fabric)
                 await self.bridge.commissioningState.saveToStore()
                 await self.bridge.store.saveToStore()
+            }
+        }
+
+        // Hook NOC staging callback for pre-CommissioningComplete operational mDNS advertisement.
+        // Per Matter spec §4.3.5, operational advertisement MUST begin after AddNOC, not after
+        // CommissioningComplete. Apple Home waits for this advertisement before sending
+        // CommissioningComplete, causing the commissioning to time out if we don't advertise.
+        bridge.commissioningState.onNOCStaged = { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                await self.advertiseStagedNOC()
+            }
+        }
+
+        // Hook NOC reverted callback to withdraw the staged advertisement on fail-safe expiry.
+        bridge.commissioningState.onNOCReverted = { [weak self] in
+            Task { [weak self] in
+                guard let self else { return }
+                await self.revokeStagedNOCAdvertisement()
             }
         }
 
@@ -336,12 +394,19 @@ public actor MatterDeviceServer {
             // Route to all member endpoints — no response is sent for group messages (spec §4.16.2).
             try await handleGroupMessage(rawData: data, groupID: groupID, from: sender)
         } else if let entry = sessions[header.sessionID] {
-            try await handleSecuredMessage(
-                rawData: data,
-                session: entry.session,
-                address: entry.address,
-                fabricIndex: entry.fabricIndex
-            )
+            do {
+                try await handleSecuredMessage(
+                    rawData: data,
+                    session: entry.session,
+                    address: sender,
+                    fabricIndex: entry.fabricIndex
+                )
+            } catch {
+                // Decryption failure on an established session typically means a stale
+                // retransmit from a previous commissioning attempt (wrong session keys).
+                // Log at debug to avoid alarming noise; the receive loop continues.
+                logger.debug("Decryption failed for session \(header.sessionID) from \(sender): \(error) (likely stale retransmit)")
+            }
         } else {
             logger.debug("Dropping message for unknown session \(header.sessionID)")
         }
@@ -445,21 +510,39 @@ public actor MatterDeviceServer {
         }
 
         guard let opcode = SecureChannelOpcode(rawValue: exchangeHeader.protocolOpcode) else {
-            logger.debug("Unknown secure channel opcode: \(exchangeHeader.protocolOpcode)")
+            logger.debug("Unknown secure channel opcode: \(exchangeHeader.protocolOpcode) exchange=\(exchangeHeader.exchangeID) ack=\(String(describing: exchangeHeader.acknowledgedMessageCounter))")
             return
         }
 
+        logger.debug("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) ack=\(String(describing: exchangeHeader.acknowledgedMessageCounter)) bodyLen=\(body.count)")
+
         switch opcode {
         case .pbkdfParamRequest:
-            try await handlePBKDFParamRequest(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+            try await handlePBKDFParamRequest(body, exchangeID: exchangeHeader.exchangeID,
+                                              messageCounter: header.messageCounter,
+                                              initiatorNodeID: header.sourceNodeID, from: sender)
         case .pasePake1:
-            try await handlePake1(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+            try await handlePake1(body, exchangeID: exchangeHeader.exchangeID,
+                                  messageCounter: header.messageCounter,
+                                  initiatorNodeID: header.sourceNodeID, from: sender)
         case .pasePake3:
-            try await handlePake3(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+            try await handlePake3(body, exchangeID: exchangeHeader.exchangeID,
+                                  messageCounter: header.messageCounter,
+                                  initiatorNodeID: header.sourceNodeID, from: sender)
         case .caseSigma1:
-            try await handleSigma1(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+            try await handleSigma1(body, exchangeID: exchangeHeader.exchangeID,
+                                   messageCounter: header.messageCounter,
+                                   initiatorNodeID: header.sourceNodeID, from: sender)
         case .caseSigma3:
-            try await handleSigma3(body, exchangeID: exchangeHeader.exchangeID, from: sender)
+            try await handleSigma3(body, exchangeID: exchangeHeader.exchangeID,
+                                   messageCounter: header.messageCounter,
+                                   initiatorNodeID: header.sourceNodeID, from: sender)
+        case .statusReport:
+            if let report = try? StatusReportMessage.decode(from: body) {
+                logger.warning("[CASE] StatusReport on exchange \(exchangeHeader.exchangeID): general=\(report.generalStatus) protocolID=0x\(String(report.protocolID, radix: 16)) protocolStatus=0x\(String(report.protocolStatus, radix: 16))")
+            } else {
+                logger.warning("[CASE] StatusReport on exchange \(exchangeHeader.exchangeID): body=\(body.map { String(format: "%02X", $0) }.joined())")
+            }
         default:
             logger.debug("Ignoring unsecured opcode \(opcode) on exchange \(exchangeHeader.exchangeID)")
         }
@@ -470,9 +553,31 @@ public actor MatterDeviceServer {
     private func handlePBKDFParamRequest(
         _ data: Data,
         exchangeID: UInt16,
+        messageCounter: UInt32,
+        initiatorNodeID: NodeID?,
         from sender: MatterAddress
     ) async throws {
+        // Duplicate detection: if Apple Home retransmits (because it didn't get an MRP ACK),
+        // resend the original response using the stored TLV — don't regenerate new random data.
+        if let existing = paseHandshakes[exchangeID] {
+            let message = buildUnsecuredMessage(
+                payload: existing.pbkdfParamResponseData,
+                opcode: .pbkdfParamResponse,
+                exchangeID: exchangeID,
+                isInitiator: false,
+                ackMessageCounter: messageCounter,
+                destinationNodeID: existing.initiatorNodeID
+            )
+            logger.debug("Resend PBKDFParamResponse exchange=\(exchangeID) counter=\(messageCounter) bytes=\(message.hexDump)")
+            try await transport.send(message, to: sender)
+            logger.debug("Resent PBKDFParamResponse (duplicate) on exchange \(exchangeID)")
+            return
+        }
+
+        logger.debug("PBKDFParamRequest raw (\(data.count)B): \(data.hexDump)")
+
         let request = try PASEMessages.PBKDFParamRequest.fromTLV(data)
+        logger.debug("PBKDFParamRequest: exchange=\(exchangeID) hasPBKDFParams=\(request.hasPBKDFParameters) sessID=\(request.initiatorSessionID) passcodeID=\(request.passcodeID) sender=\(sender.host):\(sender.port) counter=\(messageCounter)")
 
         let responderSessionID = allocateSessionID()
         var responderRandom = Data(count: 32)
@@ -484,16 +589,29 @@ public actor MatterDeviceServer {
             buf.storeBytes(of: rng.next(), toByteOffset: 24, as: UInt64.self)
         }
 
+        // If hasPBKDFParameters is true, the initiator has cached our PBKDF params from a
+        // previous session and will use them. Per Matter spec §5.3.2.1 we MUST omit tag 4
+        // (pbkdf_parameters) from the response — including it causes the initiator to reject
+        // the response and retransmit indefinitely (observed with Apple Home).
+        if request.hasPBKDFParameters {
+            logger.debug("Initiator has cached PBKDF params (hasPBKDFParameters=true) — omitting tag 4")
+        }
+
         let response = PASEMessages.PBKDFParamResponse(
             initiatorRandom: request.initiatorRandom,
             responderRandom: responderRandom,
             responderSessionID: responderSessionID,
-            iterations: UInt32(config.iterations),
+            iterations: UInt32(iterations),
             salt: salt
         )
 
-        let requestTLV = request.tlvEncode()
-        let responseTLV = response.tlvEncode()
+        // Use the RAW bytes as received for the SPAKE2+ transcript hash (TT).
+        // Re-encoding would drop any optional fields (e.g., tag 5 initiatorSessionParams)
+        // the initiator included, producing a different byte sequence and a hash mismatch
+        // that would fail Pake3 verification.
+        let requestTLV = data
+
+        let responseTLV = response.tlvEncode(includePBKDFParams: !request.hasPBKDFParameters)
 
         // Store handshake state
         paseHandshakes[exchangeID] = PASEHandshake(
@@ -502,18 +620,22 @@ public actor MatterDeviceServer {
             initiatorSessionID: request.initiatorSessionID,
             responderSessionID: responderSessionID,
             pbkdfParamRequestData: requestTLV,
-            pbkdfParamResponseData: responseTLV
+            pbkdfParamResponseData: responseTLV,
+            initiatorNodeID: initiatorNodeID
         )
 
         let message = buildUnsecuredMessage(
             payload: responseTLV,
             opcode: .pbkdfParamResponse,
             exchangeID: exchangeID,
-            isInitiator: false
+            isInitiator: false,
+            ackMessageCounter: messageCounter,
+            destinationNodeID: initiatorNodeID
         )
 
+        logger.debug("PBKDFParamResponse exchange=\(exchangeID) tlvLen=\(responseTLV.count) includePBKDF=\(!request.hasPBKDFParameters) ackCounter=\(messageCounter) wire(\(message.count)B): \(message.hexDump)")
         try await transport.send(message, to: sender)
-        logger.debug("Sent PBKDFParamResponse on exchange \(exchangeID)")
+        logger.debug("Sent PBKDFParamResponse on exchange \(exchangeID) to \(sender.host):\(sender.port) includedPBKDFParams=\(!request.hasPBKDFParameters) tlvLen=\(responseTLV.count) msgLen=\(message.count)")
     }
 
     // MARK: - PASE Step 2: Pake1 → Pake2
@@ -521,6 +643,8 @@ public actor MatterDeviceServer {
     private func handlePake1(
         _ data: Data,
         exchangeID: UInt16,
+        messageCounter: UInt32,
+        initiatorNodeID: NodeID?,
         from sender: MatterAddress
     ) async throws {
         guard var handshake = paseHandshakes[exchangeID] else {
@@ -555,7 +679,9 @@ public actor MatterDeviceServer {
             payload: pake2.tlvEncode(),
             opcode: .pasePake2,
             exchangeID: exchangeID,
-            isInitiator: false
+            isInitiator: false,
+            ackMessageCounter: messageCounter,
+            destinationNodeID: handshake.initiatorNodeID
         )
 
         try await transport.send(message, to: sender)
@@ -567,6 +693,8 @@ public actor MatterDeviceServer {
     private func handlePake3(
         _ data: Data,
         exchangeID: UInt16,
+        messageCounter: UInt32,
+        initiatorNodeID: NodeID?,
         from sender: MatterAddress
     ) async throws {
         guard let handshake = paseHandshakes[exchangeID] else {
@@ -627,11 +755,23 @@ public actor MatterDeviceServer {
             payload: statusReport.encode(),
             opcode: .statusReport,
             exchangeID: exchangeID,
-            isInitiator: false
+            isInitiator: false,
+            ackMessageCounter: messageCounter,
+            destinationNodeID: handshake.initiatorNodeID
         )
 
         try await transport.send(message, to: sender)
         logger.info("PASE session established: local=\(handshake.responderSessionID) peer=\(handshake.initiatorSessionID)")
+
+        // Record the interface the commissioner used so CASE address resolution is
+        // restricted to the same interface (prevents link-local confusion on dual-homed hosts).
+        if let pct = sender.host.firstIndex(of: "%") {
+            let ifName = String(sender.host[sender.host.index(after: pct)...])
+            if !ifName.isEmpty {
+                paseCommissioningInterface = ifName
+                logger.debug("PASE: commissioning interface \(ifName) — will restrict operational AAAA to this interface")
+            }
+        }
     }
 
     // MARK: - CASE Step 1: Sigma1 → Sigma2
@@ -639,11 +779,34 @@ public actor MatterDeviceServer {
     private func handleSigma1(
         _ data: Data,
         exchangeID: UInt16,
+        messageCounter: UInt32,
+        initiatorNodeID: NodeID?,
         from sender: MatterAddress
     ) async throws {
+        logger.info("CASE Sigma1 received from \(sender) on exchange \(exchangeID)")
+
+        // MRP retransmit detection: if we already have a handshake for this exchange the
+        // initiator is retransmitting Sigma1 because our Sigma2 was lost.  Re-send the
+        // stored Sigma2 payload so the initiator can continue with the original ephemeral
+        // key material — generating a fresh Sigma2 would invalidate any Sigma3 that Apple
+        // Home has already computed against the first Sigma2.
+        if let existing = caseHandshakes[exchangeID] {
+            logger.info("CASE Sigma1 retransmit on exchange \(exchangeID) — resending stored Sigma2")
+            let message = buildUnsecuredMessage(
+                payload: existing.sigma2Payload,
+                opcode: .caseSigma2,
+                exchangeID: exchangeID,
+                isInitiator: false,
+                ackMessageCounter: messageCounter,
+                destinationNodeID: existing.initiatorNodeID
+            )
+            try await transport.send(message, to: sender)
+            return
+        }
+
         // Find a committed fabric that matches the destination ID in Sigma1
         guard let (fabricInfo, _) = findMatchingFabric(sigma1Data: data) else {
-            logger.warning("No matching fabric for Sigma1 on exchange \(exchangeID)")
+            logger.warning("No matching fabric for Sigma1 on exchange \(exchangeID) — IPK mismatch or unknown fabric")
             return
         }
 
@@ -660,14 +823,18 @@ public actor MatterDeviceServer {
             sender: sender,
             responderSessionID: responderSessionID,
             handlerContext: handshakeCtx,
-            fabricInfo: fabricInfo
+            fabricInfo: fabricInfo,
+            initiatorNodeID: initiatorNodeID,
+            sigma2Payload: sigma2Data
         )
 
         let message = buildUnsecuredMessage(
             payload: sigma2Data,
             opcode: .caseSigma2,
             exchangeID: exchangeID,
-            isInitiator: false
+            isInitiator: false,
+            ackMessageCounter: messageCounter,
+            destinationNodeID: initiatorNodeID
         )
 
         try await transport.send(message, to: sender)
@@ -679,6 +846,8 @@ public actor MatterDeviceServer {
     private func handleSigma3(
         _ data: Data,
         exchangeID: UInt16,
+        messageCounter: UInt32,
+        initiatorNodeID: NodeID?,
         from sender: MatterAddress
     ) async throws {
         guard let handshake = caseHandshakes[exchangeID] else {
@@ -690,12 +859,19 @@ public actor MatterDeviceServer {
 
         // Use the responderSessionID allocated during Sigma1 — this is the ID
         // the controller will use as peerSessionID when sending encrypted messages.
-        let session = try handler.handleSigma3(
-            payload: data,
-            context: handshake.handlerContext,
-            initiatorRCAC: handshake.fabricInfo.rcac,
-            localSessionID: handshake.responderSessionID
-        )
+        let session: SecureSession
+        do {
+            session = try handler.handleSigma3(
+                payload: data,
+                context: handshake.handlerContext,
+                initiatorRCAC: handshake.fabricInfo.rcac,
+                localSessionID: handshake.responderSessionID
+            )
+        } catch {
+            logger.error("CASE Sigma3 failed on exchange \(exchangeID) (fabric=\(handshake.fabricInfo.fabricIndex)): \(error)")
+            caseHandshakes.removeValue(forKey: exchangeID)
+            throw error
+        }
 
         sessions[session.localSessionID] = SessionEntry(
             session: session,
@@ -716,7 +892,9 @@ public actor MatterDeviceServer {
             payload: statusReport.encode(),
             opcode: .statusReport,
             exchangeID: exchangeID,
-            isInitiator: false
+            isInitiator: false,
+            ackMessageCounter: messageCounter,
+            destinationNodeID: handshake.initiatorNodeID
         )
 
         try await transport.send(message, to: sender)
@@ -728,44 +906,261 @@ public actor MatterDeviceServer {
     /// Committed fabrics available for CASE session establishment.
     private var committedFabrics: [FabricIndex: FabricInfo] = [:]
 
+    /// Staged fabric info available for CASE during the commissioning window.
+    ///
+    /// Set when AddNOC is processed (before CommissioningComplete). This allows the
+    /// commissioner to establish a CASE session — required to *send* CommissioningComplete
+    /// per spec §5.5.2. Cleared when the fabric is committed or the fail-safe expires.
+    private var stagedFabricInfo: FabricInfo?
+
     private func onFabricCommitted(_ fabric: CommittedFabric) {
-        do {
-            let fabricInfo = try fabric.fabricInfo()
-            committedFabrics[fabric.fabricIndex] = fabricInfo
+        // Clear staged state — the fabric is now committed.
+        stagedOperationalInstanceName = nil
+        stagedFabricInfo = nil
 
-            // Advertise operational service for this fabric
-            let opName = OperationalInstanceName(
-                compressedFabricID: fabricInfo.compressedFabricID(),
-                nodeID: fabricInfo.nodeID.rawValue
-            )
+        func hexDump(_ data: Data) -> String {
+            stride(from: 0, to: data.count, by: 16).map { i in
+                let chunk = data[i..<min(i + 16, data.count)]
+                let hex = chunk.map { String(format: "%02X", $0) }.joined(separator: " ")
+                return String(format: "    %04X: %@", i, hex)
+            }.joined(separator: "\n")
+        }
 
-            let port = config.port
-            let discovery = self.discovery
-            Task {
-                try? await discovery.advertise(service: MatterServiceRecord(
+        let rcac: MatterCertificate
+        do { rcac = try MatterCertificate.fromTLV(fabric.rcacTLV) }
+        catch {
+            logger.error("onFabricCommitted: RCAC parse failed — fabric \(fabric.fabricIndex) not committed: \(error)")
+            logger.error("  RCAC (\(fabric.rcacTLV.count) bytes):\n\(hexDump(fabric.rcacTLV))")
+            return
+        }
+
+        let noc: MatterCertificate
+        do { noc = try MatterCertificate.fromTLV(fabric.nocTLV) }
+        catch {
+            logger.error("onFabricCommitted: NOC parse failed — fabric \(fabric.fabricIndex) not committed: \(error)")
+            logger.error("  NOC (\(fabric.nocTLV.count) bytes):\n\(hexDump(fabric.nocTLV))")
+            return
+        }
+
+        // ICAC: non-fatal. If Apple's ICAC can't be parsed we still register the fabric so
+        // CASE Sigma1 can be processed. Chain validation during Sigma3 will warn if ICAC is absent.
+        var icac: MatterCertificate?
+        if let icacBytes = fabric.icacTLV {
+            do { icac = try MatterCertificate.fromTLV(icacBytes) }
+            catch {
+                logger.warning("onFabricCommitted: ICAC parse failed (fabric \(fabric.fabricIndex) registered without ICAC): \(error)")
+                logger.warning("  ICAC (\(icacBytes.count) bytes):\n\(hexDump(icacBytes))")
+            }
+        }
+
+        let fabricInfo = FabricInfo(
+            fabricIndex: fabric.fabricIndex,
+            fabricID: noc.subject.fabricID ?? FabricID(rawValue: 0),
+            nodeID: noc.subject.nodeID ?? NodeID(rawValue: 0),
+            rcac: rcac,
+            icac: icac,
+            rawICAC: fabric.icacTLV,   // forward raw bytes for CASE even if parsing failed
+            noc: noc,
+            rawNOC: fabric.nocTLV,     // forward raw bytes for CASE to avoid re-encoding roundtrip
+            operationalKey: fabric.operationalKey,
+            ipkEpochKey: fabric.ipkEpochKey
+        )
+        committedFabrics[fabric.fabricIndex] = fabricInfo
+
+        // Advertise operational service for this fabric
+        let opName = OperationalInstanceName(
+            compressedFabricID: fabricInfo.compressedFabricID(),
+            nodeID: fabricInfo.nodeID.rawValue
+        )
+        let cfidSubtype = String(format: "_I%016llX", fabricInfo.compressedFabricID())
+
+        let port = config.port
+        let discovery = self.discovery
+        let opNameInstance = opName.instanceName
+        let preferredIface = paseCommissioningInterface
+        Task {
+            do {
+                try await discovery.advertise(service: MatterServiceRecord(
+                    name: opNameInstance,
+                    serviceType: .operational,
+                    host: "",
+                    port: port,
+                    txtRecords: ["SII": "5000", "SAI": "300", "T": "0"],
+                    subtypes: [cfidSubtype],
+                    preferredInterface: preferredIface
+                ))
+            } catch {
+                logger.error("onFabricCommitted: mDNS registration failed for '\(opNameInstance)': \(error)")
+            }
+        }
+
+        if icac == nil && fabric.icacTLV != nil {
+            logger.warning("Fabric \(fabric.fabricIndex) committed without ICAC — CASE chain validation will skip intermediate cert")
+        } else {
+            logger.info("Fabric \(fabric.fabricIndex) committed, CASE ready, advertising \(opName.instanceName)")
+        }
+    }
+
+    /// Advertise the staged operational mDNS record immediately after AddNOC.
+    ///
+    /// Per Matter spec §4.3.5, the device SHALL begin advertising its operational instance
+    /// name as soon as the NOC is installed (staged), before CommissioningComplete. This
+    /// allows Apple Home to discover the device operationally and send CommissioningComplete.
+    ///
+    /// The staged fabric is not yet committed — `committedFabrics` is NOT updated here.
+    /// When CommissioningComplete fires, `onFabricCommitted` re-advertises the same name
+    /// and adds it to `committedFabrics` so CASE sessions can be established.
+    private func advertiseStagedNOC() {
+        let cs = bridge.commissioningState
+        guard let nocData = cs.stagedNOC,
+              let rcacData = cs.stagedRCAC,
+              let opKey = cs.operationalKey else {
+            logger.warning("advertiseStagedNOC: missing staged credentials, skipping advertisement")
+            return
+        }
+
+        let icacData = cs.stagedICAC
+        let icacDesc = icacData.map { "\($0.count) bytes" } ?? "absent"
+        logger.debug("advertiseStagedNOC: RCAC \(rcacData.count) bytes, NOC \(nocData.count) bytes, ICAC \(icacDesc)")
+
+        // Per spec §4.3.5, operational mDNS advertisement only requires the compressed fabric ID
+        // (from RCAC public key + fabric ID) and the node ID (from NOC subject). Parse them first.
+        // ICAC parsing is needed for full chain validation during CASE but NOT for this advertisement,
+        // so ICAC parse failures are treated as non-fatal here (we warn and continue without ICAC).
+
+        func hexDump(_ data: Data) -> String {
+            stride(from: 0, to: data.count, by: 16).map { i in
+                let chunk = data[i..<min(i + 16, data.count)]
+                let hex = chunk.map { String(format: "%02X", $0) }.joined(separator: " ")
+                return String(format: "    %04X: %@", i, hex)
+            }.joined(separator: "\n")
+        }
+
+        let rcac: MatterCertificate
+        do { rcac = try MatterCertificate.fromTLV(rcacData) }
+        catch {
+            logger.error("advertiseStagedNOC: RCAC parse failed: \(error)")
+            logger.error("  RCAC (\(rcacData.count) bytes):\n\(hexDump(rcacData))")
+            return
+        }
+
+        let noc: MatterCertificate
+        do { noc = try MatterCertificate.fromTLV(nocData) }
+        catch {
+            logger.error("advertiseStagedNOC: NOC parse failed: \(error)")
+            logger.error("  NOC (\(nocData.count) bytes):\n\(hexDump(nocData))")
+            return
+        }
+
+        // ICAC is optional for the operational name computation; warn on parse failure but continue.
+        var icac: MatterCertificate?
+        if let icacBytes = icacData {
+            do { icac = try MatterCertificate.fromTLV(icacBytes) }
+            catch {
+                logger.warning("advertiseStagedNOC: ICAC parse failed (non-fatal for mDNS): \(error)")
+                logger.warning("  ICAC (\(icacBytes.count) bytes):\n\(hexDump(icacBytes))")
+                // Continue — ICAC is not required for the operational instance name.
+            }
+        }
+
+        let fabricIndex = FabricIndex(rawValue: UInt8(cs.fabrics.count + 1))
+        let fabricInfo = FabricInfo(
+            fabricIndex: fabricIndex,
+            fabricID: noc.subject.fabricID ?? FabricID(rawValue: 0),
+            nodeID: noc.subject.nodeID ?? NodeID(rawValue: 0),
+            rcac: rcac,
+            icac: icac,
+            rawICAC: icacData,          // forward raw bytes for CASE even if parsing failed
+            noc: noc,
+            rawNOC: nocData,            // forward raw bytes for CASE to avoid re-encoding roundtrip
+            operationalKey: opKey,
+            ipkEpochKey: cs.stagedIPK ?? Data(repeating: 0, count: 16)
+        )
+
+        // Make the staged fabric available for CASE session matching.
+        // The commissioner MUST establish a CASE session (per spec §5.5.2) to send
+        // CommissioningComplete. Without this, findMatchingFabric() can't find the fabric
+        // and Sigma1 is rejected, creating a deadlock where neither side can proceed.
+        stagedFabricInfo = fabricInfo
+
+        let opName = OperationalInstanceName(
+            compressedFabricID: fabricInfo.compressedFabricID(),
+            nodeID: fabricInfo.nodeID.rawValue
+        )
+        stagedOperationalInstanceName = opName.instanceName
+
+        // Per Matter spec §4.3.1.3, operational advertisements MUST include SII and SAI
+        // TXT records. Apple Home validates these before establishing a CASE session.
+        let cfidSubtype = String(format: "_I%016llX", fabricInfo.compressedFabricID())
+
+        let port = config.port
+        let discovery = self.discovery
+        let preferredIfaceStaged = paseCommissioningInterface
+        Task {
+            do {
+                try await discovery.advertise(service: MatterServiceRecord(
                     name: opName.instanceName,
                     serviceType: .operational,
                     host: "",
                     port: port,
-                    txtRecords: [:]
+                    txtRecords: ["SII": "5000", "SAI": "300", "T": "0"],
+                    subtypes: [cfidSubtype],
+                    preferredInterface: preferredIfaceStaged
                 ))
+            } catch {
+                logger.error("advertiseStagedNOC: mDNS registration failed for '\(opName.instanceName)': \(error)")
             }
-
-            logger.info("Fabric \(fabric.fabricIndex) committed, CASE ready, advertising \(opName.instanceName)")
-        } catch {
-            logger.error("Failed to build FabricInfo from committed fabric: \(error)")
         }
+
+        logger.info("AddNOC: advertising staged operational name \(opName.instanceName) cfid=\(cfidSubtype) ipkLen=\(cs.stagedIPK?.count ?? 0) (pre-CommissioningComplete)")
     }
 
-    /// Find a committed fabric matching the Sigma1 destination ID.
+    /// Withdraw the staged operational mDNS advertisement when the fail-safe expires.
+    ///
+    /// Called when `disarmFailSafe()` clears staged credentials without a CommissioningComplete.
+    private func revokeStagedNOCAdvertisement() {
+        guard let instanceName = stagedOperationalInstanceName else { return }
+        stagedOperationalInstanceName = nil
+        stagedFabricInfo = nil   // no longer needed
+
+        let discovery = self.discovery
+        Task {
+            await discovery.stopAdvertising(name: instanceName)
+        }
+
+        logger.info("Fail-safe expired: withdrew staged operational advertisement \(instanceName)")
+    }
+
+    /// Find a fabric matching the Sigma1 destination ID.
+    ///
+    /// Checks both committed fabrics (for post-CommissioningComplete CASE) and the
+    /// staged fabric (for the initial CommissioningComplete exchange, per spec §5.5.2).
     private func findMatchingFabric(sigma1Data: Data) -> (FabricInfo, FabricIndex)? {
+        // Check committed fabrics first (most common path after commissioning)
         for (index, info) in committedFabrics {
-            // Try to create a responder step1 — if destination ID matches, it succeeds
             let handler = CASEProtocolHandler(fabricInfo: info)
-            if let _ = try? handler.handleSigma1(payload: sigma1Data, responderSessionID: 0) {
+            do {
+                let _ = try handler.handleSigma1(payload: sigma1Data, responderSessionID: 0)
                 return (info, index)
+            } catch {
+                logger.debug("CASE: committed fabric \(index) did not match Sigma1: \(error)")
             }
         }
+
+        // Check the staged fabric — needed for the initial CASE session that carries
+        // CommissioningComplete. The fabric is staged after AddNOC but not yet committed.
+        if let staged = stagedFabricInfo {
+            let handler = CASEProtocolHandler(fabricInfo: staged)
+            do {
+                let _ = try handler.handleSigma1(payload: sigma1Data, responderSessionID: 0)
+                return (staged, staged.fabricIndex)
+            } catch {
+                logger.warning("CASE: staged fabric \(staged.fabricIndex) did not match Sigma1: \(error) — IPK or destinationId mismatch")
+            }
+        } else {
+            logger.warning("CASE: no staged fabric available for Sigma1 matching")
+        }
+
         return nil
     }
 
@@ -777,10 +1172,15 @@ public actor MatterDeviceServer {
         address: MatterAddress,
         fabricIndex: FabricIndex
     ) async throws {
-        let (_, exchangeHeader, payload) = try SecureMessageCodec.decode(
+        let (msgHeader, exchangeHeader, payload) = try SecureMessageCodec.decode(
             data: rawData,
             session: session
         )
+
+        // ACK counter to piggyback on the first response for this message.
+        // MRP requires ACKing any message with reliableDelivery=true; piggybacking
+        // on the response avoids the need for a separate standalone ACK datagram.
+        var pendingAck: UInt32? = exchangeHeader.flags.reliableDelivery ? msgHeader.messageCounter : nil
 
         // Route based on protocol ID
         if exchangeHeader.protocolID == MatterProtocolID.interactionModel.rawValue {
@@ -810,8 +1210,10 @@ public actor MatterDeviceServer {
                         flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
                         exchangeID: exchangeHeader.exchangeID,
-                        protocolID: MatterProtocolID.interactionModel.rawValue
+                        protocolID: MatterProtocolID.interactionModel.rawValue,
+                        acknowledgedMessageCounter: pendingAck
                     )
+                    pendingAck = nil
                     let encrypted = try SecureMessageCodec.encode(
                         exchangeHeader: chunkHeader,
                         payload: nextChunk.tlvEncode(),
@@ -829,8 +1231,10 @@ public actor MatterDeviceServer {
                             flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                             protocolOpcode: trailingOpcode.rawValue,
                             exchangeID: exchangeHeader.exchangeID,
-                            protocolID: MatterProtocolID.interactionModel.rawValue
+                            protocolID: MatterProtocolID.interactionModel.rawValue,
+                            acknowledgedMessageCounter: pendingAck
                         )
+                        pendingAck = nil
                         let encrypted = try SecureMessageCodec.encode(
                             exchangeHeader: trailingHeader,
                             payload: trailingData,
@@ -864,8 +1268,10 @@ public actor MatterDeviceServer {
                         ),
                         protocolOpcode: responseOpcode.rawValue,
                         exchangeID: exchangeHeader.exchangeID,
-                        protocolID: MatterProtocolID.interactionModel.rawValue
+                        protocolID: MatterProtocolID.interactionModel.rawValue,
+                        acknowledgedMessageCounter: pendingAck
                     )
+                    pendingAck = nil
 
                     let encrypted = try SecureMessageCodec.encode(
                         exchangeHeader: responseExchangeHeader,
@@ -884,8 +1290,10 @@ public actor MatterDeviceServer {
                         flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
                         exchangeID: exchangeHeader.exchangeID,
-                        protocolID: MatterProtocolID.interactionModel.rawValue
+                        protocolID: MatterProtocolID.interactionModel.rawValue,
+                        acknowledgedMessageCounter: pendingAck
                     )
+                    pendingAck = nil
                     let encrypted = try SecureMessageCodec.encode(
                         exchangeHeader: chunkHeader,
                         payload: firstChunk.tlvEncode(),
@@ -904,8 +1312,10 @@ public actor MatterDeviceServer {
                             flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                             protocolOpcode: trailingOpcode.rawValue,
                             exchangeID: exchangeHeader.exchangeID,
-                            protocolID: MatterProtocolID.interactionModel.rawValue
+                            protocolID: MatterProtocolID.interactionModel.rawValue,
+                            acknowledgedMessageCounter: pendingAck
                         )
+                        pendingAck = nil
                         let encrypted = try SecureMessageCodec.encode(
                             exchangeHeader: trailingHeader,
                             payload: trailingData,
@@ -918,7 +1328,7 @@ public actor MatterDeviceServer {
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {
             // Handle secure channel messages (e.g., MRP acks, close session)
-            logger.debug("Secure channel message on session \(session.localSessionID)")
+            logger.debug("Secure channel message on session \(session.localSessionID): opcode=\(exchangeHeader.protocolOpcode)")
         } else {
             logger.debug("Unknown protocol \(exchangeHeader.protocolID) on session \(session.localSessionID)")
         }
@@ -930,12 +1340,15 @@ public actor MatterDeviceServer {
         payload: Data,
         opcode: SecureChannelOpcode,
         exchangeID: UInt16,
-        isInitiator: Bool
+        isInitiator: Bool,
+        ackMessageCounter: UInt32? = nil,
+        destinationNodeID: NodeID? = nil
     ) -> Data {
         let messageHeader = MessageHeader(
             sessionID: 0,
             messageCounter: nextUnsecuredCounter(),
-            sourceNodeID: nil
+            sourceNodeID: nil,
+            destinationNodeID: destinationNodeID
         )
 
         let exchangeHeader = ExchangeHeader(
@@ -945,7 +1358,8 @@ public actor MatterDeviceServer {
             ),
             protocolOpcode: opcode.rawValue,
             exchangeID: exchangeID,
-            protocolID: MatterProtocolID.secureChannel.rawValue
+            protocolID: MatterProtocolID.secureChannel.rawValue,
+            acknowledgedMessageCounter: ackMessageCounter
         )
 
         var message = messageHeader.encode()
@@ -1016,7 +1430,7 @@ public actor MatterDeviceServer {
             "D":  "\(config.discriminator)",
             "VP": "\(config.vendorId)+\(config.productId)",
             "CM": cmValue,
-            "DN": "SwiftMatter Bridge",
+            "DN": config.deviceName,
         ]
 
         // DNS-SD subtypes required for Matter commissioning discovery (Matter spec §4.3.1.1).
@@ -1028,7 +1442,7 @@ public actor MatterDeviceServer {
 
         do {
             try await discovery.advertise(service: MatterServiceRecord(
-                name: "SwiftMatter-\(config.discriminator)",
+                name: "\(config.deviceName)-\(config.discriminator)",
                 serviceType: .commissionable,
                 host: "",
                 port: config.port,
@@ -1062,6 +1476,10 @@ extension MatterDeviceServer {
         let responderSessionID: UInt16
         let pbkdfParamRequestData: Data
         let pbkdfParamResponseData: Data
+        /// Source node ID from the initiator's PBKDFParamRequest header.
+        /// Echoed as destinationNodeID in all PASE responses so Apple Home's MRP
+        /// layer recognises the message as addressed to it (CHIP SDK behaviour).
+        let initiatorNodeID: NodeID?
         var verifierContext: Spake2pVerifierContext?
     }
 
@@ -1079,5 +1497,37 @@ extension MatterDeviceServer {
         let responderSessionID: UInt16
         let handlerContext: CASEProtocolHandler.ResponderHandshakeContext
         let fabricInfo: FabricInfo
+        /// Source node ID from the initiator's Sigma1 message header.
+        /// Echoed as destinationNodeID in Sigma2 and StatusReport responses.
+        let initiatorNodeID: NodeID?
+        /// The raw Sigma2 payload bytes — stored so we can re-send idempotently
+        /// if the initiator retransmits Sigma1 on the same exchange ID (MRP behaviour).
+        let sigma2Payload: Data
+    }
+}
+
+// MARK: - Debug Hex Dump
+
+private extension Data {
+    /// Hex dump: groups of 8 bytes separated by spaces, 16 per line, with byte offsets.
+    ///
+    /// Example output:
+    /// ```
+    /// 0000: 00 00 00 00 01 00 00 00  06 21 34 12 00 00 05 00
+    /// 0010: 00 00 15 30 01 20 ...
+    /// ```
+    var hexDump: String {
+        guard !isEmpty else { return "<empty>" }
+        var lines: [String] = []
+        var offset = 0
+        while offset < count {
+            let chunk = Array(self[offset..<Swift.min(offset + 16, count)])
+            let hexParts = chunk.enumerated().map { i, b -> String in
+                i == 8 ? " \(String(format: "%02x", b))" : String(format: "%02x", b)
+            }
+            lines.append(String(format: "%04x: %@", offset, hexParts.joined(separator: " ")))
+            offset += 16
+        }
+        return "\n" + lines.joined(separator: "\n")
     }
 }

@@ -68,6 +68,31 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         }
     }
 
+    // MARK: - Response Command IDs
+
+    /// Maps request command IDs to their response command IDs per the Matter spec.
+    ///
+    /// Per spec §11.17.7, attestation/chain/CSR commands have paired response commands
+    /// and addNOC/updateNOC/updateFabricLabel/removeFabric all respond with NOCResponse (0x08).
+    /// addTrustedRootCert produces no response data (status-only).
+    public func responseCommandID(for requestCommandID: CommandID) -> CommandID? {
+        switch requestCommandID {
+        case OperationalCredentialsCluster.Command.attestationRequest:
+            return OperationalCredentialsCluster.Command.attestationResponse
+        case OperationalCredentialsCluster.Command.certificateChainRequest:
+            return OperationalCredentialsCluster.Command.certificateChainResponse
+        case OperationalCredentialsCluster.Command.csrRequest:
+            return OperationalCredentialsCluster.Command.csrResponse
+        case OperationalCredentialsCluster.Command.addNOC,
+             OperationalCredentialsCluster.Command.updateNOC,
+             OperationalCredentialsCluster.Command.updateFabricLabel,
+             OperationalCredentialsCluster.Command.removeFabric:
+            return OperationalCredentialsCluster.Command.nocResponse
+        default:
+            return nil
+        }
+    }
+
     // MARK: - AttestationRequest
 
     /// Handle AttestationRequest command (0x00).
@@ -101,7 +126,9 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
             ])
         )
 
-        // Sign attestationElements || attestationChallenge with DAC private key
+        // Sign attestationElements || attestationChallenge with DAC private key.
+        // Per Matter spec §11.17.6.3 the signature field is a 64-byte raw ECDSA
+        // signature (r ‖ s, each 32 bytes), NOT DER-encoded.
         let challenge = commissioningState.attestationChallenge ?? Data()
         let messageToSign = attestationElements + challenge
         let signature = try credentials.dacPrivateKey.signature(for: messageToSign)
@@ -109,7 +136,7 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         // Return AttestationResponse: { 0: attestationElements, 1: attestationSignature }
         return TLVElement.structure([
             .init(tag: .contextSpecific(0), value: .octetString(attestationElements)),
-            .init(tag: .contextSpecific(1), value: .octetString(Data(signature.derRepresentation))),
+            .init(tag: .contextSpecific(1), value: .octetString(Data(signature.rawRepresentation))),
         ])
     }
 
@@ -178,13 +205,15 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         let challenge = commissioningState.attestationChallenge ?? Data()
         let messageToSign = nocsrElements + challenge
 
+        // Per Matter spec §11.17.6.6 the CSRResponse attestation_signature is also a
+        // 64-byte raw ECDSA signature (r ‖ s), NOT DER-encoded.
         let attestationSignature: Data
         if let credentials = commissioningState.attestationCredentials {
             let sig = try credentials.dacPrivateKey.signature(for: messageToSign)
-            attestationSignature = Data(sig.derRepresentation)
+            attestationSignature = Data(sig.rawRepresentation)
         } else {
             let sig = try opKey.signature(for: messageToSign)
-            attestationSignature = Data(sig.derRepresentation)
+            attestationSignature = Data(sig.rawRepresentation)
         }
 
         let response = OperationalCredentialsCluster.CSRResponse(
@@ -236,6 +265,11 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         commissioningState.stagedIPK = addNOC.ipkValue
         commissioningState.stagedCaseAdminSubject = addNOC.caseAdminSubject
         commissioningState.stagedAdminVendorId = addNOC.adminVendorId
+
+        // Per Matter spec §4.3.5, the device SHALL begin operational mDNS advertisement
+        // immediately after the NOC is installed (staged), before CommissioningComplete.
+        // This allows Apple Home (and other commissioners) to discover the device operationally.
+        commissioningState.onNOCStaged?()
 
         // Return success with the fabric index that will be assigned
         let pendingIndex = FabricIndex(rawValue: UInt8(commissioningState.fabrics.count + 1))

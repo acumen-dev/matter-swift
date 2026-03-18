@@ -57,7 +57,7 @@ struct DeviceAttestationCredentialsTests {
         #expect(verified, "DAC key should be able to sign and verify data")
     }
 
-    @Test("testCredentials CD is valid TLV with vendor ID")
+    @Test("testCredentials CD is CMS SignedData wrapping a TLV payload")
     func testCredentialsCDTLV() throws {
         let vendorID: UInt16 = 0xFFF1
         let productID: UInt16 = 0x8000
@@ -66,24 +66,23 @@ struct DeviceAttestationCredentialsTests {
             productID: productID
         )
 
-        // CD should be TLV-decodable
-        let (_, element) = try TLVDecoder.decode(credentials.certificationDeclaration)
-        guard case .structure(let fields) = element else {
-            Issue.record("CD should be a TLV structure")
-            return
-        }
+        let cd = credentials.certificationDeclaration
 
-        // Field 2 should be vendorID
-        let vendorField = fields.first(where: { $0.tag == .contextSpecific(2) })
-        #expect(vendorField?.value.uintValue == UInt64(vendorID),
-                "CD should contain the correct vendor ID")
+        // CD must be DER ContentInfo (SEQUENCE tag 0x30) per Matter spec §6.3.5
+        #expect(cd.first == 0x30, "CD must be a DER-encoded ContentInfo (SEQUENCE)")
 
-        // Field 3 should be productId array
-        let productField = fields.first(where: { $0.tag == .contextSpecific(3) })
-        if case .array(let products) = productField?.value {
-            #expect(products.first?.uintValue == UInt64(productID),
-                    "CD should contain the correct product ID")
+        // Expect at least 50 bytes — CMS envelope + TLV payload
+        #expect(cd.count > 50, "CD must be large enough to contain CMS envelope and TLV payload")
+
+        // Locate the inner TLV by scanning for Matter id-cd OID bytes.
+        // The Matter CD OID (1.3.6.1.4.1.37244.1.1) DER-encoded is:
+        //   06 0A 2B 06 01 04 01 82 A2 7C 01 01
+        let matterCDOID: [UInt8] = [0x06, 0x0A, 0x2B, 0x06, 0x01, 0x04, 0x01, 0x82, 0xA2, 0x7C, 0x01, 0x01]
+        let cdBytes = [UInt8](cd)
+        let oidFound = cdBytes.count >= matterCDOID.count && (0...(cdBytes.count - matterCDOID.count)).contains {
+            Array(cdBytes[$0..<$0 + matterCDOID.count]) == matterCDOID
         }
+        #expect(oidFound, "CD CMS envelope should contain the Matter id-cd OID (1.3.6.1.4.1.37244.1.1)")
     }
 }
 
@@ -152,10 +151,13 @@ struct AttestationRequestHandlerTests {
         }
         #expect(!sigData.isEmpty, "attestationSignature should not be empty")
 
+        // Per Matter spec §11.17.6.3 the signature is a 64-byte raw r‖s encoding.
+        #expect(sigData.count == 64, "attestationSignature should be 64 bytes (raw r‖s)")
+
         // Verify signature with DAC public key
         let credentials = commissioningState.attestationCredentials!
         let messageToVerify = attestationElementsData + commissioningState.attestationChallenge!
-        let sig = try P256.Signing.ECDSASignature(derRepresentation: sigData)
+        let sig = try P256.Signing.ECDSASignature(rawRepresentation: sigData)
         let verified = credentials.dacPrivateKey.publicKey.isValidSignature(sig, for: messageToVerify)
         #expect(verified, "attestationSignature should verify with DAC public key")
     }

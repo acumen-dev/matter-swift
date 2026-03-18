@@ -5,12 +5,14 @@ import Foundation
 import Crypto
 import MatterTypes
 
-/// Key derivation functions specific to CASE session establishment.
+/// CASE sigma key derivation per Matter Core Spec §5.5.2.
 ///
-/// CASE uses HMAC-SHA256 and HKDF-SHA256 for various key derivation steps:
-/// - **Destination ID**: Identifies the target fabric+node without revealing IDs in cleartext
-/// - **Sigma keys**: Derives S2K and S3K for encrypting Sigma2/Sigma3 payloads
-/// - **Session keys**: Derives I2R/R2I/attestation keys from ECDH shared secret
+/// All three sigma functions use HKDF-SHA256 with the ECDH shared secret as IKM.
+/// The salt includes a transcript hash (SHA-256 over concatenated Sigma message bytes)
+/// to bind the derived keys to the specific handshake transcript.
+///
+/// Key derivation also includes `computeDestinationID` which is used in Sigma1
+/// to identify the target fabric+node without revealing IDs in cleartext.
 public enum CASEKeyDerivation {
 
     // MARK: - Destination ID
@@ -52,88 +54,132 @@ public enum CASEKeyDerivation {
         return Data(hmac)
     }
 
-    // MARK: - Sigma Key Derivation
+    // MARK: - S2K (Sigma2 encryption key)
 
-    /// Derive the S2K and S3K keys used to encrypt Sigma2 and Sigma3 payloads.
+    /// Derive the Sigma2 encryption key (S2K).
     ///
-    /// Keys are derived via HKDF-SHA256:
-    /// - IKM: ECDH shared secret
-    /// - Salt: IPK || responderRandom || responderEphPubKey || initiatorEphPubKey
-    /// - Info: "Sigma Keys" (ASCII)
-    /// - Output: 48 bytes → S2K (0-15), S3K (16-31), unused (32-47)
+    /// Used to encrypt the `TBEData2` payload inside Sigma2.
     ///
-    /// Note: The spec actually derives only S2K (16 bytes) and S3K (16 bytes)
-    /// from a single 48-byte HKDF output. Bytes 32-47 are not used for Sigma
-    /// but we extract them for consistency with the session key pattern.
+    /// Per CHIP SDK `CASESession::ConstructSaltSigma2`:
+    ///   salt = IPK || σ2.Responder_Random || σ2.Responder_EPH_Pub_Key || SHA256(σ1)
+    ///   info = "Sigma2"
+    ///   length = 16 bytes
+    ///
+    /// Note: the initiator random is NOT in the S2K salt. The CHIP SDK uses only
+    /// responderRandom (not initiatorRandom) as the nonce component in the salt.
     ///
     /// - Parameters:
-    ///   - sharedSecret: The ECDH shared secret.
+    ///   - sharedSecret: The ECDH shared secret between the ephemeral keys.
     ///   - ipk: The Identity Protection Key (16 bytes).
-    ///   - responderRandom: Responder's random data (32 bytes).
-    ///   - responderEphPubKey: Responder's ephemeral public key (65 bytes).
-    ///   - initiatorEphPubKey: Initiator's ephemeral public key (65 bytes).
-    /// - Returns: Tuple of (s2k, s3k) as `SymmetricKey`.
-    public static func deriveSigmaKeys(
-        sharedSecret: Data,
+    ///   - responderRandom: Responder's random data from Sigma2 (32 bytes).
+    ///   - responderEphPubKey: Responder's ephemeral public key (65-byte x963).
+    ///   - sigma1Bytes: Raw TLV bytes of the Sigma1 message.
+    /// - Returns: 16-byte S2K as `SymmetricKey`.
+    public static func deriveSigma2Key(
+        sharedSecret: SharedSecret,
         ipk: Data,
         responderRandom: Data,
-        responderEphPubKey: Data,
-        initiatorEphPubKey: Data
-    ) -> (s2k: SymmetricKey, s3k: SymmetricKey) {
-        // Salt = IPK || responderRandom || responderEphPubKey || initiatorEphPubKey
+        responderEphPubKey: P256.KeyAgreement.PublicKey,
+        sigma1Bytes: Data
+    ) -> SymmetricKey {
+        let transcriptHash = Data(SHA256.hash(data: sigma1Bytes))
         var salt = Data()
         salt.append(ipk)
         salt.append(responderRandom)
-        salt.append(responderEphPubKey)
-        salt.append(initiatorEphPubKey)
+        salt.append(responderEphPubKey.x963Representation)
+        salt.append(transcriptHash)
 
-        let ikm = SymmetricKey(data: sharedSecret)
-        let derived = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: ikm,
+        return sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
             salt: salt,
-            info: Data("SEKeys".utf8),
+            sharedInfo: Data("Sigma2".utf8),
+            outputByteCount: 16
+        )
+    }
+
+    // MARK: - S3K (Sigma3 encryption key)
+
+    /// Derive the Sigma3 encryption key (S3K).
+    ///
+    /// Used to encrypt the `TBEData3` payload inside Sigma3.
+    ///
+    /// salt = IPK || SHA256(sigma1Bytes || sigma2Bytes)
+    /// info = "Sigma3"
+    /// length = 16 bytes
+    ///
+    /// - Parameters:
+    ///   - sharedSecret: The ECDH shared secret between the ephemeral keys.
+    ///   - ipk: The Identity Protection Key (16 bytes).
+    ///   - sigma1Bytes: Raw TLV bytes of the Sigma1 message.
+    ///   - sigma2Bytes: Raw TLV bytes of the Sigma2 message.
+    /// - Returns: 16-byte S3K as `SymmetricKey`.
+    public static func deriveSigma3Key(
+        sharedSecret: SharedSecret,
+        ipk: Data,
+        sigma1Bytes: Data,
+        sigma2Bytes: Data
+    ) -> SymmetricKey {
+        var transcript = Data()
+        transcript.append(sigma1Bytes)
+        transcript.append(sigma2Bytes)
+        let transcriptHash = Data(SHA256.hash(data: transcript))
+
+        var salt = Data()
+        salt.append(ipk)
+        salt.append(transcriptHash)
+
+        return sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: Data("Sigma3".utf8),
+            outputByteCount: 16
+        )
+    }
+
+    // MARK: - Session Keys
+
+    /// Derive the three session keys after Sigma3 is verified.
+    ///
+    /// salt = IPK || SHA256(sigma1Bytes || sigma2Bytes || sigma3Bytes)
+    /// info = "SessionKeys"
+    /// length = 48 bytes → I2RKey[0..15], R2IKey[16..31], AttestationKey[32..47]
+    ///
+    /// - Parameters:
+    ///   - sharedSecret: The ECDH shared secret between the ephemeral keys.
+    ///   - ipk: The Identity Protection Key (16 bytes).
+    ///   - sigma1Bytes: Raw TLV bytes of the Sigma1 message.
+    ///   - sigma2Bytes: Raw TLV bytes of the Sigma2 message.
+    ///   - sigma3Bytes: Raw TLV bytes of the Sigma3 message.
+    /// - Returns: Tuple of (i2rKey, r2iKey, attestationKey), each 16 bytes.
+    public static func deriveSessionKeys(
+        sharedSecret: SharedSecret,
+        ipk: Data,
+        sigma1Bytes: Data,
+        sigma2Bytes: Data,
+        sigma3Bytes: Data
+    ) -> (i2rKey: SymmetricKey, r2iKey: SymmetricKey, attestationKey: SymmetricKey) {
+        var transcript = Data()
+        transcript.append(sigma1Bytes)
+        transcript.append(sigma2Bytes)
+        transcript.append(sigma3Bytes)
+        let transcriptHash = Data(SHA256.hash(data: transcript))
+
+        var salt = Data()
+        salt.append(ipk)
+        salt.append(transcriptHash)
+
+        let derived = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: salt,
+            sharedInfo: Data("SessionKeys".utf8),
             outputByteCount: 48
         )
 
-        let bytes = derived.withUnsafeBytes { Data($0) }
-        return (
-            s2k: SymmetricKey(data: bytes[0..<16]),
-            s3k: SymmetricKey(data: bytes[16..<32])
-        )
-    }
+        let keyBytes = derived.withUnsafeBytes { Data($0) }
+        let i2rKey = SymmetricKey(data: keyBytes[0..<16])
+        let r2iKey = SymmetricKey(data: keyBytes[16..<32])
+        let attestationKey = SymmetricKey(data: keyBytes[32..<48])
 
-    // MARK: - Session Key Derivation (CASE-specific salt)
-
-    /// Derive session keys from the CASE shared secret.
-    ///
-    /// Uses the same HKDF-SHA256 as PASE but with a CASE-specific salt:
-    /// Salt = IPK || responderRandom || responderEphPubKey || initiatorEphPubKey
-    ///
-    /// - Parameters:
-    ///   - sharedSecret: The ECDH shared secret.
-    ///   - ipk: The Identity Protection Key (16 bytes).
-    ///   - responderRandom: Responder's random data (32 bytes).
-    ///   - responderEphPubKey: Responder's ephemeral public key (65 bytes).
-    ///   - initiatorEphPubKey: Initiator's ephemeral public key (65 bytes).
-    /// - Returns: `SessionKeys` containing I2R, R2I, and attestation keys.
-    public static func deriveSessionKeys(
-        sharedSecret: Data,
-        ipk: Data,
-        responderRandom: Data,
-        responderEphPubKey: Data,
-        initiatorEphPubKey: Data
-    ) -> SessionKeys {
-        var salt = Data()
-        salt.append(ipk)
-        salt.append(responderRandom)
-        salt.append(responderEphPubKey)
-        salt.append(initiatorEphPubKey)
-
-        return KeyDerivation.deriveSessionKeys(
-            sharedSecret: sharedSecret,
-            salt: salt,
-            info: KeyDerivation.sessionKeysInfo
-        )
+        return (i2rKey, r2iKey, attestationKey)
     }
 }
-

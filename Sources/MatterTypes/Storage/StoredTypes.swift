@@ -21,14 +21,28 @@ public struct StoredDeviceState: Codable, Sendable, Equatable {
     /// Next fabric index to assign (incremented on each commissioning).
     public var nextFabricIndex: UInt8
 
+    /// PBKDF2 salt for PASE commissioning.
+    ///
+    /// Persisted so the same salt is used across restarts. Controllers (e.g. Apple Home)
+    /// that cache PBKDF parameters send `hasPBKDFParameters = true` on retry — the server
+    /// must use the same salt, or SPAKE2+ will fail.
+    public var pbkdfSalt: Data?
+
+    /// PBKDF2 iteration count used together with `pbkdfSalt`.
+    public var pbkdfIterations: Int?
+
     public init(
         fabrics: [StoredFabric] = [],
         acls: [StoredFabricACLs] = [],
-        nextFabricIndex: UInt8 = 1
+        nextFabricIndex: UInt8 = 1,
+        pbkdfSalt: Data? = nil,
+        pbkdfIterations: Int? = nil
     ) {
         self.fabrics = fabrics
         self.acls = acls
         self.nextFabricIndex = nextFabricIndex
+        self.pbkdfSalt = pbkdfSalt
+        self.pbkdfIterations = pbkdfIterations
     }
 }
 

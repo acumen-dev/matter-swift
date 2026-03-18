@@ -310,6 +310,66 @@ struct OperationalCredentialsHandlerTests {
         #expect(state.stagedCaseAdminSubject == 12345)
     }
 
+    @Test("AddNOC with non-empty ICAC stages ICAC")
+    func addNOCWithICAC() throws {
+        let state = CommissioningState()
+        state.armFailSafe(expiresAt: Date().addingTimeInterval(60))
+
+        let handler = OperationalCredentialsHandler(commissioningState: state)
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: ep0)
+
+        let icacBytes = Data([0x15, 0x01, 0x02, 0x03, 0x18]) // fake non-empty ICAC
+        let addNOC = OperationalCredentialsCluster.AddNOCCommand(
+            nocValue: Data([0x01, 0x02, 0x03]),
+            icacValue: icacBytes,
+            ipkValue: Data(repeating: 0xAB, count: 16),
+            caseAdminSubject: 12345,
+            adminVendorId: 0xFFF1
+        )
+
+        _ = try handler.handleCommand(
+            commandID: OperationalCredentialsCluster.Command.addNOC,
+            fields: addNOC.toTLVElement(),
+            store: store,
+            endpointID: ep0
+        )
+
+        #expect(state.stagedICAC == icacBytes)
+    }
+
+    @Test("AddNOC with zero-length ICAC field treats ICAC as absent")
+    func addNOCWithEmptyICAC() throws {
+        // Apple Home sends tag 1 as a 0-byte octet string when no ICAC is used
+        // (direct RCAC→NOC chain). This must be treated as absent, not as a
+        // 0-byte certificate — attempting to parse 0 bytes throws unexpectedEndOfData.
+        let state = CommissioningState()
+        state.armFailSafe(expiresAt: Date().addingTimeInterval(60))
+
+        let handler = OperationalCredentialsHandler(commissioningState: state)
+        let store = AttributeStore()
+        populateStore(store, handler: handler, endpoint: ep0)
+
+        // Construct the AddNOC TLV manually so we can include an explicit empty ICAC field
+        let fields: TLVElement = .structure([
+            .init(tag: .contextSpecific(0), value: .octetString(Data([0x01, 0x02, 0x03]))), // noc
+            .init(tag: .contextSpecific(1), value: .octetString(Data())),                   // icac = empty
+            .init(tag: .contextSpecific(2), value: .octetString(Data(repeating: 0, count: 16))), // ipk
+            .init(tag: .contextSpecific(3), value: .unsignedInt(12345)),                    // caseAdminSubject
+            .init(tag: .contextSpecific(4), value: .unsignedInt(0xFFF1)),                   // adminVendorId
+        ])
+
+        _ = try handler.handleCommand(
+            commandID: OperationalCredentialsCluster.Command.addNOC,
+            fields: fields,
+            store: store,
+            endpointID: ep0
+        )
+
+        // A 0-byte ICAC field MUST be treated as absent, not stored as empty Data
+        #expect(state.stagedICAC == nil, "empty ICAC field must be treated as absent")
+    }
+
     @Test("AddTrustedRootCert stages RCAC")
     func addTrustedRootCert() throws {
         let state = CommissioningState()

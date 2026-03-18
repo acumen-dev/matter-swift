@@ -96,7 +96,8 @@ public actor FabricManager {
             nodeID: controllerNodeID,
             rcac: rcac,
             noc: noc,
-            operationalKey: controllerKey
+            operationalKey: controllerKey,
+            ipkEpochKey: ipkEpochKey
         )
 
         // Start allocating node IDs after the controller's own ID
@@ -126,7 +127,8 @@ public actor FabricManager {
             nodeID: NodeID(rawValue: stored.controllerNodeID),
             rcac: rcac,
             noc: noc,
-            operationalKey: operationalKey
+            operationalKey: operationalKey,
+            ipkEpochKey: stored.ipkEpochKey
         )
 
         self.nextNodeIDValue = nextNodeID

@@ -20,8 +20,8 @@ struct AppleUDPTransportTests {
         await transport.close()
     }
 
-    @Test("IPv4 loopback send and receive via IPv4-mapped socket")
-    func ipv4LoopbackSendReceive() async throws {
+    @Test("IPv6 loopback send and receive (::1)")
+    func ipv6LoopbackLoopbackSendReceive() async throws {
         let receiver = AppleUDPTransport()
         try await receiver.bind(port: 0)                          // ephemeral
         let receiverPort = await receiver.boundPort() ?? 5541
@@ -30,8 +30,8 @@ struct AppleUDPTransportTests {
         try await sender.bind(port: 0)
 
         let testData = Data([0x01, 0x02, 0x03, 0x04])
-        // IPv4 address — transport converts to ::ffff:127.0.0.1 internally
-        let address = MatterAddress(host: "127.0.0.1", port: receiverPort)
+        // AppleUDPTransport is IPv6-only — use ::1 for loopback
+        let address = MatterAddress(host: "::1", port: receiverPort)
 
         try await sender.send(testData, to: address)
 

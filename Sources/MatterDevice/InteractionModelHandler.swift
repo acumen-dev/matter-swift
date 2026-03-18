@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterModel
 import MatterProtocol
@@ -126,6 +127,7 @@ public struct InteractionModelHandler: Sendable {
     private let timedRequestTracker: TimedRequestTracker
     private let chunkedWriteBuffer: ChunkedWriteBuffer
     private let chunkedInvokeBuffer: ChunkedInvokeBuffer
+    private let logger: Logger
 
     public init(
         endpoints: EndpointManager,
@@ -133,7 +135,8 @@ public struct InteractionModelHandler: Sendable {
         store: AttributeStore,
         timedRequestTracker: TimedRequestTracker = TimedRequestTracker(),
         chunkedWriteBuffer: ChunkedWriteBuffer = ChunkedWriteBuffer(),
-        chunkedInvokeBuffer: ChunkedInvokeBuffer = ChunkedInvokeBuffer()
+        chunkedInvokeBuffer: ChunkedInvokeBuffer = ChunkedInvokeBuffer(),
+        logger: Logger = Logger(label: "matter.device.im")
     ) {
         self.endpoints = endpoints
         self.subscriptions = subscriptions
@@ -141,6 +144,7 @@ public struct InteractionModelHandler: Sendable {
         self.timedRequestTracker = timedRequestTracker
         self.chunkedWriteBuffer = chunkedWriteBuffer
         self.chunkedInvokeBuffer = chunkedInvokeBuffer
+        self.logger = logger
     }
 
     // MARK: - Message Dispatch
@@ -163,6 +167,7 @@ public struct InteractionModelHandler: Sendable {
         exchangeID: UInt16 = 0,
         requestContext: IMRequestContext? = nil
     ) async throws -> IMHandleResult {
+        logger.debug("IM message: opcode=\(opcode) exchangeID=\(exchangeID) payloadSize=\(payload.count) session=\(sessionID) fabric=\(fabricIndex.rawValue)")
         switch opcode {
         case .readRequest:
             return try await handleRead(payload: payload, requestContext: requestContext)
@@ -212,6 +217,9 @@ public struct InteractionModelHandler: Sendable {
         requestContext: IMRequestContext?
     ) async throws -> IMHandleResult {
         let request = try ReadRequest.fromTLV(payload)
+        for attr in request.attributeRequests {
+            logger.debug("  ReadRequest attr: ep=\(attr.endpointID.map { "\($0.rawValue)" } ?? "*") cluster=0x\(String(format: "%04X", attr.clusterID?.rawValue ?? 0xFFFF)) attr=0x\(String(format: "%04X", attr.attributeID?.rawValue ?? 0xFFFF))")
+        }
         let fabricIndex = requestContext?.checkerContext.fabricIndex
         let reports = endpoints.readAttributes(
             request.attributeRequests,
@@ -407,6 +415,7 @@ public struct InteractionModelHandler: Sendable {
         }
 
         for cmd in request.invokeRequests {
+            logger.debug("  InvokeRequest: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue))")
             // ACL check before execution
             if let ctx = requestContext {
                 let decision = ACLChecker.check(
@@ -444,13 +453,28 @@ public struct InteractionModelHandler: Sendable {
             do {
                 let (result, recordedEvents) = try await endpoints.handleCommand(path: cmd.commandPath, fields: cmd.commandFields)
                 if let responseData = result {
-                    // Command returned response data
+                    // Command returned response data.
+                    // Per Matter spec §10.7.14.2, the CommandPath in InvokeResponse MUST use
+                    // the response command ID (e.g. ArmFailSafeResponse=0x01, not ArmFailSafe=0x00).
+                    let handler = endpoints.clusterHandler(
+                        endpointID: cmd.commandPath.endpointID,
+                        clusterID: cmd.commandPath.clusterID
+                    )
+                    let responseID = handler?.responseCommandID(for: cmd.commandPath.commandID)
+                        ?? cmd.commandPath.commandID
+                    let responsePath = CommandPath(
+                        endpointID: cmd.commandPath.endpointID,
+                        clusterID: cmd.commandPath.clusterID,
+                        commandID: responseID
+                    )
+                    logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", responseID.rawValue)) → responseData(\(responseData))")
                     invokeResponses.append(InvokeResponseIB(command: CommandDataIB(
-                        commandPath: cmd.commandPath,
+                        commandPath: responsePath,
                         commandFields: responseData
                     )))
                 } else {
                     // Success, no response data
+                    logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → success")
                     invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
                         commandPath: cmd.commandPath,
                         status: .success
@@ -462,6 +486,7 @@ public struct InteractionModelHandler: Sendable {
                     await subscriptions.eventRecorded(event)
                 }
             } catch {
+                logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → ERROR: \(error)")
                 invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
                     commandPath: cmd.commandPath,
                     status: .invalidAction

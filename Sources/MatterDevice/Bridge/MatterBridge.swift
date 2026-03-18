@@ -124,9 +124,13 @@ public final class MatterBridge: @unchecked Sendable {
             endpointID: EndpointID(rawValue: 0),
             deviceTypes: [(.rootNode, 1)],
             clusterHandlers: [
+                // Per Matter spec §9.5.4.6, the Root Endpoint's PartsList MUST list all other
+                // endpoints on the node. We include the aggregator (ep=1) here; bridged endpoints
+                // are added dynamically when registerBridgedEndpoint() updates the store directly.
                 DescriptorHandler(
                     deviceTypes: [(.rootNode, 1)],
-                    serverClusters: rootClusters
+                    serverClusters: rootClusters,
+                    partsList: [EndpointManager.aggregatorEndpoint]
                 ),
                 BasicInformationHandler(
                     vendorName: config.vendorName,
@@ -571,6 +575,30 @@ public final class MatterBridge: @unchecked Sendable {
             subscriptions: subscriptions
         )
         bridgedEndpoints[epID] = bridged
+
+        // Per Matter spec §9.5.4.6, the Root Endpoint (ep=0) PartsList MUST list ALL endpoints.
+        // The Aggregator Endpoint (ep=1) PartsList MUST list all its bridged endpoints.
+        // Update both in the AttributeStore now that we know the new endpoint ID.
+        let allBridgedIDs = bridgedEndpoints.keys.sorted { $0.rawValue < $1.rawValue }
+        let bridgedElements = allBridgedIDs.map { TLVElement.unsignedInt(UInt64($0.rawValue)) }
+
+        // ep=0 PartsList: aggregator (ep=1) + all bridged endpoints
+        let rootParts = [TLVElement.unsignedInt(UInt64(EndpointManager.aggregatorEndpoint.rawValue))] + bridgedElements
+        store.set(
+            endpoint: EndpointID(rawValue: 0),
+            cluster: ClusterID.descriptor,
+            attribute: DescriptorCluster.Attribute.partsList,
+            value: .array(rootParts)
+        )
+
+        // ep=1 PartsList: all bridged endpoints
+        store.set(
+            endpoint: EndpointManager.aggregatorEndpoint,
+            cluster: ClusterID.descriptor,
+            attribute: DescriptorCluster.Attribute.partsList,
+            value: .array(bridgedElements)
+        )
+
         return bridged
     }
 

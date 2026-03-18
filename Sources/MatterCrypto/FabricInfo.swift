@@ -30,11 +30,33 @@ public struct FabricInfo: Sendable {
     /// Optional Intermediate CA Certificate (ICAC).
     public let icac: MatterCertificate?
 
+    /// Raw TLV bytes of the NOC, as received during commissioning.
+    ///
+    /// Stored separately from `noc` so that CASE Sigma2 can forward the exact bytes
+    /// Apple Home provided without any re-encoding roundtrip. CASE uses these bytes
+    /// directly in Sigma2's `TBSData2` and `Sigma2Decrypted`.
+    public let rawNOC: Data?
+
+    /// Raw TLV bytes of the ICAC, as received during commissioning.
+    ///
+    /// Stored separately from `icac` so that CASE Sigma2 can forward the exact bytes
+    /// Apple Home provided — even if `MatterCertificate.fromTLV()` failed to parse them.
+    /// When non-nil, CASE uses these bytes directly in Sigma2's `TBSData2` and
+    /// `Sigma2Decrypted` rather than re-encoding `icac`.
+    public let rawICAC: Data?
+
     /// Node Operational Certificate (NOC).
     public let noc: MatterCertificate
 
     /// This node's operational signing key.
     public let operationalKey: P256.Signing.PrivateKey
+
+    /// IPK epoch key for this fabric (16 bytes).
+    ///
+    /// Received from the commissioner in the AddNOC command's `IPKValue` field.
+    /// Used to derive the Identity Protection Key via HKDF-SHA256. Defaults to
+    /// all-zeros for backward compatibility with test fabrics that don't set one.
+    public let ipkEpochKey: Data
 
     /// The root CA's public key (extracted from RCAC).
     public var rootPublicKey: P256.Signing.PublicKey {
@@ -48,54 +70,74 @@ public struct FabricInfo: Sendable {
         nodeID: NodeID,
         rcac: MatterCertificate,
         icac: MatterCertificate? = nil,
+        rawICAC: Data? = nil,
         noc: MatterCertificate,
-        operationalKey: P256.Signing.PrivateKey
+        rawNOC: Data? = nil,
+        operationalKey: P256.Signing.PrivateKey,
+        ipkEpochKey: Data = Data(repeating: 0, count: 16)
     ) {
         self.fabricIndex = fabricIndex
         self.fabricID = fabricID
         self.nodeID = nodeID
         self.rcac = rcac
         self.icac = icac
+        self.rawICAC = rawICAC ?? icac?.tlvEncode()
         self.noc = noc
+        self.rawNOC = rawNOC
         self.operationalKey = operationalKey
+        self.ipkEpochKey = ipkEpochKey
     }
 
     // MARK: - Compressed Fabric ID
 
-    /// Compute the compressed fabric identifier.
+    /// Compute the compressed fabric identifier per Matter spec §4.3.1.2.2.
     ///
-    /// CompressedFabricID = HMAC-SHA256(
-    ///     key: rootPublicKey[1...],  // X coordinate only (32 bytes)
-    ///     data: fabricID as 8-byte big-endian
-    /// )[0..<8]
+    /// CompressedFabricID = Crypto_KDF(
+    ///     InputKey = rootPublicKey (raw 64-byte X‖Y, without the 0x04 uncompressed prefix),
+    ///     Salt     = fabricID,     // 8-byte big-endian
+    ///     Info     = "CompressedFabric",
+    ///     Length   = 8
+    /// )
     ///
-    /// This 8-byte identifier is used in mDNS advertisements and CASE handshakes
-    /// to identify the fabric without revealing the full root public key.
+    /// Crypto_KDF is HKDF-SHA256. This 8-byte identifier is used in mDNS
+    /// operational instance names and CASE handshake destination IDs.
+    ///
+    /// - Note: The spec wording "RootPublicKey.X" is misleading. The CHIP SDK uses
+    ///   the full 64-byte raw key (X‖Y without the 0x04 prefix) as HKDF IKM, not just
+    ///   the 32-byte X coordinate. Using only X produces a CFID that does not match
+    ///   Apple Home / homed.
     public func compressedFabricID() -> UInt64 {
-        // Root public key X coordinate (skip the 0x04 prefix, take first 32 bytes)
+        // IKM = full 64-byte raw public key (X‖Y), skipping the 0x04 uncompressed prefix.
+        // The CHIP SDK uses all 64 bytes, not just the 32-byte X coordinate.
         let rootPubKeyX963 = rootPublicKey.x963Representation
-        let xCoordinate = rootPubKeyX963[1..<33]
-        let key = SymmetricKey(data: xCoordinate)
+        let rawKey = rootPubKeyX963[1...]   // 64 bytes: X‖Y, without the 0x04 prefix
+        let ikm = SymmetricKey(data: rawKey)
 
-        // Fabric ID as 8-byte big-endian
-        var fabricIDBytes = Data(count: 8)
+        // Fabric ID as 8-byte big-endian salt
+        var salt = Data(count: 8)
         let fid = fabricID.rawValue
-        fabricIDBytes[0] = UInt8((fid >> 56) & 0xFF)
-        fabricIDBytes[1] = UInt8((fid >> 48) & 0xFF)
-        fabricIDBytes[2] = UInt8((fid >> 40) & 0xFF)
-        fabricIDBytes[3] = UInt8((fid >> 32) & 0xFF)
-        fabricIDBytes[4] = UInt8((fid >> 24) & 0xFF)
-        fabricIDBytes[5] = UInt8((fid >> 16) & 0xFF)
-        fabricIDBytes[6] = UInt8((fid >> 8) & 0xFF)
-        fabricIDBytes[7] = UInt8(fid & 0xFF)
+        salt[0] = UInt8((fid >> 56) & 0xFF)
+        salt[1] = UInt8((fid >> 48) & 0xFF)
+        salt[2] = UInt8((fid >> 40) & 0xFF)
+        salt[3] = UInt8((fid >> 32) & 0xFF)
+        salt[4] = UInt8((fid >> 24) & 0xFF)
+        salt[5] = UInt8((fid >> 16) & 0xFF)
+        salt[6] = UInt8((fid >> 8) & 0xFF)
+        salt[7] = UInt8(fid & 0xFF)
 
-        let hmac = HMAC<SHA256>.authenticationCode(for: fabricIDBytes, using: key)
-        let hmacData = Data(hmac)
+        let derived = HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: ikm,
+            salt: salt,
+            info: Data("CompressedFabric".utf8),
+            outputByteCount: 8
+        )
 
-        // Take first 8 bytes as big-endian UInt64
+        // Interpret the 8-byte output as a big-endian UInt64
         var result: UInt64 = 0
-        for i in 0..<8 {
-            result = (result << 8) | UInt64(hmacData[i])
+        derived.withUnsafeBytes { bytes in
+            for i in 0..<8 {
+                result = (result << 8) | UInt64(bytes[i])
+            }
         }
         return result
     }
@@ -107,18 +149,20 @@ public struct FabricInfo: Sendable {
     /// IPK = HKDF-SHA256(
     ///     inputKeyMaterial: epochKey,
     ///     salt: compressedFabricID as 8-byte big-endian,
-    ///     info: "GroupKeyHash",
+    ///     info: "GroupKey v1.0",
     ///     outputByteCount: 16
     /// )
     ///
-    /// For now, uses the default epoch key (all zeros) per the Matter spec
-    /// for initial commissioning. Real implementations would use the
-    /// Group Key Management cluster to manage epoch keys.
+    /// The epoch key for production fabrics is the `IPKValue` from the AddNOC
+    /// command, stored in `FabricInfo.ipkEpochKey`. All-zeros is the correct
+    /// default for test fabrics generated without a commissioner.
     ///
-    /// - Parameter epochKey: The epoch key (default: 16 bytes of zeros).
+    /// - Parameter epochKey: The epoch key. Defaults to `self.ipkEpochKey` when `nil`;
+    ///   pass an explicit value only in tests or when probing with a specific key.
     /// - Returns: 16-byte IPK.
-    public func deriveIPK(epochKey: Data = Data(repeating: 0, count: 16)) -> Data {
+    public func deriveIPK(epochKey: Data? = nil) -> Data {
         let cfid = compressedFabricID()
+        let epochKey = epochKey ?? self.ipkEpochKey
 
         // Compressed fabric ID as 8-byte big-endian
         var salt = Data(count: 8)
@@ -135,7 +179,7 @@ public struct FabricInfo: Sendable {
         let derived = HKDF<SHA256>.deriveKey(
             inputKeyMaterial: ikm,
             salt: salt,
-            info: Data("GroupKeyHash".utf8),
+            info: Data("GroupKey v1.0".utf8),
             outputByteCount: 16
         )
 

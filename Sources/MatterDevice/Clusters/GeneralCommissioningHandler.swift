@@ -2,8 +2,11 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterModel
+
+private let logger = Logger(label: "matter.device.commissioning")
 
 /// Cluster handler for the General Commissioning cluster (0x0030).
 ///
@@ -24,11 +27,32 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
     // MARK: - ClusterHandler
 
     public func initialAttributes() -> [(AttributeID, TLVElement)] {
-        [
-            (GeneralCommissioningCluster.Attribute.breadcrumb, .unsignedInt(0)),
-            (GeneralCommissioningCluster.Attribute.regulatoryConfig, .unsignedInt(0)),  // Indoor
-            (GeneralCommissioningCluster.Attribute.locationCapability, .unsignedInt(2)), // IndoorOutdoor
+        // BasicCommissioningInfoStruct: { 0: failSafeExpiryLengthSeconds, 1: maxCumulativeFailsafeSeconds }
+        // Apple Home reads this to choose the ArmFailSafe expiryLengthSeconds.
+        // A missing BasicCommissioningInfo causes Apple Home to use expiryLengthSeconds=0, which
+        // our handler interprets as a disarm — leaving the fail-safe unarmed for all subsequent steps.
+        let basicCommissioningInfo = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(60)),   // failSafeExpiryLengthSeconds
+            .init(tag: .contextSpecific(1), value: .unsignedInt(900)),  // maxCumulativeFailsafeSeconds
+        ])
+
+        return [
+            (GeneralCommissioningCluster.Attribute.breadcrumb,                .unsignedInt(0)),
+            (GeneralCommissioningCluster.Attribute.basicCommissioningInfo,    basicCommissioningInfo),
+            (GeneralCommissioningCluster.Attribute.regulatoryConfig,          .unsignedInt(0)),  // Indoor
+            (GeneralCommissioningCluster.Attribute.locationCapability,        .unsignedInt(2)),  // IndoorOutdoor
+            // true = Concurrent Commissioning Flow (Matter spec §5.5.2).
+            //
+            // Ethernet bridges are always-on and support concurrent PASE + CASE sessions. With true,
+            // Apple Home establishes a CASE session after AddNOC (using the staged fabric) and sends
+            // CommissioningComplete over that CASE session. This is the correct mode for bridges.
+            //
+            // With false (Non-Concurrent Flow), Apple treats the device like a Thread/WiFi node that
+            // goes offline after AddNOC. Apple waits for the device to "reconnect" via CASE — which
+            // never happens for an Ethernet bridge — so CommissioningComplete is never sent and the
+            // commissioning times out after 45 seconds.
             (GeneralCommissioningCluster.Attribute.supportsConcurrentConnection, .bool(true)),
+            (GeneralCommissioningCluster.Attribute.clusterRevision, .unsignedInt(1)),
         ]
     }
 
@@ -53,6 +77,25 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         }
     }
 
+    // MARK: - Response Command IDs
+
+    /// Maps request command IDs to their response command IDs per the Matter spec.
+    ///
+    /// Per spec §11.9.7, each request command has a paired response command with a
+    /// distinct ID that MUST appear in the InvokeResponse CommandPath.
+    public func responseCommandID(for requestCommandID: CommandID) -> CommandID? {
+        switch requestCommandID {
+        case GeneralCommissioningCluster.Command.armFailSafe:
+            return GeneralCommissioningCluster.Command.armFailSafeResponse
+        case GeneralCommissioningCluster.Command.setRegulatoryConfig:
+            return GeneralCommissioningCluster.Command.setRegulatoryConfigResponse
+        case GeneralCommissioningCluster.Command.commissioningComplete:
+            return GeneralCommissioningCluster.Command.commissioningCompleteResponse
+        default:
+            return nil
+        }
+    }
+
     // MARK: - ArmFailSafe
 
     private func handleArmFailSafe(
@@ -67,14 +110,17 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         }
 
         let request = try GeneralCommissioningCluster.ArmFailSafeRequest.fromTLVElement(fields)
+        logger.debug("ArmFailSafe: expiryLengthSeconds=\(request.expiryLengthSeconds) breadcrumb=\(request.breadcrumb) currentlyArmed=\(commissioningState.isFailSafeArmed)")
 
         if request.expiryLengthSeconds == 0 {
             // Disarm: revert any staged state
             commissioningState.disarmFailSafe()
+            logger.debug("ArmFailSafe: disarmed fail-safe")
         } else {
             // Arm with expiry
             let expiresAt = Date().addingTimeInterval(TimeInterval(request.expiryLengthSeconds))
             commissioningState.armFailSafe(expiresAt: expiresAt)
+            logger.debug("ArmFailSafe: armed fail-safe for \(request.expiryLengthSeconds)s, isArmed=\(commissioningState.isFailSafeArmed)")
         }
 
         // Update breadcrumb
@@ -108,6 +154,7 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         }
 
         let request = try GeneralCommissioningCluster.SetRegulatoryConfigRequest.fromTLVElement(fields)
+        logger.debug("SetRegulatoryConfig: newRegulatoryConfig=\(request.newRegulatoryConfig) breadcrumb=\(request.breadcrumb)")
 
         // Validate the requested config is within capability bounds
         let capabilityRaw = store.get(
@@ -176,6 +223,7 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         store: AttributeStore,
         endpointID: EndpointID
     ) -> TLVElement {
+        logger.debug("CommissioningComplete: isFailSafeArmed=\(commissioningState.isFailSafeArmed)")
         guard commissioningState.isFailSafeArmed else {
             return GeneralCommissioningCluster.CommissioningCompleteResponse(
                 errorCode: .noFailSafe, debugText: "Fail-safe not armed"

@@ -324,7 +324,10 @@ public enum OperationalCredentialsCluster {
                   let avid = fields.first(where: { $0.tag == .contextSpecific(4) })?.value.uintValue else {
                 throw FabricDescriptorError.missingField
             }
-            let icac = fields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue
+            // Treat a present-but-empty ICAC field (0 bytes) as absent — some commissioners
+            // (e.g. Apple Home) send tag 1 with a zero-length payload to mean "no ICAC".
+            let icacRaw = fields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue
+            let icac = icacRaw.flatMap { $0.isEmpty ? nil : $0 }
             return AddNOCCommand(nocValue: noc, icacValue: icac, ipkValue: ipk, caseAdminSubject: cas, adminVendorId: UInt16(avid))
         }
     }

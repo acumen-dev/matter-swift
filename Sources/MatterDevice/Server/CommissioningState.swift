@@ -94,6 +94,18 @@ public final class CommissioningState: @unchecked Sendable {
     /// Used by commands like UpdateFabricLabel that operate on the accessing fabric.
     public var invokingFabricIndex: FabricIndex?
 
+    // MARK: - PBKDF Parameters
+
+    /// PBKDF2 salt for PASE commissioning.
+    ///
+    /// Set once on first startup and persisted across restarts. Controllers (e.g. Apple Home)
+    /// cache PBKDF params after a successful PASE and send `hasPBKDFParameters = true` on
+    /// subsequent attempts — the server must respond with the same salt, or SPAKE2+ fails.
+    public var pbkdfSalt: Data?
+
+    /// PBKDF2 iteration count paired with `pbkdfSalt`.
+    public var pbkdfIterations: Int = 1000
+
     // MARK: - Committed Fabrics
 
     /// Committed fabrics on this device.
@@ -129,6 +141,19 @@ public final class CommissioningState: @unchecked Sendable {
     /// Called when the commissioning window is closed (for mDNS update, PASE cleanup).
     public var onWindowClosed: (() -> Void)?
 
+    /// Called immediately after AddNOC stages the NOC + RCAC + IPK.
+    ///
+    /// Per Matter spec §4.3.5, the device SHALL begin operational mDNS advertisement
+    /// as soon as the NOC is installed (staged), not waiting for CommissioningComplete.
+    /// The server uses this callback to advertise the operational instance name so that
+    /// Apple Home (and other commissioners) can discover the device before CommissioningComplete.
+    public var onNOCStaged: (() -> Void)?
+
+    /// Called when staged credentials are reverted (fail-safe expiry or ArmFailSafe(0)).
+    ///
+    /// The server uses this to withdraw the pre-committed operational mDNS advertisement.
+    public var onNOCReverted: (() -> Void)?
+
     // MARK: - Init
 
     public init(fabricStore: (any MatterFabricStore)? = nil) {
@@ -145,7 +170,12 @@ public final class CommissioningState: @unchecked Sendable {
     public func disarmFailSafe() {
         isFailSafeArmed = false
         failSafeExpiry = nil
+        let hadStagedNOC = stagedNOC != nil
         clearStagedState()
+        // Notify server to withdraw the staged operational mDNS advertisement.
+        if hadStagedNOC {
+            onNOCReverted?()
+        }
     }
 
     /// Check if the fail-safe has expired.
@@ -286,9 +316,21 @@ public final class CommissioningState: @unchecked Sendable {
 
         fabrics[fabricIndex] = fabric
 
-        // Commit staged ACLs
+        // Commit staged ACLs — stamp the real fabricIndex onto each entry.
+        // Commissioners may omit fabricIndex in ACL write requests (per spec); the device
+        // assigns it. Entries written during commissioning carry a placeholder (0); we fix
+        // them up here so that fabric-scoped attribute filtering works correctly post-commit.
         if !stagedACLs.isEmpty {
-            committedACLs[fabricIndex] = stagedACLs
+            let fixedACLs = stagedACLs.map { entry in
+                AccessControlCluster.AccessControlEntry(
+                    privilege: entry.privilege,
+                    authMode: entry.authMode,
+                    subjects: entry.subjects,
+                    targets: entry.targets,
+                    fabricIndex: fabricIndex
+                )
+            }
+            committedACLs[fabricIndex] = fixedACLs
         }
 
         onCommissioningComplete?(fabric)
@@ -309,6 +351,10 @@ public final class CommissioningState: @unchecked Sendable {
         guard let stored = try await store.load() else { return }
 
         nextFabricIndex = stored.nextFabricIndex
+        pbkdfSalt = stored.pbkdfSalt
+        if let iterations = stored.pbkdfIterations {
+            pbkdfIterations = iterations
+        }
 
         for sf in stored.fabrics {
             let fabricIndex = FabricIndex(rawValue: sf.fabricIndex)
@@ -390,7 +436,9 @@ public final class CommissioningState: @unchecked Sendable {
         let state = StoredDeviceState(
             fabrics: storedFabrics,
             acls: storedACLs,
-            nextFabricIndex: nextFabricIndex
+            nextFabricIndex: nextFabricIndex,
+            pbkdfSalt: pbkdfSalt,
+            pbkdfIterations: pbkdfSalt != nil ? pbkdfIterations : nil
         )
 
         try? await store.save(state)
@@ -485,8 +533,11 @@ public struct CommittedFabric: Sendable {
             nodeID: nodeID,
             rcac: rcac,
             icac: icac,
+            rawICAC: icacTLV,
             noc: noc,
-            operationalKey: operationalKey
+            rawNOC: nocTLV,
+            operationalKey: operationalKey,
+            ipkEpochKey: ipkEpochKey
         )
     }
 }

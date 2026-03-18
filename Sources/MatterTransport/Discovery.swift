@@ -27,6 +27,16 @@ public struct MatterServiceRecord: Sendable {
     /// registers under `_CM._sub._matterc._udp` etc. — required for Apple Home to locate
     /// the device after reading the QR code discriminator.
     public let subtypes: [String]
+    /// Preferred network interface name hint — advisory only.
+    ///
+    /// May be set to the interface that carried the PASE session (e.g. `"en0"`) as
+    /// a hint for implementations.  `AppleDiscovery` currently ignores this field and
+    /// always registers the operational AAAA record on every active LAN interface
+    /// individually (each with its own link-local IPv6 address and its specific ifIndex).
+    /// Per-interface mDNS registration ensures that a query arriving on any interface
+    /// is answered with the reachable address for that path — no single-interface
+    /// restriction is needed or safe.
+    public let preferredInterface: String?
 
     public init(
         name: String,
@@ -34,7 +44,8 @@ public struct MatterServiceRecord: Sendable {
         host: String,
         port: UInt16,
         txtRecords: [String: String] = [:],
-        subtypes: [String] = []
+        subtypes: [String] = [],
+        preferredInterface: String? = nil
     ) {
         self.name = name
         self.serviceType = serviceType
@@ -42,6 +53,7 @@ public struct MatterServiceRecord: Sendable {
         self.port = port
         self.txtRecords = txtRecords
         self.subtypes = subtypes
+        self.preferredInterface = preferredInterface
     }
 }
 

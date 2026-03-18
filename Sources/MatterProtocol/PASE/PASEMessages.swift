@@ -112,19 +112,55 @@ public enum PASEMessages {
             self.salt = salt
         }
 
-        public func tlvEncode() -> Data {
-            let pbkdfParams = TLVElement.structure([
-                .init(tag: .contextSpecific(1), value: .unsignedInt(UInt64(iterations))),
-                .init(tag: .contextSpecific(2), value: .octetString(salt))
+        /// Encode this response as TLV.
+        ///
+        /// - Parameters:
+        ///   - includePBKDFParams: When `false`, tag 4 (pbkdf_parameters) is omitted.
+        ///     Per Matter spec §5.3.2.1, if the initiator set `hasPBKDFParameters = true` in its
+        ///     request, the responder MUST omit tag 4 — the initiator uses its cached parameters.
+        ///   - idleRetransTimeoutMs: MRP idle retransmission timeout in milliseconds for tag 5
+        ///     (responderSessionParams). Defaults to 4000 ms (Matter spec Table 13).
+        ///   - activeRetransTimeoutMs: MRP active retransmission timeout in milliseconds for tag 5.
+        ///     Defaults to 300 ms (Matter spec Table 13).
+        ///
+        /// Tag 5 (responderSessionParams) is always included — all conformant Matter device
+        /// implementations send it, and Apple Home requires it to establish MRP timer state
+        /// before accepting the handshake.
+        public func tlvEncode(
+            includePBKDFParams: Bool = true,
+            idleRetransTimeoutMs: UInt32 = 4000,
+            activeRetransTimeoutMs: UInt32 = 300
+        ) -> Data {
+            // Tag 5: responderSessionParams — MRP idle/active retransmission intervals.
+            // The CHIP SDK always populates this field. Apple Home appears to require it:
+            // responses without tag 5 are silently discarded and never acknowledged.
+            let sessionParams = TLVElement.structure([
+                .init(tag: .contextSpecific(1), value: .unsignedInt(UInt64(idleRetransTimeoutMs))),
+                .init(tag: .contextSpecific(2), value: .unsignedInt(UInt64(activeRetransTimeoutMs)))
             ])
 
-            let element = TLVElement.structure([
-                .init(tag: .contextSpecific(1), value: .octetString(initiatorRandom)),
-                .init(tag: .contextSpecific(2), value: .octetString(responderRandom)),
-                .init(tag: .contextSpecific(3), value: .unsignedInt(UInt64(responderSessionID))),
-                .init(tag: .contextSpecific(4), value: pbkdfParams)
-            ])
-            return TLVEncoder.encode(element)
+            if includePBKDFParams {
+                let pbkdfParams = TLVElement.structure([
+                    .init(tag: .contextSpecific(1), value: .unsignedInt(UInt64(iterations))),
+                    .init(tag: .contextSpecific(2), value: .octetString(salt))
+                ])
+                let element = TLVElement.structure([
+                    .init(tag: .contextSpecific(1), value: .octetString(initiatorRandom)),
+                    .init(tag: .contextSpecific(2), value: .octetString(responderRandom)),
+                    .init(tag: .contextSpecific(3), value: .unsignedInt(UInt64(responderSessionID))),
+                    .init(tag: .contextSpecific(4), value: pbkdfParams),
+                    .init(tag: .contextSpecific(5), value: sessionParams)
+                ])
+                return TLVEncoder.encode(element)
+            } else {
+                let element = TLVElement.structure([
+                    .init(tag: .contextSpecific(1), value: .octetString(initiatorRandom)),
+                    .init(tag: .contextSpecific(2), value: .octetString(responderRandom)),
+                    .init(tag: .contextSpecific(3), value: .unsignedInt(UInt64(responderSessionID))),
+                    .init(tag: .contextSpecific(5), value: sessionParams)
+                ])
+                return TLVEncoder.encode(element)
+            }
         }
 
         public static func fromTLV(_ data: Data) throws -> PBKDFParamResponse {

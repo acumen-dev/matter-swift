@@ -6,6 +6,7 @@ PROJECT_NAME  = swiftmatter
 PROJECT_DIR   = $(shell pwd)
 
 .PHONY: build test release clean \
+        ref-setup ref-setup-cert ref-setup-tool ref-test ref-all ref-clean \
         linux-build linux-test linux-shell \
         help
 
@@ -26,6 +27,34 @@ release:
 ## clean          Remove build artefacts
 clean:
 	rm -rf .build
+
+## ── Reference Tests ──────────────────────────────────────────────────────────
+
+CHIPCERT     = Tools/RefImpl/bin/chip-cert
+CHIPTOOL     = Tools/RefImpl/bin/chip-tool
+
+## ref-setup      Clone connectedhomeip and build chip-cert + chip-tool
+ref-setup:
+	./Tools/RefImpl/setup.sh
+
+## ref-setup-cert Build chip-cert only (faster)
+ref-setup-cert:
+	./Tools/RefImpl/setup.sh chip-cert
+
+## ref-setup-tool Build chip-tool only
+ref-setup-tool:
+	./Tools/RefImpl/setup.sh chip-tool
+
+## ref-test       Run reference tests (crypto vectors + chip-cert conformance)
+ref-test:
+	swift test --filter ReferenceTests
+
+## ref-all        Build chip-cert then run reference tests
+ref-all: ref-setup-cert ref-test
+
+## ref-clean      Remove built binaries (forces rebuild on next ref-setup)
+ref-clean:
+	rm -rf Tools/RefImpl/bin
 
 ## ── Linux (Docker) ────────────────────────────────────────────────────────────
 
