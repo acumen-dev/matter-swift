@@ -187,7 +187,12 @@ Note: AES-128-CCM is not directly in CryptoKit — use `_CryptoExtras` or implem
 - **PASE MRP session params**: Tag 5 (responderSessionParams) always included in PBKDFParamResponse
 
 - **Certificate DER TBS** (FIXED): `tbsData()` now produces X.509 DER `TBSCertificate` bytes, matching chip-cert byte-for-byte. Signatures use IEEE P1363 (rawRepresentation). Certificate chain validation works end-to-end.
-- **Reference test framework**: chip-cert conformance tests (TLV→DER conversion, NOC chain validation, TBS comparison) and crypto vector tests (AES-CCM, HKDF, HMAC, PBKDF2, SHA-256)
+- **Reference test framework**: chip-cert conformance tests (TLV→DER conversion, NOC chain validation, TBS comparison) and crypto vector tests (AES-CCM, HKDF, HMAC, PBKDF2, SHA-256, Destination ID)
+- **chip-tool integration tests**: End-to-end commissioning (PASE→CASE) and attribute read/toggle against the CHIP SDK's chip-tool binary. Commission + OnOff read + OnOff toggle all pass.
+- **CASE encrypted sessions**: Nonce construction uses session node IDs (not message header). Secured unicast omits source node ID from wire header. Full CASE session establishment and encrypted IM exchange verified against chip-tool.
+- **AddNOC admin ACL**: Creates initial Administer ACL from caseAdminSubject per spec §11.17.6.8. Staged ACLs available during fail-safe for CASE CommissioningComplete.
+- **Pake1 retransmit dedup**: Stored Pake2 is resent on duplicate Pake1 (same pattern as PBKDFParamRequest and Sigma1)
+- **Attestation credentials**: Auto-generated test DAC chain (PAA→PAI→DAC) on server startup
 
 ---
 
@@ -623,3 +628,19 @@ chip-cert validate-cert -c <noc-der-file> -i <rcac-der-file>
 - **Timed writes/invokes**: Security-sensitive operations (door locks, garage doors) require a timed flow where the client first requests a timeout window, then sends the actual write/invoke within that window.
 
 - **Bridge PartsList updates**: When dynamic endpoints are added/removed, the aggregator's Descriptor.PartsList attribute must be updated and subscription reports must be sent to all subscribers.
+
+- **CASE nonce uses session node IDs, not message header**: For encrypted CASE messages, the AES-CCM nonce includes the sender's node ID. But this node ID is NOT taken from the message header — for secured unicast, the source node ID field is absent from the wire format. Instead: encryption uses `session.localNodeID`, decryption uses `session.peerNodeID`. For PASE sessions, use 0 (kUndefinedNodeId). The CHIP SDK implements this in `SessionManager.cpp` lines ~297 (encrypt) and ~998 (decrypt).
+
+- **Secured unicast messages omit source node ID from wire header**: Unlike unsecured messages (PASE, Sigma), encrypted CASE messages do NOT include the source node ID in the message header. The CHIP SDK calls `SetSourceNodeId` only for group and unauthenticated sessions, not for CASE unicast. Both sides use the session's stored node IDs for nonce construction.
+
+- **Pake1 retransmit must resend stored Pake2, not regenerate**: Same pattern as PBKDFParamRequest and Sigma1 retransmit handling. If the server regenerates a new Pake2 with fresh SPAKE2+ random values on a Pake1 retransmit, any in-flight Pake3 (computed against the original Pake2) will fail `verifierStep2`. Store the Pake2 TLV payload in the handshake state and resend it.
+
+- **AddNOC must create an admin ACL from caseAdminSubject**: Per Matter spec §11.17.6.8, the device SHALL create an initial ACL entry granting Administer privilege to the `CaseAdminSubject` field from AddNOC. Without this, the CASE session carrying CommissioningComplete is denied access (the ACLs written during PASE are only committed by CommissioningComplete itself — chicken-and-egg).
+
+- **Staged ACLs must be available during fail-safe for CASE**: During commissioning, the CASE CommissioningComplete arrives before ACLs are committed. The server must use staged ACLs for ACL checks when the fail-safe is armed and committed ACLs are empty. This matches the CHIP SDK's behavior of allowing the commissioning node access before CommissioningComplete.
+
+- **Verhoeff checksum inverse table for D5**: The dihedral group D5 inverse for the Verhoeff algorithm is `[0,4,3,2,1,5,6,7,8,9]` — only values 1-4 are inverted (5 - val), while 0 and 5-9 map to themselves. A common mistake is to invert 5-9 as well (`[0,4,3,2,1,9,8,7,6,5]`), which produces valid-looking but incorrect checksums.
+
+- **Empty event request paths should not return all events**: `EventStore.query(paths: [])` must return an empty array, not all events. When a ReadRequest contains only attribute paths with no event paths, the device must not include unrequested events in the ReportData. Including them causes chip-tool's TLV parser to fail with "End of TLV" when trying to decode event data.
+
+- **Attestation credentials must be generated on server startup**: `MatterDeviceServer.start()` must generate test DAC credentials (PAA→PAI→DAC chain) if `attestationCredentials` is nil. Without these, CertificateChainRequest and AttestationRequest handlers return empty responses that block commissioning at the attestation stage.
