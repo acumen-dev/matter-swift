@@ -151,6 +151,86 @@ struct ChipCertRunner: Sendable {
         }
     }
 
+    /// Convert an X.509 DER/PEM certificate to Matter TLV format.
+    func convertToTLV(_ certData: Data, inputFormat: String = "x509-der") throws -> Data {
+        try withTempDir { dir in
+            let inputFile = dir.appendingPathComponent("cert.der")
+            let outputFile = dir.appendingPathComponent("cert.chip")
+            try certData.write(to: inputFile)
+            let result = try run(["convert-cert", "--x509-\(inputFormat == "x509-pem" ? "pem" : "der")", inputFile.path, outputFile.path])
+            guard result.succeeded else {
+                throw ChipCertError.conversionFailed(result.stderr)
+            }
+            return try Data(contentsOf: outputFile)
+        }
+    }
+
+    /// Generate a certificate chain (RCAC → ICAC → NOC) with chip-cert,
+    /// mimicking what Apple Home produces. Returns TLV-encoded certs.
+    func generateTestChain(
+        rcacCN: String = "Apple Home RCAC",
+        icacCN: String = "Apple Home ICAC",
+        nocCN: String = "Test Node",
+        fabricID: String = "0000000000000001",
+        nodeID: String = "0000000000001234"
+    ) throws -> (rcacTLV: Data, icacTLV: Data, nocTLV: Data) {
+        try withTempDir { dir in
+            let rcacFile = dir.appendingPathComponent("rcac")
+            let rcacKeyFile = dir.appendingPathComponent("rcac-key")
+            let icacFile = dir.appendingPathComponent("icac")
+            let icacKeyFile = dir.appendingPathComponent("icac-key")
+            let nocFile = dir.appendingPathComponent("noc")
+            let nocKeyFile = dir.appendingPathComponent("noc-key")
+
+            // Generate RCAC
+            var result = try run([
+                "gen-cert", "-t", "r",
+                "-c", rcacCN,
+                "-i", "1", "-f", fabricID,
+                "-V", "2025-01-01", "-l", "3650",
+                "-F", "chip",
+                "-o", rcacFile.path, "-O", rcacKeyFile.path
+            ])
+            guard result.succeeded else {
+                throw ChipCertError.conversionFailed("gen RCAC: \(result.stderr)")
+            }
+
+            // Generate ICAC signed by RCAC
+            result = try run([
+                "gen-cert", "-t", "c",
+                "-c", icacCN,
+                "-i", "2", "-f", fabricID,
+                "-V", "2025-01-01", "-l", "3650",
+                "-C", rcacFile.path, "-K", rcacKeyFile.path,
+                "-F", "chip",
+                "-o", icacFile.path, "-O", icacKeyFile.path
+            ])
+            guard result.succeeded else {
+                throw ChipCertError.conversionFailed("gen ICAC: \(result.stderr)")
+            }
+
+            // Generate NOC signed by ICAC
+            result = try run([
+                "gen-cert", "-t", "n",
+                "-c", nocCN,
+                "-i", nodeID, "-f", fabricID,
+                "-V", "2025-01-01", "-l", "3650",
+                "-C", icacFile.path, "-K", icacKeyFile.path,
+                "-F", "chip",
+                "-o", nocFile.path, "-O", nocKeyFile.path
+            ])
+            guard result.succeeded else {
+                throw ChipCertError.conversionFailed("gen NOC: \(result.stderr)")
+            }
+
+            let rcacTLV = try Data(contentsOf: rcacFile)
+            let icacTLV = try Data(contentsOf: icacFile)
+            let nocTLV = try Data(contentsOf: nocFile)
+
+            return (rcacTLV, icacTLV, nocTLV)
+        }
+    }
+
     // MARK: - Attestation Certificate Validation
 
     // chip-cert validate-att-cert CLI (v1.4):

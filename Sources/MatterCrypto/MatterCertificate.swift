@@ -394,31 +394,33 @@ public struct MatterCertificate: Sendable, Equatable {
 public struct MatterDistinguishedName: Sendable, Equatable {
 
     enum Tag {
-        // Matter-specific integer attributes
+        // X.509 standard string attributes (context tags 1-16 within the DN list)
+        // These are scoped to the DN container — they don't conflict with
+        // the top-level certificate tags (serialNumber=1, sigAlgorithm=2, etc.)
+        static let commonName: UInt8 = 1
+        static let surname: UInt8 = 2
+        static let serialNumber: UInt8 = 3
+        static let countryName: UInt8 = 4
+        static let localityName: UInt8 = 5
+        static let stateOrProvinceName: UInt8 = 6
+        static let organizationName: UInt8 = 7
+        static let organizationalUnitName: UInt8 = 8
+        static let title: UInt8 = 9
+        static let name: UInt8 = 10
+        static let givenName: UInt8 = 11
+        static let initials: UInt8 = 12
+        static let generationQualifier: UInt8 = 13
+        static let dnQualifier: UInt8 = 14
+        static let pseudonym: UInt8 = 15
+        static let domainComponent: UInt8 = 16
+
+        // Matter-specific integer attributes (context tags 17-22)
         static let nodeID: UInt8 = 17
         static let firmwareSigningID: UInt8 = 18
         static let icacID: UInt8 = 19
         static let rcacID: UInt8 = 20
         static let fabricID: UInt8 = 21
         static let caseAuthenticatedTag: UInt8 = 22
-
-        // X.509 standard string attributes
-        static let commonName: UInt8 = 23
-        static let surname: UInt8 = 24
-        static let serialNumber: UInt8 = 25
-        static let countryName: UInt8 = 26
-        static let localityName: UInt8 = 27
-        static let stateOrProvinceName: UInt8 = 28
-        static let organizationName: UInt8 = 29
-        static let organizationalUnitName: UInt8 = 30
-        static let title: UInt8 = 31
-        static let name: UInt8 = 32
-        static let givenName: UInt8 = 33
-        static let initials: UInt8 = 34
-        static let generationQualifier: UInt8 = 35
-        static let dnQualifier: UInt8 = 36
-        static let pseudonym: UInt8 = 37
-        static let domainComponent: UInt8 = 38
     }
 
     /// A DN attribute with its TLV context tag and value (integer or string).
@@ -516,14 +518,7 @@ public struct MatterDistinguishedName: Sendable, Equatable {
     /// Tags 17-22: Matter-specific integer attributes (values encoded as 16-char hex UTF8String)
     /// Tags 23-38: Standard X.509 string attributes (values encoded as UTF8String directly)
     private static let dnTagToOID: [UInt8: [UInt64]] = [
-        // Matter-specific (values are integers, encoded as 16-char hex)
-        Tag.nodeID:               [1, 3, 6, 1, 4, 1, 37244, 1, 1],
-        Tag.firmwareSigningID:    [1, 3, 6, 1, 4, 1, 37244, 1, 2],
-        Tag.icacID:               [1, 3, 6, 1, 4, 1, 37244, 1, 3],
-        Tag.rcacID:               [1, 3, 6, 1, 4, 1, 37244, 1, 4],
-        Tag.fabricID:             [1, 3, 6, 1, 4, 1, 37244, 1, 5],
-        Tag.caseAuthenticatedTag: [1, 3, 6, 1, 4, 1, 37244, 1, 6],
-        // X.509 standard (values are strings)
+        // X.509 standard (tags 1-16, values are strings)
         Tag.commonName:             [2, 5, 4, 3],
         Tag.surname:                [2, 5, 4, 4],
         Tag.serialNumber:           [2, 5, 4, 5],
@@ -540,6 +535,13 @@ public struct MatterDistinguishedName: Sendable, Equatable {
         Tag.dnQualifier:            [2, 5, 4, 46],
         Tag.pseudonym:              [2, 5, 4, 65],
         Tag.domainComponent:        [0, 9, 2342, 19200300, 100, 1, 25],
+        // Matter-specific (tags 17-22, values are integers encoded as 16-char hex)
+        Tag.nodeID:               [1, 3, 6, 1, 4, 1, 37244, 1, 1],
+        Tag.firmwareSigningID:    [1, 3, 6, 1, 4, 1, 37244, 1, 2],
+        Tag.icacID:               [1, 3, 6, 1, 4, 1, 37244, 1, 3],
+        Tag.rcacID:               [1, 3, 6, 1, 4, 1, 37244, 1, 4],
+        Tag.fabricID:             [1, 3, 6, 1, 4, 1, 37244, 1, 5],
+        Tag.caseAuthenticatedTag: [1, 3, 6, 1, 4, 1, 37244, 1, 6],
     ]
 
     /// Convert this DN to an X.509 Name (RDN sequence) in DER encoding.
