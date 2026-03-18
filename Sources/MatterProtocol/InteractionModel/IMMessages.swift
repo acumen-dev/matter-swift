@@ -330,22 +330,25 @@ public struct AttributeDataIB: Sendable, Equatable {
         static let data: UInt8 = 2
     }
 
-    public let dataVersion: DataVersion
+    /// Data version for conditional writes. Optional — omitted for unconditional writes.
+    public let dataVersion: DataVersion?
     public let path: AttributePath
     public let data: TLVElement
 
-    public init(dataVersion: DataVersion, path: AttributePath, data: TLVElement) {
+    public init(dataVersion: DataVersion? = nil, path: AttributePath, data: TLVElement) {
         self.dataVersion = dataVersion
         self.path = path
         self.data = data
     }
 
     public func toTLVElement() -> TLVElement {
-        .structure([
-            .init(tag: .contextSpecific(Tag.dataVersion), value: .unsignedInt(UInt64(dataVersion.rawValue))),
-            .init(tag: .contextSpecific(Tag.path), value: path.toTLVElement()),
-            .init(tag: .contextSpecific(Tag.data), value: data)
-        ])
+        var fields: [TLVElement.TLVField] = []
+        if let dv = dataVersion {
+            fields.append(.init(tag: .contextSpecific(Tag.dataVersion), value: .unsignedInt(UInt64(dv.rawValue))))
+        }
+        fields.append(.init(tag: .contextSpecific(Tag.path), value: path.toTLVElement()))
+        fields.append(.init(tag: .contextSpecific(Tag.data), value: data))
+        return .structure(fields)
     }
 
     public static func fromTLVElement(_ element: TLVElement) throws -> AttributeDataIB {
@@ -353,9 +356,10 @@ public struct AttributeDataIB: Sendable, Equatable {
             throw IMError.invalidMessage("AttributeDataIB: expected structure")
         }
 
-        guard let dv = fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersion) })?.value.uintValue else {
-            throw IMError.invalidMessage("AttributeDataIB: missing dataVersion")
-        }
+        // dataVersion is optional — omitted for unconditional writes (e.g., Apple Home ACL writes)
+        let dv = fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersion) })?.value.uintValue
+            .map { DataVersion(rawValue: UInt32($0)) }
+
         guard let pathField = fields.first(where: { $0.tag == .contextSpecific(Tag.path) }) else {
             throw IMError.invalidMessage("AttributeDataIB: missing path")
         }
@@ -364,7 +368,7 @@ public struct AttributeDataIB: Sendable, Equatable {
         }
 
         return AttributeDataIB(
-            dataVersion: DataVersion(rawValue: UInt32(dv)),
+            dataVersion: dv,
             path: try AttributePath.fromTLVElement(pathField.value),
             data: dataField.value
         )
