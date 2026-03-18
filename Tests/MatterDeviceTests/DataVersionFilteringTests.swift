@@ -109,7 +109,7 @@ struct DataVersionFilteringTests {
         // Read current version from report
         let pathsBefore = [AttributePath(endpointID: epID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)]
         let reportsBefore = manager.readAttributes(pathsBefore)
-        let versionInReportBefore = reportsBefore.first?.attributeData?.dataVersion.rawValue
+        let versionInReportBefore = reportsBefore.first?.attributeData?.dataVersion?.rawValue
 
         // Write to OnOff to change its value (forces a version increment)
         store.set(endpoint: epID, cluster: .onOff, attribute: OnOffCluster.Attribute.onOff, value: .bool(true))
@@ -119,7 +119,7 @@ struct DataVersionFilteringTests {
 
         // Read again
         let reportsAfter = manager.readAttributes(pathsBefore)
-        let versionInReportAfter = reportsAfter.first?.attributeData?.dataVersion.rawValue
+        let versionInReportAfter = reportsAfter.first?.attributeData?.dataVersion?.rawValue
 
         #expect(versionAfter != versionBefore, "dataVersion should change after a write")
         if let before = versionInReportBefore, let after = versionInReportAfter {
