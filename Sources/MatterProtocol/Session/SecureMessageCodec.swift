@@ -36,11 +36,20 @@ public enum SecureMessageCodec {
 
         let counter = session.nextSendCounter()
 
+        // For CASE sessions, the source node ID is used in the nonce but NOT
+        // included in the wire header (per CHIP SDK SessionManager.cpp line ~287).
+        // For PASE sessions, sourceNodeID=0 and also not in the header.
+        // The local node ID is needed for nonce construction so the peer can
+        // decrypt using its stored peerNodeID.
+        let nonceNodeID: UInt64 = session.establishment == .case
+            ? (session.localNodeID?.rawValue ?? sourceNodeID.rawValue)
+            : 0
+
         let messageHeader = MessageHeader(
             sessionID: session.peerSessionID,
             securityFlags: MessageHeader.SecurityFlags(),
             messageCounter: counter,
-            sourceNodeID: sourceNodeID
+            sourceNodeID: nil  // Not included in header for secured unicast
         )
 
         // Plaintext = exchange header + payload
@@ -50,11 +59,13 @@ public enum SecureMessageCodec {
         // AAD = encoded message header
         let headerBytes = messageHeader.encode()
 
-        // Nonce = securityFlags || counter || sourceNodeID
+        // Nonce = securityFlags || counter || localNodeID
+        // The node ID in the nonce is the sender's node ID, which the peer
+        // uses via its stored peerNodeID to construct the same nonce for decryption.
         let nonce = MessageEncryption.buildNonce(
             securityFlags: messageHeader.securityFlags.rawValue,
             messageCounter: counter,
-            sourceNodeID: sourceNodeID.rawValue
+            sourceNodeID: nonceNodeID
         )
 
         let encrypted = try MessageEncryption.encrypt(
@@ -95,8 +106,16 @@ public enum SecureMessageCodec {
         let headerBytes = Data(data.prefix(headerConsumed))
         let ciphertextWithMIC = Data(data.suffix(from: headerConsumed))
 
-        // Nonce from header fields
-        let sourceNodeID = messageHeader.sourceNodeID?.rawValue ?? 0
+        // Nonce construction: the source node ID is NOT taken from the message
+        // header — for secured unicast, the source node ID field is absent from
+        // the wire format. Instead, use the peer's node ID from the session:
+        //   - CASE: peer node ID assigned during commissioning (from NOC)
+        //   - PASE: 0 (kUndefinedNodeId, no node identity yet)
+        // This matches the CHIP SDK (SessionManager.cpp line ~998):
+        //   BuildNonce(secType == kCASE ? GetPeerNodeId() : kUndefinedNodeId)
+        let sourceNodeID: UInt64 = session.establishment == .case
+            ? session.peerNodeID.rawValue
+            : 0
         let nonce = MessageEncryption.buildNonce(
             securityFlags: messageHeader.securityFlags.rawValue,
             messageCounter: messageHeader.messageCounter,
