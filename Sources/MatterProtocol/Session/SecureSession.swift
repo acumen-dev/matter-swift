@@ -22,6 +22,10 @@ public final class SecureSession: Sendable {
     /// Peer node ID (assigned during commissioning for CASE sessions).
     public let peerNodeID: NodeID
 
+    /// Local node ID (this device's node ID on the fabric, used for nonce
+    /// construction when encrypting CASE messages). Nil for PASE sessions.
+    public let localNodeID: NodeID?
+
     /// Fabric index this session belongs to (nil for PASE sessions).
     public let fabricIndex: FabricIndex?
 
@@ -52,6 +56,7 @@ public final class SecureSession: Sendable {
         peerSessionID: UInt16,
         establishment: SessionEstablishment,
         peerNodeID: NodeID,
+        localNodeID: NodeID? = nil,
         fabricIndex: FabricIndex? = nil,
         timeout: Duration = .seconds(3600),
         isResumption: Bool = false,
@@ -64,6 +69,7 @@ public final class SecureSession: Sendable {
         self.peerSessionID = peerSessionID
         self.establishment = establishment
         self.peerNodeID = peerNodeID
+        self.localNodeID = localNodeID
         self.fabricIndex = fabricIndex
         self.createdAt = Date()
         self.timeout = timeout
