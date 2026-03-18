@@ -69,6 +69,25 @@ struct ChipToolRunner: Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // Read stdout/stderr in background threads to prevent pipe buffer deadlock.
+        // chip-tool produces >64KB of output; if we don't drain the pipes while
+        // the process runs, it blocks on write() and never exits.
+        var stdoutData = Data()
+        var stderrData = Data()
+        let stdoutQueue = DispatchQueue(label: "chip-tool.stdout")
+        let stderrQueue = DispatchQueue(label: "chip-tool.stderr")
+        let stdoutDone = DispatchSemaphore(value: 0)
+        let stderrDone = DispatchSemaphore(value: 0)
+
+        stdoutQueue.async {
+            stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+            stdoutDone.signal()
+        }
+        stderrQueue.async {
+            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrDone.signal()
+        }
+
         // Timeout watchdog
         let timeoutItem = DispatchWorkItem { [process] in
             if process.isRunning {
@@ -84,8 +103,9 @@ struct ChipToolRunner: Sendable {
         process.waitUntilExit()
         timeoutItem.cancel()
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        // Wait for pipe readers to finish (they complete when the pipe closes)
+        stdoutDone.wait()
+        stderrDone.wait()
 
         return RunResult(
             exitCode: process.terminationStatus,
