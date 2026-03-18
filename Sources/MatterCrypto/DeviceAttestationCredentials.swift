@@ -37,6 +37,9 @@ public struct DeviceAttestationCredentials: Sendable {
     /// DER-encoded X.509 Product Attestation Intermediate certificate.
     public let paiCertificate: Data
 
+    /// DER-encoded X.509 Product Attestation Authority certificate.
+    public let paaCertificate: Data
+
     /// Certification Declaration (TLV-encoded for test use).
     public let certificationDeclaration: Data
 
@@ -44,11 +47,13 @@ public struct DeviceAttestationCredentials: Sendable {
         dacCertificate: Data,
         dacPrivateKey: P256.Signing.PrivateKey,
         paiCertificate: Data,
+        paaCertificate: Data,
         certificationDeclaration: Data
     ) {
         self.dacCertificate = dacCertificate
         self.dacPrivateKey = dacPrivateKey
         self.paiCertificate = paiCertificate
+        self.paaCertificate = paaCertificate
         self.certificationDeclaration = certificationDeclaration
     }
 
@@ -56,10 +61,9 @@ public struct DeviceAttestationCredentials: Sendable {
 
     /// Generate test/development attestation credentials.
     ///
-    /// Creates a self-signed PAI certificate and a DAC signed by the PAI key.
-    /// Both certificates include the mandatory Matter VID/PID OIDs in their
-    /// Subject Distinguished Names per Matter Core Specification §6.3.5.
-    /// The Certification Declaration is a TLV-encoded structure for development use.
+    /// Creates a full PAA → PAI → DAC certificate chain. All certificates
+    /// include the mandatory Matter VID/PID OIDs in their Subject DNs per
+    /// Matter Core Specification §6.3.5.
     ///
     /// - Warning: These credentials are for development and testing only.
     ///   Production devices must use credentials issued by the CSA.
@@ -72,7 +76,24 @@ public struct DeviceAttestationCredentials: Sendable {
         vendorID: UInt16 = 0xFFF1,
         productID: UInt16 = 0x8000
     ) throws -> DeviceAttestationCredentials {
-        // Generate PAI key and self-signed PAI certificate.
+        // Generate self-signed PAA (Product Attestation Authority — the root).
+        let paaKey = P256.Signing.PrivateKey()
+        let paaCert = try buildX509Certificate(
+            subjectCN: "Matter Test PAA",
+            subjectO: "Test",
+            subjectVID: nil,
+            subjectPID: nil,
+            issuerCN: "Matter Test PAA",
+            issuerO: "Test",
+            issuerVID: nil,
+            publicKey: paaKey.publicKey,
+            signerKey: paaKey,
+            isCA: true,
+            pathLenConstraint: 1,
+            serialNumber: generateSerialNumber()
+        )
+
+        // Generate PAI signed by PAA.
         //
         // Per Matter spec §6.3.5.3, the PAI Subject DN MUST include:
         //   - commonName (2.5.4.3)
@@ -84,32 +105,32 @@ public struct DeviceAttestationCredentials: Sendable {
             subjectO: "Test",
             subjectVID: vendorID,
             subjectPID: nil,
-            issuerCN: "Matter Test PAI",   // self-signed
+            issuerCN: "Matter Test PAA",
             issuerO: "Test",
-            issuerVID: vendorID,
+            issuerVID: nil,
             publicKey: paiKey.publicKey,
-            signerKey: paiKey,
+            signerKey: paaKey,
             isCA: true,
             pathLenConstraint: 0,
             serialNumber: generateSerialNumber()
         )
 
-        // Generate DAC key and DAC certificate signed by PAI.
+        // Generate DAC signed by PAI.
         //
         // Per Matter spec §6.3.5.4, the DAC Subject DN MUST include:
         //   - commonName (2.5.4.3)
         //   - matterVendorId (1.3.6.1.4.1.37244.2.1) as 4-char uppercase hex
         //   - matterProductId (1.3.6.1.4.1.37244.2.2) as 4-char uppercase hex
-        // Issuer DN must match the PAI Subject DN exactly (same RDNs including VID).
+        // Issuer DN must match the PAI Subject DN exactly.
         let dacKey = P256.Signing.PrivateKey()
         let dacCert = try buildX509Certificate(
             subjectCN: "Matter Test DAC",
             subjectO: "Test",
             subjectVID: vendorID,
             subjectPID: productID,
-            issuerCN: "Matter Test PAI",   // must match PAI subject
+            issuerCN: "Matter Test PAI",
             issuerO: "Test",
-            issuerVID: vendorID,            // must match PAI subject VID
+            issuerVID: vendorID,
             publicKey: dacKey.publicKey,
             signerKey: paiKey,
             isCA: false,
@@ -129,6 +150,7 @@ public struct DeviceAttestationCredentials: Sendable {
             dacCertificate: dacCert,
             dacPrivateKey: dacKey,
             paiCertificate: paiCert,
+            paaCertificate: paaCert,
             certificationDeclaration: cd
         )
     }
@@ -163,6 +185,7 @@ public struct DeviceAttestationCredentials: Sendable {
             issuerO: issuerO,
             issuerVID: issuerVID,
             publicKey: publicKey,
+            signerPublicKey: signerKey.publicKey,
             isCA: isCA,
             pathLenConstraint: pathLenConstraint,
             serialNumber: serialNumber
@@ -193,6 +216,7 @@ public struct DeviceAttestationCredentials: Sendable {
         issuerO: String,
         issuerVID: UInt16?,
         publicKey: P256.Signing.PublicKey,
+        signerPublicKey: P256.Signing.PublicKey,
         isCA: Bool,
         pathLenConstraint: Int?,
         serialNumber: Data
@@ -225,7 +249,12 @@ public struct DeviceAttestationCredentials: Sendable {
         let spki = [UInt8](PKCS10CSRBuilder.buildSubjectPublicKeyInfo(publicKey: publicKey))
 
         // extensions [3] EXPLICIT
-        let extensions = buildX509Extensions(isCA: isCA, pathLenConstraint: pathLenConstraint)
+        let extensions = buildX509Extensions(
+            isCA: isCA,
+            pathLenConstraint: pathLenConstraint,
+            subjectPublicKey: publicKey,
+            issuerPublicKey: signerPublicKey
+        )
         let extensionsExplicit = PKCS10CSRBuilder.derContextConstructed(tag: 3, content: extensions)
 
         let tbsContent = version + serial + sigAlg + issuer + validity + subject + spki + extensionsExplicit
@@ -274,7 +303,7 @@ public struct DeviceAttestationCredentials: Sendable {
         return b.derSequence(rdns)
     }
 
-    /// Build X.509 v3 extensions (BasicConstraints, KeyUsage).
+    /// Build X.509 v3 extensions (BasicConstraints, KeyUsage, SKID, AKID).
     ///
     /// For CA certificates:
     ///   - BasicConstraints: critical, cA=TRUE, optional pathLenConstraint
@@ -282,7 +311,12 @@ public struct DeviceAttestationCredentials: Sendable {
     ///
     /// For end-entity certificates (DAC):
     ///   - BasicConstraints: critical, empty (cA defaults to FALSE)
-    private static func buildX509Extensions(isCA: Bool, pathLenConstraint: Int? = nil) -> [UInt8] {
+    private static func buildX509Extensions(
+        isCA: Bool,
+        pathLenConstraint: Int? = nil,
+        subjectPublicKey: P256.Signing.PublicKey,
+        issuerPublicKey: P256.Signing.PublicKey
+    ) -> [UInt8] {
         // BasicConstraints OID: 2.5.29.19
         let bcOID: [UInt64] = [2, 5, 29, 19]
 
@@ -339,8 +373,27 @@ public struct DeviceAttestationCredentials: Sendable {
             kuOctetString
         )
 
+        // SubjectKeyIdentifier: truncated SHA-256 of the subject public key (20 bytes)
+        let skidOID: [UInt64] = [2, 5, 29, 14]
+        let subjectKeyHash = Array(SHA256.hash(data: subjectPublicKey.x963Representation).prefix(20))
+        let skidInner = PKCS10CSRBuilder.derTLV(tag: 0x04, content: subjectKeyHash)
+        let skidOctetString = PKCS10CSRBuilder.derTLV(tag: 0x04, content: skidInner)
+        let skidExtension = PKCS10CSRBuilder.derSequence(
+            PKCS10CSRBuilder.derOID(skidOID) + skidOctetString
+        )
+
+        // AuthorityKeyIdentifier: SEQUENCE { [0] IMPLICIT <issuer key hash> }
+        let akidOID: [UInt64] = [2, 5, 29, 35]
+        let issuerKeyHash = Array(SHA256.hash(data: issuerPublicKey.x963Representation).prefix(20))
+        let akidKeyId = PKCS10CSRBuilder.derTLV(tag: 0x80, content: issuerKeyHash)
+        let akidSeq = PKCS10CSRBuilder.derSequence(akidKeyId)
+        let akidOctetString = PKCS10CSRBuilder.derTLV(tag: 0x04, content: akidSeq)
+        let akidExtension = PKCS10CSRBuilder.derSequence(
+            PKCS10CSRBuilder.derOID(akidOID) + akidOctetString
+        )
+
         // Extensions wrapper: SEQUENCE of extensions
-        return PKCS10CSRBuilder.derSequence(bcExtension + kuExtension)
+        return PKCS10CSRBuilder.derSequence(bcExtension + kuExtension + skidExtension + akidExtension)
     }
 
     /// Encode a byte array as a positive DER integer (add 0x00 prefix if high bit set).

@@ -130,23 +130,22 @@ struct CertificateConformanceTests {
 @Suite("Attestation Certificate Conformance (chip-cert)")
 struct AttestationCertConformanceTests {
 
-    @Test("chip-cert accepts test PAI/DAC attestation chain")
+    @Test("chip-cert accepts test PAA/PAI/DAC attestation chain")
     func chipCertAcceptsAttestationChain() throws {
         guard let runner = ChipCertRunner.findBinary() else {
             print("[SKIP] chip-cert not found — run: make ref-setup-cert")
             return
         }
 
-        withKnownIssue("Test DAC/PAI credentials rejected by chip-cert (error 105)") {
-            let creds = try DeviceAttestationCredentials.testCredentials()
+        let creds = try DeviceAttestationCredentials.testCredentials()
 
-            let result = try runner.validateAttestationChain(
-                dac: creds.dacCertificate,
-                pai: creds.paiCertificate
-            )
-            #expect(result.succeeded,
-                "chip-cert rejected attestation chain. exit=\(result.exitCode)\nstderr: \(result.stderr)")
-        }
+        let result = try runner.validateAttestationChain(
+            dac: creds.dacCertificate,
+            pai: creds.paiCertificate,
+            paa: creds.paaCertificate
+        )
+        #expect(result.succeeded,
+            "chip-cert rejected attestation chain. exit=\(result.exitCode)\nstderr: \(result.stderr)")
     }
 }
 
