@@ -651,6 +651,25 @@ public actor MatterDeviceServer {
             logger.warning("Pake1 for unknown exchange \(exchangeID)")
             return
         }
+
+        // Duplicate detection: if the initiator retransmits Pake1 (because it
+        // didn't get an MRP ACK for Pake2), resend the stored Pake2 response.
+        // Regenerating a new Pake2 with fresh SPAKE2+ random values would
+        // invalidate any in-flight Pake3 and break the handshake.
+        if let storedPake2 = handshake.pake2ResponsePayload {
+            let message = buildUnsecuredMessage(
+                payload: storedPake2,
+                opcode: .pasePake2,
+                exchangeID: exchangeID,
+                isInitiator: false,
+                ackMessageCounter: messageCounter,
+                destinationNodeID: handshake.initiatorNodeID
+            )
+            try await transport.send(message, to: sender)
+            logger.debug("Resent Pake2 (duplicate Pake1) on exchange \(exchangeID)")
+            return
+        }
+
         guard let verifier else {
             logger.error("No verifier computed")
             return
@@ -672,11 +691,14 @@ public actor MatterDeviceServer {
         )
 
         handshake.verifierContext = verifierContext
-        paseHandshakes[exchangeID] = handshake
 
         let pake2 = PASEMessages.Pake2Message(pB: pB, cB: cB)
+        let pake2Payload = pake2.tlvEncode()
+        handshake.pake2ResponsePayload = pake2Payload
+        paseHandshakes[exchangeID] = handshake
+
         let message = buildUnsecuredMessage(
-            payload: pake2.tlvEncode(),
+            payload: pake2Payload,
             opcode: .pasePake2,
             exchangeID: exchangeID,
             isInitiator: false,
@@ -1481,6 +1503,9 @@ extension MatterDeviceServer {
         /// layer recognises the message as addressed to it (CHIP SDK behaviour).
         let initiatorNodeID: NodeID?
         var verifierContext: Spake2pVerifierContext?
+        /// The raw Pake2 payload bytes — stored so we can re-send idempotently
+        /// if the initiator retransmits Pake1 on the same exchange ID (MRP behaviour).
+        var pake2ResponsePayload: Data?
     }
 
     /// An established session with its associated network address.

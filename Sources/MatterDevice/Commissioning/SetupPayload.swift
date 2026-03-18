@@ -245,8 +245,10 @@ public struct SetupPayload: Sendable {
             [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
             [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
         ]
-        // Inverse table
-        let inv = [0, 4, 3, 2, 1, 9, 8, 7, 6, 5]
+        // Inverse table for dihedral group D5:
+        // Only values 1-4 are inverted (n - val where n = 5).
+        // 0 and 5-9 map to themselves.
+        let inv = [0, 4, 3, 2, 1, 5, 6, 7, 8, 9]
 
         // Digits are processed right-to-left starting at position 1 (not 0),
         // reserving position 0 for the check digit that will be appended.

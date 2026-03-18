@@ -14,6 +14,7 @@
 import Testing
 import Foundation
 import Crypto
+import MatterTypes
 @testable import MatterCrypto
 
 // MARK: - HKDF-SHA256
@@ -226,6 +227,25 @@ struct AESCCMVectorTests {
         let encrypted = try MessageEncryption.encrypt(plaintext: plaintext, key: key, nonce: nonce, aad: aad)
         let decrypted = try MessageEncryption.decrypt(ciphertextWithMIC: encrypted, key: key, nonce: nonce, aad: aad)
         #expect(decrypted == plaintext)
+    }
+}
+
+// MARK: - Destination ID
+
+@Suite("Destination ID Reference Vectors")
+struct DestinationIDVectorTests {
+
+    @Test("Destination ID matches TestCASESession.cpp reference", arguments: DestinationIDTestVectors.all)
+    func destinationIDMatchesReference(vector: DestinationIDTestVector) {
+        let result = CASEKeyDerivation.computeDestinationID(
+            initiatorRandom: vector.initiatorRandom,
+            rootPublicKey: vector.rootPubKey,
+            fabricID: FabricID(rawValue: vector.fabricID),
+            nodeID: NodeID(rawValue: vector.nodeID),
+            ipk: vector.ipk
+        )
+        #expect(result == vector.expectedDestinationID,
+            "DestinationID mismatch for \(vector.name): got \(result.hex), expected \(vector.expectedDestinationID.hex)")
     }
 }
 
