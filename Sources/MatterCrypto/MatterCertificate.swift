@@ -393,13 +393,51 @@ public struct MatterCertificate: Sendable, Equatable {
 /// ```
 public struct MatterDistinguishedName: Sendable, Equatable {
 
-    private enum Tag {
+    enum Tag {
+        // Matter-specific integer attributes
         static let nodeID: UInt8 = 17
         static let firmwareSigningID: UInt8 = 18
         static let icacID: UInt8 = 19
         static let rcacID: UInt8 = 20
         static let fabricID: UInt8 = 21
         static let caseAuthenticatedTag: UInt8 = 22
+
+        // X.509 standard string attributes
+        static let commonName: UInt8 = 23
+        static let surname: UInt8 = 24
+        static let serialNumber: UInt8 = 25
+        static let countryName: UInt8 = 26
+        static let localityName: UInt8 = 27
+        static let stateOrProvinceName: UInt8 = 28
+        static let organizationName: UInt8 = 29
+        static let organizationalUnitName: UInt8 = 30
+        static let title: UInt8 = 31
+        static let name: UInt8 = 32
+        static let givenName: UInt8 = 33
+        static let initials: UInt8 = 34
+        static let generationQualifier: UInt8 = 35
+        static let dnQualifier: UInt8 = 36
+        static let pseudonym: UInt8 = 37
+        static let domainComponent: UInt8 = 38
+    }
+
+    /// A DN attribute with its TLV context tag and value (integer or string).
+    public struct Attribute: Sendable, Equatable {
+        public let tag: UInt8
+        public let intValue: UInt64?
+        public let stringValue: String?
+
+        public init(tag: UInt8, intValue: UInt64) {
+            self.tag = tag
+            self.intValue = intValue
+            self.stringValue = nil
+        }
+
+        public init(tag: UInt8, stringValue: String) {
+            self.tag = tag
+            self.intValue = nil
+            self.stringValue = stringValue
+        }
     }
 
     /// Node ID (for NOC subjects).
@@ -420,13 +458,18 @@ public struct MatterDistinguishedName: Sendable, Equatable {
     /// CASE Authenticated Tags.
     public let caseAuthenticatedTags: [UInt32]
 
+    /// All DN attributes in order, including string attributes (commonName, etc.).
+    /// Used by `toX509Name()` to produce correct DER for certs from external issuers.
+    public let orderedAttributes: [Attribute]
+
     public init(
         nodeID: NodeID? = nil,
         firmwareSigningID: UInt32? = nil,
         icacID: UInt32? = nil,
         rcacID: UInt32? = nil,
         fabricID: FabricID? = nil,
-        caseAuthenticatedTags: [UInt32] = []
+        caseAuthenticatedTags: [UInt32] = [],
+        orderedAttributes: [Attribute]? = nil
     ) {
         self.nodeID = nodeID
         self.firmwareSigningID = firmwareSigningID
@@ -434,79 +477,107 @@ public struct MatterDistinguishedName: Sendable, Equatable {
         self.rcacID = rcacID
         self.fabricID = fabricID
         self.caseAuthenticatedTags = caseAuthenticatedTags
+
+        // Build orderedAttributes from individual fields if not provided
+        if let attrs = orderedAttributes {
+            self.orderedAttributes = attrs
+        } else {
+            var attrs: [Attribute] = []
+            if let nodeID { attrs.append(Attribute(tag: Tag.nodeID, intValue: nodeID.rawValue)) }
+            if let firmwareSigningID { attrs.append(Attribute(tag: Tag.firmwareSigningID, intValue: UInt64(firmwareSigningID))) }
+            if let icacID { attrs.append(Attribute(tag: Tag.icacID, intValue: UInt64(icacID))) }
+            if let rcacID { attrs.append(Attribute(tag: Tag.rcacID, intValue: UInt64(rcacID))) }
+            if let fabricID { attrs.append(Attribute(tag: Tag.fabricID, intValue: fabricID.rawValue)) }
+            for cat in caseAuthenticatedTags {
+                attrs.append(Attribute(tag: Tag.caseAuthenticatedTag, intValue: UInt64(cat)))
+            }
+            self.orderedAttributes = attrs
+        }
     }
 
     /// Encode as a TLV list element.
     public func toTLVElement() -> TLVElement {
-        var fields: [TLVElement.TLVField] = []
-
-        if let nodeID {
-            fields.append(.init(tag: .contextSpecific(Tag.nodeID), value: .unsignedInt(nodeID.rawValue)))
+        let fields: [TLVElement.TLVField] = orderedAttributes.map { attr in
+            if let intVal = attr.intValue {
+                return .init(tag: .contextSpecific(attr.tag), value: .unsignedInt(intVal))
+            } else if let strVal = attr.stringValue {
+                return .init(tag: .contextSpecific(attr.tag), value: .utf8String(strVal))
+            } else {
+                return .init(tag: .contextSpecific(attr.tag), value: .null)
+            }
         }
-        if let firmwareSigningID {
-            fields.append(.init(tag: .contextSpecific(Tag.firmwareSigningID), value: .unsignedInt(UInt64(firmwareSigningID))))
-        }
-        if let icacID {
-            fields.append(.init(tag: .contextSpecific(Tag.icacID), value: .unsignedInt(UInt64(icacID))))
-        }
-        if let rcacID {
-            fields.append(.init(tag: .contextSpecific(Tag.rcacID), value: .unsignedInt(UInt64(rcacID))))
-        }
-        if let fabricID {
-            fields.append(.init(tag: .contextSpecific(Tag.fabricID), value: .unsignedInt(fabricID.rawValue)))
-        }
-        for cat in caseAuthenticatedTags {
-            fields.append(.init(tag: .contextSpecific(Tag.caseAuthenticatedTag), value: .unsignedInt(UInt64(cat))))
-        }
-
         return .list(fields)
     }
 
     // MARK: - X.509 DER Encoding
 
-    /// Matter DN attribute OIDs for X.509 encoding.
+    /// OID mapping for all Matter TLV DN context tags.
     ///
-    /// Each Matter TLV DN context tag maps to a specific OID under the
-    /// Matter CSA arc (1.3.6.1.4.1.37244).
-    private static let dnAttributeOIDs: [UInt8: [UInt64]] = [
-        Tag.nodeID:              [1, 3, 6, 1, 4, 1, 37244, 1, 1],
-        Tag.firmwareSigningID:   [1, 3, 6, 1, 4, 1, 37244, 1, 2],
-        Tag.icacID:              [1, 3, 6, 1, 4, 1, 37244, 1, 3],
-        Tag.rcacID:              [1, 3, 6, 1, 4, 1, 37244, 1, 4],
-        Tag.fabricID:            [1, 3, 6, 1, 4, 1, 37244, 1, 5],
+    /// Tags 17-22: Matter-specific integer attributes (values encoded as 16-char hex UTF8String)
+    /// Tags 23-38: Standard X.509 string attributes (values encoded as UTF8String directly)
+    private static let dnTagToOID: [UInt8: [UInt64]] = [
+        // Matter-specific (values are integers, encoded as 16-char hex)
+        Tag.nodeID:               [1, 3, 6, 1, 4, 1, 37244, 1, 1],
+        Tag.firmwareSigningID:    [1, 3, 6, 1, 4, 1, 37244, 1, 2],
+        Tag.icacID:               [1, 3, 6, 1, 4, 1, 37244, 1, 3],
+        Tag.rcacID:               [1, 3, 6, 1, 4, 1, 37244, 1, 4],
+        Tag.fabricID:             [1, 3, 6, 1, 4, 1, 37244, 1, 5],
         Tag.caseAuthenticatedTag: [1, 3, 6, 1, 4, 1, 37244, 1, 6],
+        // X.509 standard (values are strings)
+        Tag.commonName:             [2, 5, 4, 3],
+        Tag.surname:                [2, 5, 4, 4],
+        Tag.serialNumber:           [2, 5, 4, 5],
+        Tag.countryName:            [2, 5, 4, 6],
+        Tag.localityName:           [2, 5, 4, 7],
+        Tag.stateOrProvinceName:    [2, 5, 4, 8],
+        Tag.organizationName:       [2, 5, 4, 10],
+        Tag.organizationalUnitName: [2, 5, 4, 11],
+        Tag.title:                  [2, 5, 4, 12],
+        Tag.name:                   [2, 5, 4, 41],
+        Tag.givenName:              [2, 5, 4, 42],
+        Tag.initials:               [2, 5, 4, 43],
+        Tag.generationQualifier:    [2, 5, 4, 44],
+        Tag.dnQualifier:            [2, 5, 4, 46],
+        Tag.pseudonym:              [2, 5, 4, 65],
+        Tag.domainComponent:        [0, 9, 2342, 19200300, 100, 1, 25],
     ]
 
     /// Convert this DN to an X.509 Name (RDN sequence) in DER encoding.
     ///
-    /// Each Matter DN attribute becomes a SET containing a SEQUENCE of
-    /// { OID, UTF8String(16-hex-chars) }. The CHIP SDK always formats
-    /// values as 16-character uppercase hex strings regardless of the
-    /// logical bit width of the attribute.
+    /// Uses `orderedAttributes` to preserve the exact attribute order from the
+    /// original TLV certificate. Matter-specific integer attributes are encoded
+    /// as 16-char hex UTF8Strings; standard X.509 string attributes are encoded
+    /// as UTF8Strings directly.
     func toX509Name() -> [UInt8] {
         let b = PKCS10CSRBuilder.self
         var rdns: [UInt8] = []
 
-        func addRDN(tag: UInt8, value: UInt64) {
-            guard let oid = Self.dnAttributeOIDs[tag] else { return }
-            let hexStr = String(format: "%016llX", value)
-            let attr = b.derSequence(b.derOID(oid) + b.derUTF8String(hexStr))
-            rdns += b.derSet(attr)
-        }
+        for attr in orderedAttributes {
+            guard let oid = Self.dnTagToOID[attr.tag] else { continue }
 
-        if let nodeID { addRDN(tag: Tag.nodeID, value: nodeID.rawValue) }
-        if let firmwareSigningID { addRDN(tag: Tag.firmwareSigningID, value: UInt64(firmwareSigningID)) }
-        if let icacID { addRDN(tag: Tag.icacID, value: UInt64(icacID)) }
-        if let rcacID { addRDN(tag: Tag.rcacID, value: UInt64(rcacID)) }
-        if let fabricID { addRDN(tag: Tag.fabricID, value: fabricID.rawValue) }
-        for cat in caseAuthenticatedTags {
-            addRDN(tag: Tag.caseAuthenticatedTag, value: UInt64(cat))
+            let valueBytes: [UInt8]
+            if let intVal = attr.intValue {
+                // Matter-specific: encode as 16-char uppercase hex
+                valueBytes = b.derUTF8String(String(format: "%016llX", intVal))
+            } else if let strVal = attr.stringValue {
+                // X.509 standard: encode string directly
+                valueBytes = b.derUTF8String(strVal)
+            } else {
+                continue
+            }
+
+            let attrSeq = b.derSequence(b.derOID(oid) + valueBytes)
+            rdns += b.derSet(attrSeq)
         }
 
         return b.derSequence(rdns)
     }
 
     /// Decode from a TLV list element.
+    ///
+    /// Preserves all attributes in order (including string attributes like
+    /// commonName) so that `toX509Name()` can reproduce the exact DER encoding
+    /// for signature verification of externally-issued certificates.
     public static func fromTLVElement(_ element: TLVElement) throws -> MatterDistinguishedName {
         guard case .list(let fields) = element else {
             throw CertificateError.invalidStructure
@@ -518,26 +589,31 @@ public struct MatterDistinguishedName: Sendable, Equatable {
         var rcacID: UInt32?
         var fabricID: FabricID?
         var cats: [UInt32] = []
+        var ordered: [Attribute] = []
 
         for field in fields {
             guard case .contextSpecific(let tag) = field.tag else { continue }
-            guard let val = field.value.uintValue else { continue }
 
-            switch tag {
-            case Tag.nodeID:
-                nodeID = NodeID(rawValue: val)
-            case Tag.firmwareSigningID:
-                firmwareSigningID = UInt32(val)
-            case Tag.icacID:
-                icacID = UInt32(val)
-            case Tag.rcacID:
-                rcacID = UInt32(val)
-            case Tag.fabricID:
-                fabricID = FabricID(rawValue: val)
-            case Tag.caseAuthenticatedTag:
-                cats.append(UInt32(val))
-            default:
-                break
+            if let val = field.value.uintValue {
+                ordered.append(Attribute(tag: tag, intValue: val))
+                switch tag {
+                case Tag.nodeID:
+                    nodeID = NodeID(rawValue: val)
+                case Tag.firmwareSigningID:
+                    firmwareSigningID = UInt32(val)
+                case Tag.icacID:
+                    icacID = UInt32(val)
+                case Tag.rcacID:
+                    rcacID = UInt32(val)
+                case Tag.fabricID:
+                    fabricID = FabricID(rawValue: val)
+                case Tag.caseAuthenticatedTag:
+                    cats.append(UInt32(val))
+                default:
+                    break
+                }
+            } else if let str = field.value.stringValue {
+                ordered.append(Attribute(tag: tag, stringValue: str))
             }
         }
 
@@ -547,7 +623,8 @@ public struct MatterDistinguishedName: Sendable, Equatable {
             icacID: icacID,
             rcacID: rcacID,
             fabricID: fabricID,
-            caseAuthenticatedTags: cats
+            caseAuthenticatedTags: cats,
+            orderedAttributes: ordered
         )
     }
 }
