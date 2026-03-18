@@ -16,6 +16,9 @@ import MatterTypes
 /// 3. **Sigma3** (Initiator → Responder): encrypted(NOC + signature)
 ///
 /// After Sigma3, both sides derive matching session keys for message encryption.
+///
+/// Key derivation uses a running SHA-256 transcript hash across all three messages
+/// per Matter Core Spec §5.5.2.
 public enum CASESession {
 
     // MARK: - Nonce Constants
@@ -41,6 +44,8 @@ public enum CASESession {
         public let initiatorEphKey: P256.KeyAgreement.PrivateKey
         public let fabricInfo: FabricInfo
         public let ipk: Data
+        /// Raw TLV bytes of the Sigma1 message as sent by this initiator.
+        public let sigma1Bytes: Data
         /// Set when resumption was attempted; used to verify the responder's Sigma2Resume MIC.
         public let resumptionID: Data?
     }
@@ -55,9 +60,12 @@ public enum CASESession {
         public let initiatorEphPubKey: Data
         public let fabricInfo: FabricInfo
         public let ipk: Data
-        public let sharedSecret: Data
-        public let s2k: SymmetricKey
-        public let s3k: SymmetricKey
+        /// The ECDH shared secret, retained so S3K and session keys can be derived in step 2.
+        public let sharedSecret: SharedSecret
+        /// Raw TLV bytes of the Sigma1 message as received from the initiator.
+        public let sigma1Bytes: Data
+        /// Raw TLV bytes of the Sigma2 message as sent by this responder.
+        public let sigma2Bytes: Data
     }
 
     // MARK: - Initiator Step 1
@@ -100,16 +108,19 @@ public enum CASESession {
             initiatorEphPubKey: Data(ephKey.publicKey.x963Representation)
         )
 
+        let sigma1Data = sigma1.tlvEncode()
+
         let context = InitiatorContext(
             initiatorRandom: random,
             initiatorSessionID: initiatorSessionID,
             initiatorEphKey: ephKey,
             fabricInfo: fabricInfo,
             ipk: ipk,
+            sigma1Bytes: sigma1Data,
             resumptionID: nil
         )
 
-        return (context, sigma1.tlvEncode())
+        return (context, sigma1Data)
     }
 
     // MARK: - Responder Step 1
@@ -117,8 +128,8 @@ public enum CASESession {
     /// Process Sigma1 and create Sigma2 message (responder side).
     ///
     /// Verifies the destination ID matches this node, performs ECDH,
-    /// derives sigma keys, signs TBS data, encrypts the payload, and
-    /// assembles Sigma2.
+    /// derives S2K from the transcript hash of Sigma1, signs TBS data,
+    /// encrypts the payload, and assembles Sigma2.
     ///
     /// - Parameters:
     ///   - sigma1Data: The raw Sigma1 TLV bytes.
@@ -149,23 +160,28 @@ public enum CASESession {
         let responderEphKey = P256.KeyAgreement.PrivateKey()
         let initiatorEphPubKey = try P256.KeyAgreement.PublicKey(x963Representation: sigma1.initiatorEphPubKey)
         let sharedSecret = try responderEphKey.sharedSecretFromKeyAgreement(with: initiatorEphPubKey)
-        let sharedSecretData = sharedSecret.withUnsafeBytes { Data($0) }
 
         let responderRandom = generateRandom(count: 32)
-        let responderEphPubKeyData = Data(responderEphKey.publicKey.x963Representation)
+        let responderEphPubKey = responderEphKey.publicKey
 
-        // Derive sigma keys
-        let (s2k, s3k) = CASEKeyDerivation.deriveSigmaKeys(
-            sharedSecret: sharedSecretData,
+        // Derive S2K using transcript hash of Sigma1.
+        // salt = IPK || σ2.Responder_Random || σ2.Responder_EPH_Pub_Key || SHA256(σ1)
+        let s2k = CASEKeyDerivation.deriveSigma2Key(
+            sharedSecret: sharedSecret,
             ipk: ipk,
             responderRandom: responderRandom,
-            responderEphPubKey: responderEphPubKeyData,
-            initiatorEphPubKey: sigma1.initiatorEphPubKey
+            responderEphPubKey: responderEphPubKey,
+            sigma1Bytes: sigma1Data
         )
 
-        // Build and sign TBS2
-        let nocTLV = fabricInfo.noc.tlvEncode()
-        let icacTLV = fabricInfo.icac?.tlvEncode()
+        // Build and sign TBS2.
+        // Use rawNOC / rawICAC (exact bytes received during commissioning) rather than
+        // re-encoding the parsed certificates — this avoids any TLV roundtrip differences
+        // and ensures Apple Home (homed) can parse the NOC it originally created to extract
+        // the public key for Sigma2 signature verification.
+        let nocTLV = fabricInfo.rawNOC ?? fabricInfo.noc.tlvEncode()
+        let icacTLV = fabricInfo.rawICAC
+        let responderEphPubKeyData = Data(responderEphKey.publicKey.x963Representation)
 
         let tbs2 = TBSData2(
             responderNOC: nocTLV,
@@ -173,14 +189,15 @@ public enum CASESession {
             responderEphPubKey: responderEphPubKeyData,
             initiatorEphPubKey: sigma1.initiatorEphPubKey
         )
-        let signature = try fabricInfo.operationalKey.signature(for: tbs2.tlvEncode())
+        let tbs2Bytes = tbs2.tlvEncode()
+        let signature = try fabricInfo.operationalKey.signature(for: tbs2Bytes)
 
         // Build and encrypt Sigma2 payload
         let resumptionID = generateRandom(count: 16)
         let sigma2Payload = Sigma2Decrypted(
             responderNOC: nocTLV,
             responderICAC: icacTLV,
-            signature: Data(signature.derRepresentation),
+            signature: Data(signature.rawRepresentation),   // IEEE P1363 (64 bytes), not DER
             resumptionID: resumptionID
         )
 
@@ -198,6 +215,8 @@ public enum CASESession {
             encrypted2: encrypted2
         )
 
+        let sigma2Data = sigma2.tlvEncode()
+
         let context = ResponderContext(
             responderRandom: responderRandom,
             responderSessionID: responderSessionID,
@@ -205,12 +224,12 @@ public enum CASESession {
             initiatorEphPubKey: sigma1.initiatorEphPubKey,
             fabricInfo: fabricInfo,
             ipk: ipk,
-            sharedSecret: sharedSecretData,
-            s2k: s2k,
-            s3k: s3k
+            sharedSecret: sharedSecret,
+            sigma1Bytes: sigma1Data,
+            sigma2Bytes: sigma2Data
         )
 
-        return (context, sigma2.tlvEncode())
+        return (context, sigma2Data)
     }
 
     // MARK: - Initiator Step 2
@@ -218,13 +237,14 @@ public enum CASESession {
     /// Process Sigma2 and create Sigma3 message (initiator side).
     ///
     /// Decrypts Sigma2 payload, verifies responder's certificate chain and signature,
-    /// signs TBS3, encrypts initiator payload, and derives session keys.
+    /// signs TBS3, encrypts initiator payload, and derives session keys using
+    /// the full Sigma1 || Sigma2 || Sigma3 transcript hash.
     ///
     /// - Parameters:
     ///   - context: The context from initiatorStep1.
     ///   - sigma2Data: The raw Sigma2 TLV bytes.
     ///   - responderRCAC: The responder's expected Root CA Certificate.
-    /// - Returns: Tuple of (sigma3 TLV data, session keys).
+    /// - Returns: Tuple of (sigma3 TLV data, session keys, responder session ID).
     public static func initiatorStep2(
         context: InitiatorContext,
         sigma2Data: Data,
@@ -235,15 +255,15 @@ public enum CASESession {
         // ECDH key agreement
         let responderEphPubKey = try P256.KeyAgreement.PublicKey(x963Representation: sigma2.responderEphPubKey)
         let sharedSecret = try context.initiatorEphKey.sharedSecretFromKeyAgreement(with: responderEphPubKey)
-        let sharedSecretData = sharedSecret.withUnsafeBytes { Data($0) }
 
-        // Derive sigma keys
-        let (s2k, s3k) = CASEKeyDerivation.deriveSigmaKeys(
-            sharedSecret: sharedSecretData,
+        // Derive S2K using transcript hash of Sigma1.
+        // salt = IPK || σ2.Responder_Random || σ2.Responder_EPH_Pub_Key || SHA256(σ1)
+        let s2k = CASEKeyDerivation.deriveSigma2Key(
+            sharedSecret: sharedSecret,
             ipk: context.ipk,
             responderRandom: sigma2.responderRandom,
-            responderEphPubKey: sigma2.responderEphPubKey,
-            initiatorEphPubKey: Data(context.initiatorEphKey.publicKey.x963Representation)
+            responderEphPubKey: responderEphPubKey,
+            sigma1Bytes: context.sigma1Bytes
         )
 
         // Decrypt Sigma2 payload
@@ -269,7 +289,7 @@ public enum CASESession {
             initiatorEphPubKey: Data(context.initiatorEphKey.publicKey.x963Representation)
         )
         let responderPubKey = try responderNOC.subjectPublicKey()
-        let responderSig = try P256.Signing.ECDSASignature(derRepresentation: sigma2Decrypted.signature)
+        let responderSig = try P256.Signing.ECDSASignature(rawRepresentation: sigma2Decrypted.signature)
         guard responderPubKey.isValidSignature(responderSig, for: tbs2.tlvEncode()) else {
             throw CASEError.signatureVerificationFailed
         }
@@ -287,10 +307,18 @@ public enum CASESession {
         let initiatorSig = try context.fabricInfo.operationalKey.signature(for: tbs3.tlvEncode())
 
         // Build and encrypt Sigma3 payload
+        // Derive S3K from transcript hash of Sigma1 || Sigma2
+        let s3k = CASEKeyDerivation.deriveSigma3Key(
+            sharedSecret: sharedSecret,
+            ipk: context.ipk,
+            sigma1Bytes: context.sigma1Bytes,
+            sigma2Bytes: sigma2Data
+        )
+
         let sigma3Payload = Sigma3Decrypted(
             initiatorNOC: initiatorNOCTLV,
             initiatorICAC: initiatorICACTLV,
-            signature: Data(initiatorSig.derRepresentation)
+            signature: Data(initiatorSig.rawRepresentation)   // IEEE P1363 (64 bytes), not DER
         )
 
         let encrypted3 = try MessageEncryption.encrypt(
@@ -301,17 +329,24 @@ public enum CASESession {
         )
 
         let sigma3 = Sigma3Message(encrypted3: encrypted3)
+        let sigma3Data = sigma3.tlvEncode()
 
-        // Derive session keys
-        let sessionKeys = CASEKeyDerivation.deriveSessionKeys(
-            sharedSecret: sharedSecretData,
+        // Derive session keys from full transcript: Sigma1 || Sigma2 || Sigma3
+        let (i2rKey, r2iKey, attestationKey) = CASEKeyDerivation.deriveSessionKeys(
+            sharedSecret: sharedSecret,
             ipk: context.ipk,
-            responderRandom: sigma2.responderRandom,
-            responderEphPubKey: sigma2.responderEphPubKey,
-            initiatorEphPubKey: Data(context.initiatorEphKey.publicKey.x963Representation)
+            sigma1Bytes: context.sigma1Bytes,
+            sigma2Bytes: sigma2Data,
+            sigma3Bytes: sigma3Data
         )
 
-        return (sigma3.tlvEncode(), sessionKeys, sigma2.responderSessionID)
+        let sessionKeys = SessionKeys(
+            i2rKey: i2rKey,
+            r2iKey: r2iKey,
+            attestationKey: attestationKey
+        )
+
+        return (sigma3Data, sessionKeys, sigma2.responderSessionID)
     }
 
     // MARK: - Responder Step 2
@@ -319,7 +354,7 @@ public enum CASESession {
     /// Process Sigma3 and derive session keys (responder side).
     ///
     /// Decrypts Sigma3 payload, verifies initiator's certificate chain and signature,
-    /// and derives session keys.
+    /// and derives session keys using the full Sigma1 || Sigma2 || Sigma3 transcript hash.
     ///
     /// - Parameters:
     ///   - context: The context from responderStep1.
@@ -333,18 +368,41 @@ public enum CASESession {
     ) throws -> (SessionKeys, NodeID) {
         let sigma3 = try Sigma3Message.fromTLV(sigma3Data)
 
+        // Derive S3K from transcript hash of Sigma1 || Sigma2
+        let s3k = CASEKeyDerivation.deriveSigma3Key(
+            sharedSecret: context.sharedSecret,
+            ipk: context.ipk,
+            sigma1Bytes: context.sigma1Bytes,
+            sigma2Bytes: context.sigma2Bytes
+        )
+
         // Decrypt Sigma3 payload
         let decryptedData = try MessageEncryption.decrypt(
             ciphertextWithMIC: sigma3.encrypted3,
-            key: context.s3k,
+            key: s3k,
             nonce: sigma3Nonce,
             aad: Data()
         )
         let sigma3Decrypted = try Sigma3Decrypted.fromTLV(decryptedData)
 
-        // Verify initiator's certificate chain
+        // Verify initiator's certificate chain.
+        // Apple Home (and any compliant commissioner) sends an ICAC in TBEData3 when its
+        // NOC was issued by an intermediate CA rather than directly by the RCAC.
+        // Use the 3-cert validation path when ICAC is present.
         let initiatorNOC = try MatterCertificate.fromTLV(sigma3Decrypted.initiatorNOC)
-        guard MatterCertificate.validateChain(noc: initiatorNOC, rcac: initiatorRCAC) else {
+        let chainValid: Bool
+        if let icacData = sigma3Decrypted.initiatorICAC {
+            let initiatorICAC = try MatterCertificate.fromTLV(icacData)
+            let rcacSelfSigned = initiatorRCAC.verifySelfSigned()
+            let rcacKey = try? initiatorRCAC.subjectPublicKey()
+            let icacVerifiedByRcac = rcacKey.map { initiatorICAC.verify(with: $0) } ?? false
+            let icacIssuerMatchesRcac = initiatorICAC.issuer == initiatorRCAC.subject
+            let icacKey = try? initiatorICAC.subjectPublicKey()
+            chainValid = MatterCertificate.validateChain(noc: initiatorNOC, icac: initiatorICAC, rcac: initiatorRCAC)
+        } else {
+            chainValid = MatterCertificate.validateChain(noc: initiatorNOC, rcac: initiatorRCAC)
+        }
+        guard chainValid else {
             throw CASEError.certificateChainInvalid
         }
 
@@ -356,18 +414,24 @@ public enum CASESession {
             responderEphPubKey: Data(context.responderEphKey.publicKey.x963Representation)
         )
         let initiatorPubKey = try initiatorNOC.subjectPublicKey()
-        let initiatorSig = try P256.Signing.ECDSASignature(derRepresentation: sigma3Decrypted.signature)
+        let initiatorSig = try P256.Signing.ECDSASignature(rawRepresentation: sigma3Decrypted.signature)
         guard initiatorPubKey.isValidSignature(initiatorSig, for: tbs3.tlvEncode()) else {
             throw CASEError.signatureVerificationFailed
         }
 
-        // Derive session keys
-        let sessionKeys = CASEKeyDerivation.deriveSessionKeys(
+        // Derive session keys from full transcript: Sigma1 || Sigma2 || Sigma3
+        let (i2rKey, r2iKey, attestationKey) = CASEKeyDerivation.deriveSessionKeys(
             sharedSecret: context.sharedSecret,
             ipk: context.ipk,
-            responderRandom: context.responderRandom,
-            responderEphPubKey: Data(context.responderEphKey.publicKey.x963Representation),
-            initiatorEphPubKey: context.initiatorEphPubKey
+            sigma1Bytes: context.sigma1Bytes,
+            sigma2Bytes: context.sigma2Bytes,
+            sigma3Bytes: sigma3Data
+        )
+
+        let sessionKeys = SessionKeys(
+            i2rKey: i2rKey,
+            r2iKey: r2iKey,
+            attestationKey: attestationKey
         )
 
         // Extract initiator's node ID from their NOC
@@ -584,16 +648,19 @@ public enum CASESession {
             initiatorResumeMIC: resumeMIC
         )
 
+        let sigma1Data = sigma1.tlvEncode()
+
         let context = InitiatorContext(
             initiatorRandom: random,
             initiatorSessionID: initiatorSessionID,
             initiatorEphKey: ephKey,
             fabricInfo: fabricInfo,
             ipk: ipk,
+            sigma1Bytes: sigma1Data,
             resumptionID: resumptionID
         )
 
-        return (context, sigma1.tlvEncode())
+        return (context, sigma1Data)
     }
 
     // MARK: - Helpers

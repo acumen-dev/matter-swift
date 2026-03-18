@@ -58,6 +58,23 @@ public struct GroupKeyManagementHandler: ClusterHandler, @unchecked Sendable {
         ]
     }
 
+    // MARK: - Response Command IDs
+
+    /// Maps request command IDs to their response command IDs per the Matter spec.
+    ///
+    /// Per spec §11.2.8, KeySetRead responds with KeySetReadResponse (0x02) and
+    /// KeySetReadAllIndices responds with KeySetReadAllIndicesResponse (0x05).
+    public func responseCommandID(for requestCommandID: CommandID) -> CommandID? {
+        switch requestCommandID {
+        case GroupKeyManagementCluster.Command.keySetRead:
+            return GroupKeyManagementCluster.Command.keySetReadResponse
+        case GroupKeyManagementCluster.Command.keySetReadAllIndices:
+            return GroupKeyManagementCluster.Command.keySetReadAllIndicesResponse
+        default:
+            return nil
+        }
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

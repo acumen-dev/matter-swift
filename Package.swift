@@ -212,5 +212,13 @@ let package = Package(
                 "MatterTypes",
             ]
         ),
+        .testTarget(
+            name: "ReferenceTests",
+            dependencies: [
+                "MatterCrypto",
+                "MatterTypes",
+            ],
+            path: "Tests/ReferenceTests"
+        ),
     ]
 )

@@ -28,7 +28,7 @@ import MatterTypes
 ///   8: ellipticCurveIdentifier (unsigned int) — 1 = P-256
 ///   9: publicKey (octet string, 65 bytes uncompressed)
 ///  10: extensions (list)
-///  11: signature (octet string, DER-encoded ECDSA)
+///  11: signature (octet string, 64-byte P1363 ECDSA per Matter spec §6.6.1)
 /// }
 /// ```
 public struct MatterCertificate: Sendable, Equatable {
@@ -80,7 +80,13 @@ public struct MatterCertificate: Sendable, Equatable {
     public let extensions: [CertificateExtension]
 
     /// ECDSA-SHA256 signature over the TBS (to-be-signed) portion.
+    /// Matter spec §6.6.1: stored as IEEE P1363 format (64-byte raw r‖s).
     public let signature: Data
+
+    /// Original TLV bytes from which this certificate was decoded, preserved
+    /// so that `tbsData()` can extract authentic TBS bytes rather than
+    /// re-encoding them (which may differ in integer width, encoding choices, etc.).
+    public let rawTLV: Data?
 
     // MARK: - Init
 
@@ -92,7 +98,8 @@ public struct MatterCertificate: Sendable, Equatable {
         subject: MatterDistinguishedName,
         publicKey: Data,
         extensions: [CertificateExtension] = [],
-        signature: Data
+        signature: Data,
+        rawTLV: Data? = nil
     ) {
         self.serialNumber = serialNumber
         self.issuer = issuer
@@ -102,6 +109,7 @@ public struct MatterCertificate: Sendable, Equatable {
         self.publicKey = publicKey
         self.extensions = extensions
         self.signature = signature
+        self.rawTLV = rawTLV
     }
 
     // MARK: - TLV Encoding
@@ -136,37 +144,141 @@ public struct MatterCertificate: Sendable, Equatable {
         return .structure(fields)
     }
 
-    /// Extract the to-be-signed bytes (everything except the signature).
+    /// Produce the X.509 DER `TBSCertificate` bytes for this certificate.
     ///
-    /// This re-encodes the certificate without the signature field,
-    /// producing the exact bytes that should be signed/verified.
+    /// Matter certificate signatures are computed over X.509 ASN.1 DER
+    /// `TBSCertificate` bytes — **not** over any form of Matter TLV.
+    /// The Matter TLV certificate is a compact re-encoding of an X.509
+    /// certificate; the signature value in TLV field 11 is the ECDSA
+    /// signature that was originally computed over the DER TBS.
+    ///
+    /// This method converts the parsed TLV fields back to X.509 DER
+    /// using the `PKCS10CSRBuilder` helpers that are already present
+    /// in the codebase.
+    ///
+    /// See Matter Core Spec §6.4.3, §6.5.
     public func tbsData() -> Data {
-        var fields: [TLVElement.TLVField] = []
+        let b = PKCS10CSRBuilder.self
 
-        fields.append(.init(tag: .contextSpecific(Tag.serialNumber), value: .octetString(serialNumber)))
-        fields.append(.init(tag: .contextSpecific(Tag.signatureAlgorithm), value: .unsignedInt(Algorithm.ecdsaSHA256)))
-        fields.append(.init(tag: .contextSpecific(Tag.issuer), value: issuer.toTLVElement()))
-        fields.append(.init(tag: .contextSpecific(Tag.notBefore), value: .unsignedInt(UInt64(notBefore))))
-        fields.append(.init(tag: .contextSpecific(Tag.notAfter), value: .unsignedInt(UInt64(notAfter))))
-        fields.append(.init(tag: .contextSpecific(Tag.subject), value: subject.toTLVElement()))
-        fields.append(.init(tag: .contextSpecific(Tag.publicKeyAlgorithm), value: .unsignedInt(Algorithm.ecPublicKey)))
-        fields.append(.init(tag: .contextSpecific(Tag.ellipticCurveID), value: .unsignedInt(Algorithm.p256)))
-        fields.append(.init(tag: .contextSpecific(Tag.publicKey), value: .octetString(publicKey)))
+        // version [0] EXPLICIT INTEGER v3 (= 2)
+        let version = b.derContextConstructed(tag: 0, content: [0x02, 0x01, 0x02])
 
-        if !extensions.isEmpty {
-            let extFields = extensions.map { $0.toTLVField() }
-            fields.append(.init(tag: .contextSpecific(Tag.extensions), value: .list(extFields)))
+        // serialNumber INTEGER
+        let serialContent = Self.encodeSerialNumberDERInteger(serialNumber)
+        let serial = b.derTLV(tag: 0x02, content: serialContent)
+
+        // signature AlgorithmIdentifier (ecdsa-with-SHA256)
+        let sigAlg = b.derSequence(b.derOID(b.oidECDSAWithSHA256))
+
+        // issuer Name
+        let issuerDER = issuer.toX509Name()
+
+        // validity Validity { notBefore, notAfter }
+        let notBeforeDER = Self.matterEpochToDERTime(notBefore)
+        let notAfterDER = Self.matterEpochToDERTime(notAfter)
+        let validity = b.derSequence(notBeforeDER + notAfterDER)
+
+        // subject Name
+        let subjectDER = subject.toX509Name()
+
+        // subjectPublicKeyInfo
+        let spki: [UInt8]
+        if let key = try? P256.Signing.PublicKey(x963Representation: publicKey) {
+            spki = b.buildSubjectPublicKeyInfo(publicKey: key)
+        } else {
+            // Fallback: build manually from raw bytes
+            let algID = b.derSequence(b.derOID(b.oidECPublicKey) + b.derOID(b.oidPrime256v1))
+            let bitString = b.derBitString([UInt8](publicKey))
+            spki = b.derSequence(algID + bitString)
         }
 
-        return TLVEncoder.encode(.structure(fields))
+        // extensions [3] EXPLICIT
+        var extBytes: [UInt8] = []
+        if !extensions.isEmpty {
+            var extSeqContent: [UInt8] = []
+            for ext in extensions {
+                extSeqContent += ext.toX509Extension()
+            }
+            let extSeq = b.derSequence(extSeqContent)
+            extBytes = b.derContextConstructed(tag: 3, content: extSeq)
+        }
+
+        let tbsContent = version + serial + sigAlg + issuerDER + validity +
+            subjectDER + spki + extBytes
+        return Data(b.derSequence(tbsContent))
+    }
+
+    // MARK: - Matter Epoch to GeneralizedTime
+
+    /// Encode a Matter epoch time as a DER time value (tag + length + value).
+    ///
+    /// The CHIP SDK uses:
+    /// - **UTCTime** (tag 0x17, 2-digit year "YYMMDDHHMMSSZ") for dates 2000-2049
+    /// - **GeneralizedTime** (tag 0x18, 4-digit year "YYYYMMDDHHMMSSZ") for the
+    ///   no-expiry sentinel (9999-12-31) and dates outside the UTCTime range
+    ///
+    /// Matter epoch = seconds since 2000-01-01 00:00:00 UTC.
+    /// Value 0 means "not specified" → encoded as GeneralizedTime "99991231235959Z".
+    private static func matterEpochToDERTime(_ matterSeconds: UInt32) -> [UInt8] {
+        let b = PKCS10CSRBuilder.self
+        if matterSeconds == 0 {
+            return b.derTLV(tag: 0x18, content: [UInt8]("99991231235959Z".utf8))
+        }
+        let unixTime = TimeInterval(matterSeconds) + 946684800
+        let date = Date(timeIntervalSince1970: unixTime)
+        let formatter = DateFormatter()
+        formatter.timeZone = TimeZone(identifier: "UTC")
+
+        // Extract year to decide UTCTime vs GeneralizedTime
+        formatter.dateFormat = "yyyy"
+        let year = Int(formatter.string(from: date)) ?? 0
+
+        if year >= 2000 && year <= 2049 {
+            // UTCTime: 2-digit year
+            formatter.dateFormat = "yyMMddHHmmss"
+            let str = formatter.string(from: date) + "Z"
+            return b.derTLV(tag: 0x17, content: [UInt8](str.utf8))
+        } else {
+            // GeneralizedTime: 4-digit year
+            formatter.dateFormat = "yyyyMMddHHmmss"
+            let str = formatter.string(from: date) + "Z"
+            return b.derTLV(tag: 0x18, content: [UInt8](str.utf8))
+        }
+    }
+
+    /// Encode a serial number as a DER integer.
+    ///
+    /// The CHIP SDK encodes certificate serial numbers as raw byte sequences
+    /// without the positive-integer 0x00 prefix that standard DER requires.
+    /// We match this behavior for interoperability.
+    private static func encodeSerialNumberDERInteger(_ bytes: Data) -> [UInt8] {
+        var b = [UInt8](bytes)
+        // Strip leading zeros (but keep at least one byte)
+        while b.count > 1 && b[0] == 0x00 { b.removeFirst() }
+        return b
     }
 
     // MARK: - TLV Decoding
 
     /// Decode a Matter certificate from TLV data.
+    ///
+    /// The raw bytes are preserved in `rawTLV` so that `tbsData()` can
+    /// extract authentic TBS bytes without re-encoding.
     public static func fromTLV(_ data: Data) throws -> MatterCertificate {
         let (_, element) = try TLVDecoder.decode(data)
-        return try fromTLVElement(element)
+        var cert = try fromTLVElement(element)
+        cert = MatterCertificate(
+            serialNumber: cert.serialNumber,
+            issuer: cert.issuer,
+            notBefore: cert.notBefore,
+            notAfter: cert.notAfter,
+            subject: cert.subject,
+            publicKey: cert.publicKey,
+            extensions: cert.extensions,
+            signature: cert.signature,
+            rawTLV: data
+        )
+        return cert
     }
 
     /// Decode from a TLV element.
@@ -231,13 +343,22 @@ public struct MatterCertificate: Sendable, Equatable {
 
     /// Verify this certificate's signature against the given public key.
     ///
+    /// The signature is verified against the X.509 DER TBSCertificate bytes
+    /// produced by `tbsData()`. Matter cert signatures are always IEEE P1363
+    /// format (64-byte raw r‖s) per Matter spec §6.6.1.
+    ///
     /// - Parameter signerPublicKey: The public key of the certificate's issuer (or self for RCAC).
     /// - Returns: `true` if the signature is valid.
     public func verify(with signerPublicKey: P256.Signing.PublicKey) -> Bool {
         let tbs = tbsData()
-        guard let ecdsaSignature = try? P256.Signing.ECDSASignature(derRepresentation: signature) else {
+
+        // Matter spec §6.6.1: P1363 format (64 bytes). Fall back to DER for
+        // backward compatibility with any legacy test certs.
+        guard let ecdsaSignature = (try? P256.Signing.ECDSASignature(rawRepresentation: signature))
+            ?? (try? P256.Signing.ECDSASignature(derRepresentation: signature)) else {
             return false
         }
+
         return signerPublicKey.isValidSignature(ecdsaSignature, for: tbs)
     }
 
@@ -339,6 +460,50 @@ public struct MatterDistinguishedName: Sendable, Equatable {
         }
 
         return .list(fields)
+    }
+
+    // MARK: - X.509 DER Encoding
+
+    /// Matter DN attribute OIDs for X.509 encoding.
+    ///
+    /// Each Matter TLV DN context tag maps to a specific OID under the
+    /// Matter CSA arc (1.3.6.1.4.1.37244).
+    private static let dnAttributeOIDs: [UInt8: [UInt64]] = [
+        Tag.nodeID:              [1, 3, 6, 1, 4, 1, 37244, 1, 1],
+        Tag.firmwareSigningID:   [1, 3, 6, 1, 4, 1, 37244, 1, 2],
+        Tag.icacID:              [1, 3, 6, 1, 4, 1, 37244, 1, 3],
+        Tag.rcacID:              [1, 3, 6, 1, 4, 1, 37244, 1, 4],
+        Tag.fabricID:            [1, 3, 6, 1, 4, 1, 37244, 1, 5],
+        Tag.caseAuthenticatedTag: [1, 3, 6, 1, 4, 1, 37244, 1, 6],
+    ]
+
+    /// Convert this DN to an X.509 Name (RDN sequence) in DER encoding.
+    ///
+    /// Each Matter DN attribute becomes a SET containing a SEQUENCE of
+    /// { OID, UTF8String(16-hex-chars) }. The CHIP SDK always formats
+    /// values as 16-character uppercase hex strings regardless of the
+    /// logical bit width of the attribute.
+    func toX509Name() -> [UInt8] {
+        let b = PKCS10CSRBuilder.self
+        var rdns: [UInt8] = []
+
+        func addRDN(tag: UInt8, value: UInt64) {
+            guard let oid = Self.dnAttributeOIDs[tag] else { return }
+            let hexStr = String(format: "%016llX", value)
+            let attr = b.derSequence(b.derOID(oid) + b.derUTF8String(hexStr))
+            rdns += b.derSet(attr)
+        }
+
+        if let nodeID { addRDN(tag: Tag.nodeID, value: nodeID.rawValue) }
+        if let firmwareSigningID { addRDN(tag: Tag.firmwareSigningID, value: UInt64(firmwareSigningID)) }
+        if let icacID { addRDN(tag: Tag.icacID, value: UInt64(icacID)) }
+        if let rcacID { addRDN(tag: Tag.rcacID, value: UInt64(rcacID)) }
+        if let fabricID { addRDN(tag: Tag.fabricID, value: fabricID.rawValue) }
+        for cat in caseAuthenticatedTags {
+            addRDN(tag: Tag.caseAuthenticatedTag, value: UInt64(cat))
+        }
+
+        return b.derSequence(rdns)
     }
 
     /// Decode from a TLV list element.
@@ -452,6 +617,98 @@ public enum CertificateExtension: Sendable, Equatable {
         }
     }
 
+    // MARK: - X.509 DER Extension Encoding
+
+    /// Standard X.509 extension OIDs.
+    private enum ExtOID {
+        static let basicConstraints: [UInt64]       = [2, 5, 29, 19]
+        static let keyUsage: [UInt64]               = [2, 5, 29, 15]
+        static let extendedKeyUsage: [UInt64]       = [2, 5, 29, 37]
+        static let subjectKeyIdentifier: [UInt64]   = [2, 5, 29, 14]
+        static let authorityKeyIdentifier: [UInt64] = [2, 5, 29, 35]
+    }
+
+    /// Extended key usage OIDs.
+    private enum EKUoid {
+        static let serverAuth: [UInt64] = [1, 3, 6, 1, 5, 5, 7, 3, 1]
+        static let clientAuth: [UInt64] = [1, 3, 6, 1, 5, 5, 7, 3, 2]
+    }
+
+    /// Convert this extension to X.509 DER encoding.
+    ///
+    /// Each X.509 extension is: SEQUENCE { OID, [BOOLEAN critical], OCTET STRING(value) }
+    func toX509Extension() -> [UInt8] {
+        let b = PKCS10CSRBuilder.self
+
+        switch self {
+        case .basicConstraints(let isCA, let pathLength):
+            var bcContent: [UInt8] = []
+            if isCA {
+                bcContent += [0x01, 0x01, 0xFF]  // BOOLEAN TRUE
+                if let pathLen = pathLength {
+                    bcContent += [0x02, 0x01, pathLen]  // INTEGER pathLen
+                }
+            }
+            let bcValue = b.derSequence(bcContent)
+            let extnValue = b.derTLV(tag: 0x04, content: bcValue)
+            return b.derSequence(b.derOID(ExtOID.basicConstraints) + [0x01, 0x01, 0xFF] + extnValue)
+
+        case .keyUsage(let usage):
+            // X.509 KeyUsage is a BIT STRING.
+            // Matter KeyUsage bits: 0=digitalSignature, 5=keyCertSign, 6=cRLSign
+            // X.509 encoding: MSB of first byte is bit 0.
+            // digitalSignature = bit 0 = 0x80
+            // keyCertSign = bit 5 = 0x04
+            // cRLSign = bit 6 = 0x02
+            var kuByte: UInt8 = 0
+            if usage.contains(.digitalSignature) { kuByte |= 0x80 }
+            if usage.contains(.nonRepudiation)   { kuByte |= 0x40 }
+            if usage.contains(.keyEncipherment)  { kuByte |= 0x20 }
+            if usage.contains(.dataEncipherment) { kuByte |= 0x10 }
+            if usage.contains(.keyAgreement)     { kuByte |= 0x08 }
+            if usage.contains(.keyCertSign)      { kuByte |= 0x04 }
+            if usage.contains(.crlSign)          { kuByte |= 0x02 }
+
+            // Count unused bits (trailing zeros in the byte)
+            var unusedBits: UInt8 = 0
+            if kuByte != 0 {
+                var tmp = kuByte
+                while tmp & 1 == 0 { unusedBits += 1; tmp >>= 1 }
+            }
+            let kuBitString = b.derTLV(tag: 0x03, content: [unusedBits, kuByte])
+            let extnValue = b.derTLV(tag: 0x04, content: kuBitString)
+            return b.derSequence(b.derOID(ExtOID.keyUsage) + [0x01, 0x01, 0xFF] + extnValue)
+
+        case .extendedKeyUsage(let usages):
+            var ekuContent: [UInt8] = []
+            for eku in usages {
+                switch eku {
+                case .serverAuth: ekuContent += b.derOID(EKUoid.serverAuth)
+                case .clientAuth: ekuContent += b.derOID(EKUoid.clientAuth)
+                default: break
+                }
+            }
+            let ekuSeq = b.derSequence(ekuContent)
+            let extnValue = b.derTLV(tag: 0x04, content: ekuSeq)
+            // ExtendedKeyUsage is critical per CHIP SDK
+            return b.derSequence(b.derOID(ExtOID.extendedKeyUsage) + [0x01, 0x01, 0xFF] + extnValue)
+
+        case .subjectKeyIdentifier(let data):
+            // extnValue = OCTET STRING { OCTET STRING { <20 bytes> } }
+            let inner = b.derTLV(tag: 0x04, content: [UInt8](data))
+            let extnValue = b.derTLV(tag: 0x04, content: inner)
+            return b.derSequence(b.derOID(ExtOID.subjectKeyIdentifier) + extnValue)
+
+        case .authorityKeyIdentifier(let data):
+            // extnValue = OCTET STRING { SEQUENCE { [0] IMPLICIT <20 bytes> } }
+            // [0] IMPLICIT = context-specific tag 0, primitive = 0x80
+            let keyId = b.derTLV(tag: 0x80, content: [UInt8](data))
+            let akidSeq = b.derSequence(keyId)
+            let extnValue = b.derTLV(tag: 0x04, content: akidSeq)
+            return b.derSequence(b.derOID(ExtOID.authorityKeyIdentifier) + extnValue)
+        }
+    }
+
     static func fromTLVElement(_ element: TLVElement) throws -> [CertificateExtension] {
         guard case .list(let fields) = element else {
             throw CertificateError.invalidStructure
@@ -550,26 +807,36 @@ public enum CertificateError: Error, Sendable, Equatable {
 
 extension MatterCertificate {
 
+    /// Matter epoch offset: 2000-01-01 00:00:00 UTC in Unix time.
+    private static let matterEpochOffset: TimeInterval = 946684800
+
+    /// Current time as Matter epoch seconds.
+    private static var nowMatterEpoch: UInt32 {
+        UInt32(Date().timeIntervalSince1970 - matterEpochOffset)
+    }
+
     /// Generate a self-signed Root CA Certificate (RCAC).
     ///
     /// - Parameters:
     ///   - key: The P-256 signing key pair for the root CA.
     ///   - rcacID: The RCAC identifier.
     ///   - fabricID: The fabric ID.
-    ///   - notBefore: Validity start (Matter epoch seconds).
-    ///   - notAfter: Validity end (Matter epoch seconds). 0 for no expiry.
+    ///   - notBefore: Validity start (Matter epoch seconds). Defaults to current time.
+    ///   - notAfter: Validity end (Matter epoch seconds). Defaults to 10 years from now.
     /// - Returns: A self-signed RCAC.
     public static func generateRCAC(
         key: P256.Signing.PrivateKey,
         rcacID: UInt32 = 1,
         fabricID: FabricID,
-        notBefore: UInt32 = 0,
-        notAfter: UInt32 = 0,
+        notBefore: UInt32? = nil,
+        notAfter: UInt32? = nil,
         serialNumber: Data? = nil
     ) throws -> MatterCertificate {
         let serial = serialNumber ?? generateSerialNumber()
         let dn = MatterDistinguishedName(rcacID: rcacID, fabricID: fabricID)
         let pubKeyData = Data(key.publicKey.x963Representation)
+        let validFrom = notBefore ?? nowMatterEpoch
+        let validUntil = notAfter ?? (nowMatterEpoch + 10 * 365 * 24 * 3600) // ~10 years
 
         let extensions: [CertificateExtension] = [
             .basicConstraints(isCA: true, pathLength: 1),
@@ -582,8 +849,8 @@ extension MatterCertificate {
         var unsigned = MatterCertificate(
             serialNumber: serial,
             issuer: dn,
-            notBefore: notBefore,
-            notAfter: notAfter,
+            notBefore: validFrom,
+            notAfter: validUntil,
             subject: dn,
             publicKey: pubKeyData,
             extensions: extensions,
@@ -595,12 +862,12 @@ extension MatterCertificate {
         unsigned = MatterCertificate(
             serialNumber: serial,
             issuer: dn,
-            notBefore: notBefore,
-            notAfter: notAfter,
+            notBefore: validFrom,
+            notAfter: validUntil,
             subject: dn,
             publicKey: pubKeyData,
             extensions: extensions,
-            signature: Data(sig.derRepresentation)
+            signature: Data(sig.rawRepresentation)
         )
 
         return unsigned
@@ -623,11 +890,13 @@ extension MatterCertificate {
         nodeID: NodeID,
         fabricID: FabricID,
         caseAuthenticatedTags: [UInt32] = [],
-        notBefore: UInt32 = 0,
-        notAfter: UInt32 = 0,
+        notBefore: UInt32? = nil,
+        notAfter: UInt32? = nil,
         serialNumber: Data? = nil
     ) throws -> MatterCertificate {
         let serial = serialNumber ?? generateSerialNumber()
+        let validFrom = notBefore ?? nowMatterEpoch
+        let validUntil = notAfter ?? (nowMatterEpoch + 10 * 365 * 24 * 3600)
         let subjectDN = MatterDistinguishedName(
             nodeID: nodeID,
             fabricID: fabricID,
@@ -647,8 +916,8 @@ extension MatterCertificate {
         let unsigned = MatterCertificate(
             serialNumber: serial,
             issuer: issuerDN,
-            notBefore: notBefore,
-            notAfter: notAfter,
+            notBefore: validFrom,
+            notAfter: validUntil,
             subject: subjectDN,
             publicKey: pubKeyData,
             extensions: extensions,
@@ -661,12 +930,12 @@ extension MatterCertificate {
         return MatterCertificate(
             serialNumber: serial,
             issuer: issuerDN,
-            notBefore: notBefore,
-            notAfter: notAfter,
+            notBefore: validFrom,
+            notAfter: validUntil,
             subject: subjectDN,
             publicKey: pubKeyData,
             extensions: extensions,
-            signature: Data(sig.derRepresentation)
+            signature: Data(sig.rawRepresentation)
         )
     }
 

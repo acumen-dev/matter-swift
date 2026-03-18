@@ -32,6 +32,17 @@ public protocol ClusterHandler: Sendable {
         endpointID: EndpointID
     ) throws -> TLVElement?
 
+    /// Map a request command ID to its corresponding response command ID.
+    ///
+    /// Per Matter spec §10.7.14.2, the `CommandPath` in an `InvokeResponse`'s
+    /// `CommandDataIB` SHALL carry the **response** command ID, not the request
+    /// command ID (e.g., `ArmFailSafeResponse` is 0x01, not `ArmFailSafe` 0x00).
+    ///
+    /// Handlers that return response data MUST override this to return the correct
+    /// response command ID. The default returns `nil`, which falls back to using the
+    /// request command ID (safe only for clusters where request and response IDs are equal).
+    func responseCommandID(for requestCommandID: CommandID) -> CommandID?
+
     /// Validate a write to an attribute. Returns `.allowed` on success, `.rejected` on failure.
     ///
     /// Called before the value is written to the `AttributeStore`. If the handler returns
@@ -99,6 +110,12 @@ extension ClusterHandler {
     /// Default: return value unchanged (no filtering needed).
     public func filterFabricScopedAttribute(attributeID: AttributeID, value: TLVElement, fabricIndex: FabricIndex) -> TLVElement {
         value
+    }
+
+    /// Default: use the request command ID as the response command ID.
+    /// Clusters with distinct request/response command IDs must override this.
+    public func responseCommandID(for requestCommandID: CommandID) -> CommandID? {
+        nil
     }
 
     /// Default: command does not require a timed interaction.

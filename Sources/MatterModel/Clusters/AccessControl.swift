@@ -173,10 +173,14 @@ public enum AccessControlCluster {
             guard let privVal = fields.first(where: { $0.tag == .contextSpecific(Tag.privilege) })?.value.uintValue,
                   let priv = Privilege(rawValue: UInt8(privVal)),
                   let amVal = fields.first(where: { $0.tag == .contextSpecific(Tag.authMode) })?.value.uintValue,
-                  let am = AuthMode(rawValue: UInt8(amVal)),
-                  let fi = fields.first(where: { $0.tag == .contextSpecific(Tag.fabricIndex) })?.value.uintValue else {
+                  let am = AuthMode(rawValue: UInt8(amVal)) else {
                 throw AccessControlError.missingField
             }
+
+            // fabricIndex is a fabric-scoped attribute — commissioners MAY omit it when writing
+            // (the device assigns it). Default to 0 as a placeholder; commitCommissioning() will
+            // stamp the real fabricIndex onto the staged entries before committing them.
+            let fi = fields.first(where: { $0.tag == .contextSpecific(Tag.fabricIndex) })?.value.uintValue ?? 0
 
             var subs: [UInt64] = []
             if let subsField = fields.first(where: { $0.tag == .contextSpecific(Tag.subjects) }),

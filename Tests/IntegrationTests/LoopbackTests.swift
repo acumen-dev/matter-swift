@@ -320,7 +320,7 @@ struct LoopbackTests {
         let bridge = MatterBridge()
         bridge.addDimmableLight(name: "Test Light")
 
-        let transport = AppleUDPTransport()
+        let transport = LoopbackTransport()
         let discovery = StubDiscovery()
 
         let config = MatterDeviceServer.Config(
@@ -390,9 +390,14 @@ struct LoopbackTests {
 
         #expect(pbkdfResponse.initiatorRandom == initiatorRandom)
 
-        // Prepare crypto for Steps 2-3
+        // Prepare crypto for Steps 2-3.
+        // IMPORTANT: the TT hash uses the EXACT wire bytes, not re-encoded structs.
+        // - requestTLV: bytes we sent (from pbkdfRequest.tlvEncode(), no extra fields)
+        // - responseTLV: bytes we RECEIVED (respBody), which now include tag 5
+        //   (responderSessionParams). Re-encoding pbkdfResponse would drop tag 5 and
+        //   produce a different hash, failing Pake2 cB verification on the prover side.
         let requestTLV = pbkdfRequest.tlvEncode()
-        let responseTLV = pbkdfResponse.tlvEncode()
+        let responseTLV = respBody  // raw wire bytes from server, including tag 5
 
         let hashContext = Spake2p.computeHashContext(
             pbkdfParamRequest: requestTLV,

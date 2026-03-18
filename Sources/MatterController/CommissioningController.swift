@@ -297,8 +297,11 @@ public struct CommissioningController: Sendable {
         )
 
         // Build AddNOC message
+        // Per Matter spec §11.17.6.8.2, IPKValue SHALL be the epoch key (EKS(0)),
+        // NOT the derived IPK. The device derives the actual IPK from this epoch key
+        // via HKDF-SHA256 during CASE session establishment.
         let nocTLV = noc.tlvEncode()
-        let ipk = fabricManager.deriveIPK()
+        let ipk = fabricManager.ipkEpochKey
         let fabricInfo = fabricManager.controllerFabricInfo
         let vendorID = fabricManager.vendorID
 
@@ -502,10 +505,17 @@ public struct CommissioningController: Sendable {
         }
 
         // Verify attestation signature: ECDSA-SHA256(dacKey, attestationElements || attestationChallenge)
+        // Per Matter spec §11.17.6.3 the signature is a 64-byte raw r‖s encoding.
+        // Accept both raw (64 bytes) and DER (variable) for compatibility.
         let messageToVerify = attestationElementsData + attestationChallenge
 
         do {
-            let sig = try P256.Signing.ECDSASignature(derRepresentation: sigData)
+            let sig: P256.Signing.ECDSASignature
+            if sigData.count == 64 {
+                sig = try P256.Signing.ECDSASignature(rawRepresentation: sigData)
+            } else {
+                sig = try P256.Signing.ECDSASignature(derRepresentation: sigData)
+            }
             guard dacPublicKey.isValidSignature(sig, for: messageToVerify) else {
                 throw ControllerError.attestationValidationFailed("AttestationResponse: signature verification failed")
             }

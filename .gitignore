@@ -6,3 +6,8 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 Package.resolved
+
+# Reference implementation tools (built locally, not committed)
+Tools/RefImpl/bin/
+Tools/RefImpl/connectedhomeip/
+Tools/RefImpl/matter-js/node_modules/

@@ -232,42 +232,76 @@ struct CASEKeyDerivationTests {
         #expect(id1 != id2)
     }
 
-    @Test("Sigma keys are 16 bytes each")
-    func sigmaKeySizes() {
-        let sharedSecret = Data(repeating: 0xAB, count: 32)
-        let ipk = Data(repeating: 0, count: 16)
-        let random = Data(repeating: 0x01, count: 32)
-        let ephPub1 = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
-        let ephPub2 = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
+    @Test("S2K and S3K are 16 bytes each and are distinct")
+    func sigmaKeySizes() throws {
+        // Use real ECDH to get a SharedSecret
+        let initiatorEphKey = P256.KeyAgreement.PrivateKey()
+        let responderEphKey = P256.KeyAgreement.PrivateKey()
+        let sharedSecret = try initiatorEphKey.sharedSecretFromKeyAgreement(
+            with: responderEphKey.publicKey
+        )
 
-        let (s2k, s3k) = CASEKeyDerivation.deriveSigmaKeys(
-            sharedSecret: sharedSecret, ipk: ipk,
-            responderRandom: random,
-            responderEphPubKey: ephPub1,
-            initiatorEphPubKey: ephPub2
+        let ipk = Data(repeating: 0, count: 16)
+        let initiatorRandom = Data(repeating: 0x01, count: 32)
+        let responderRandom = Data(repeating: 0x02, count: 32)
+        let sigma1Bytes = Data(repeating: 0xA1, count: 64)
+        let sigma2Bytes = Data(repeating: 0xA2, count: 64)
+
+        let s2k = CASEKeyDerivation.deriveSigma2Key(
+            sharedSecret: sharedSecret,
+            ipk: ipk,
+            responderRandom: responderRandom,
+            responderEphPubKey: responderEphKey.publicKey,
+            sigma1Bytes: sigma1Bytes
+        )
+        let s3k = CASEKeyDerivation.deriveSigma3Key(
+            sharedSecret: sharedSecret,
+            ipk: ipk,
+            sigma1Bytes: sigma1Bytes,
+            sigma2Bytes: sigma2Bytes
         )
 
         #expect(s2k.bitCount == 128)
         #expect(s3k.bitCount == 128)
+
+        // S2K and S3K must be distinct (different info strings → different keys)
+        let s2kBytes = s2k.withUnsafeBytes { Data($0) }
+        let s3kBytes = s3k.withUnsafeBytes { Data($0) }
+        #expect(s2kBytes != s3kBytes)
     }
 
-    @Test("Session keys from CASE derivation are 16 bytes each")
-    func caseSessionKeySizes() {
-        let sharedSecret = Data(repeating: 0xCD, count: 32)
-        let ipk = Data(repeating: 0, count: 16)
-        let random = Data(repeating: 0x01, count: 32)
-        let ephPub1 = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
-        let ephPub2 = Data(P256.KeyAgreement.PrivateKey().publicKey.x963Representation)
-
-        let keys = CASEKeyDerivation.deriveSessionKeys(
-            sharedSecret: sharedSecret, ipk: ipk,
-            responderRandom: random,
-            responderEphPubKey: ephPub1,
-            initiatorEphPubKey: ephPub2
+    @Test("Session keys from CASE derivation are 16 bytes each and all distinct")
+    func caseSessionKeySizes() throws {
+        // Use real ECDH to get a SharedSecret
+        let initiatorEphKey = P256.KeyAgreement.PrivateKey()
+        let responderEphKey = P256.KeyAgreement.PrivateKey()
+        let sharedSecret = try initiatorEphKey.sharedSecretFromKeyAgreement(
+            with: responderEphKey.publicKey
         )
 
-        #expect(keys.i2rKey.bitCount == 128)
-        #expect(keys.r2iKey.bitCount == 128)
-        #expect(keys.attestationKey.bitCount == 128)
+        let ipk = Data(repeating: 0, count: 16)
+        let sigma1Bytes = Data(repeating: 0xA1, count: 64)
+        let sigma2Bytes = Data(repeating: 0xA2, count: 64)
+        let sigma3Bytes = Data(repeating: 0xA3, count: 64)
+
+        let (i2rKey, r2iKey, attestationKey) = CASEKeyDerivation.deriveSessionKeys(
+            sharedSecret: sharedSecret,
+            ipk: ipk,
+            sigma1Bytes: sigma1Bytes,
+            sigma2Bytes: sigma2Bytes,
+            sigma3Bytes: sigma3Bytes
+        )
+
+        #expect(i2rKey.bitCount == 128)
+        #expect(r2iKey.bitCount == 128)
+        #expect(attestationKey.bitCount == 128)
+
+        // All three session keys must be distinct
+        let i2rBytes = i2rKey.withUnsafeBytes { Data($0) }
+        let r2iBytes = r2iKey.withUnsafeBytes { Data($0) }
+        let attBytes = attestationKey.withUnsafeBytes { Data($0) }
+        #expect(i2rBytes != r2iBytes)
+        #expect(i2rBytes != attBytes)
+        #expect(r2iBytes != attBytes)
     }
 }
