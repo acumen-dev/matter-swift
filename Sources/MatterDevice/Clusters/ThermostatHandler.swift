@@ -39,6 +39,10 @@ public struct ThermostatHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [ThermostatCluster.Command.setpointRaiseLower]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

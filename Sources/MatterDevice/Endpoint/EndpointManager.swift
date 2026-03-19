@@ -34,8 +34,16 @@ public final class EndpointManager: @unchecked Sendable {
 
     /// Register an endpoint. Writes initial attributes from all cluster handlers to the store.
     ///
-    /// After writing initial attributes, the Descriptor cluster's `serverList` attribute is
-    /// updated to reflect the actual registered handler cluster IDs (sorted ascending).
+    /// After writing initial attributes, the mandatory global attributes (§7.13) are
+    /// auto-populated for each cluster:
+    /// - `AttributeList` (0xFFFB) — all stored attribute IDs including globals
+    /// - `AcceptedCommandList` (0xFFF9) — from handler's `acceptedCommands()`
+    /// - `GeneratedCommandList` (0xFFF8) — from handler's `generatedCommands()`
+    /// - `FeatureMap` (0xFFFC) — from handler's `featureMap`
+    /// - `ClusterRevision` (0xFFFD) — from handler's `clusterRevision`
+    ///
+    /// The Descriptor cluster's `serverList` attribute is then updated to reflect the
+    /// actual registered handler cluster IDs (sorted ascending).
     ///
     /// If this is a dynamic endpoint (not root or aggregator), the aggregator's
     /// Descriptor PartsList is updated to include the new endpoint.
@@ -52,6 +60,9 @@ public final class EndpointManager: @unchecked Sendable {
                     value: value
                 )
             }
+
+            // Auto-populate mandatory global attributes (Matter Core Spec §7.13)
+            populateGlobalAttributes(for: handler, on: config.endpointID)
         }
 
         // Auto-populate the Descriptor serverList from the registered handler cluster IDs.
@@ -201,7 +212,15 @@ public final class EndpointManager: @unchecked Sendable {
                         }
                     } else {
                         // Wildcard attribute: all attributes in this cluster
-                        let allAttrs = store.allAttributes(endpoint: endpointID, cluster: clusterID)
+                        var allAttrs = store.allAttributes(endpoint: endpointID, cluster: clusterID)
+                        // Debug: apply BasicInfo binary search filter at read time
+                        if clusterID == ClusterID.basicInformation,
+                           let filter = BasicInformationHandler.debugAttributeFilter {
+                            allAttrs = allAttrs.filter { attrID, _ in
+                                let raw = attrID.rawValue
+                                return raw >= 0xFFF8 || filter.contains(raw)
+                            }
+                        }
                         let dataVersion = store.dataVersion(endpoint: endpointID, cluster: clusterID)
                         for (attributeID, rawValue) in allAttrs {
                             var value = rawValue
@@ -350,6 +369,78 @@ public final class EndpointManager: @unchecked Sendable {
             )
             return EventReportIB(eventData: data)
         }
+    }
+
+    // MARK: - Global Attribute Population
+
+    /// Auto-populate the 5 mandatory global attributes for a cluster handler.
+    ///
+    /// Per Matter Core Spec §7.13, every cluster instance MUST expose:
+    /// - `ClusterRevision` (0xFFFD) — handler's `clusterRevision` (default 1)
+    /// - `FeatureMap` (0xFFFC) — handler's `featureMap` (default 0)
+    /// - `AcceptedCommandList` (0xFFF9) — handler's `acceptedCommands()`
+    /// - `GeneratedCommandList` (0xFFF8) — handler's `generatedCommands()`
+    /// - `AttributeList` (0xFFFB) — computed from all stored attribute IDs + globals
+    ///
+    /// These are written to the store only if NOT already present from `initialAttributes()`,
+    /// except `AttributeList` which is always recomputed to include all attributes.
+    private func populateGlobalAttributes(for handler: any ClusterHandler, on endpointID: EndpointID) {
+        let clusterID = handler.clusterID
+
+        // ClusterRevision — only set if not already provided by initialAttributes()
+        if store.get(endpoint: endpointID, cluster: clusterID, attribute: .clusterRevision) == nil {
+            store.set(
+                endpoint: endpointID,
+                cluster: clusterID,
+                attribute: .clusterRevision,
+                value: .unsignedInt(UInt64(handler.clusterRevision))
+            )
+        }
+
+        // FeatureMap — only set if not already provided by initialAttributes()
+        if store.get(endpoint: endpointID, cluster: clusterID, attribute: .featureMap) == nil {
+            store.set(
+                endpoint: endpointID,
+                cluster: clusterID,
+                attribute: .featureMap,
+                value: .unsignedInt(UInt64(handler.featureMap))
+            )
+        }
+
+        // AcceptedCommandList
+        let accepted = handler.acceptedCommands()
+        store.set(
+            endpoint: endpointID,
+            cluster: clusterID,
+            attribute: .acceptedCommandList,
+            value: .array(accepted.map { .unsignedInt(UInt64($0.rawValue)) })
+        )
+
+        // GeneratedCommandList
+        let generated = handler.generatedCommands()
+        store.set(
+            endpoint: endpointID,
+            cluster: clusterID,
+            attribute: .generatedCommandList,
+            value: .array(generated.map { .unsignedInt(UInt64($0.rawValue)) })
+        )
+
+        // AttributeList — always recomputed. Includes all stored attributes + the globals themselves.
+        // Must be computed AFTER the other globals are written.
+        let allAttrIDs = store.allAttributes(endpoint: endpointID, cluster: clusterID)
+            .map { $0.0 }  // AttributeID
+
+        // Ensure AttributeList itself is included in the list
+        var attrIDSet = Set(allAttrIDs)
+        attrIDSet.insert(.attributeList)
+
+        let sortedIDs = attrIDSet.sorted { $0.rawValue < $1.rawValue }
+        store.set(
+            endpoint: endpointID,
+            cluster: clusterID,
+            attribute: .attributeList,
+            value: .array(sortedIDs.map { .unsignedInt(UInt64($0.rawValue)) })
+        )
     }
 
     // MARK: - Internal

@@ -9,6 +9,17 @@ import MatterTypes
 /// All IM messages are TLV-encoded structures exchanged over encrypted sessions.
 /// Each message type corresponds to a specific `InteractionModelOpcode`.
 
+/// InteractionModelRevision tag (context-specific 0xFF) and value.
+/// Per Matter spec §8.1.1, all IM messages include this tag to identify the
+/// protocol revision. The CHIP SDK (and Apple Home) always includes this field.
+private let kInteractionModelRevisionTag: UInt8 = 0xFF
+private let kInteractionModelRevision: UInt64 = 12
+
+/// Creates a TLV field for the InteractionModelRevision tag.
+private func interactionModelRevisionField() -> TLVElement.TLVField {
+    .init(tag: .contextSpecific(kInteractionModelRevisionTag), value: .unsignedInt(kInteractionModelRevision))
+}
+
 // MARK: - Read Request
 
 /// Read request — read one or more attributes.
@@ -212,6 +223,7 @@ public struct ReportData: Sendable, Equatable {
         if suppressResponse {
             fields.append(.init(tag: .contextSpecific(Tag.suppressResponse), value: .bool(true)))
         }
+        fields.append(interactionModelRevisionField())
 
         return .structure(fields)
     }
@@ -348,12 +360,19 @@ public struct AttributeDataIB: Sendable, Equatable {
         }
         fields.append(.init(tag: .contextSpecific(Tag.path), value: path.toTLVElement()))
         fields.append(.init(tag: .contextSpecific(Tag.data), value: data))
+        // Matter spec §10.6.4 says LIST; CHIP SDK uses LIST; matter.js uses STRUCTURE.
+        // Apple Home accepts both. Use STRUCTURE to match matter.js (known-working with Apple Home).
         return .structure(fields)
     }
 
     public static func fromTLVElement(_ element: TLVElement) throws -> AttributeDataIB {
-        guard case .structure(let fields) = element else {
-            throw IMError.invalidMessage("AttributeDataIB: expected structure")
+        // Accept both LIST (spec-correct) and STRUCTURE (for backward compatibility)
+        let fields: [TLVElement.TLVField]
+        switch element {
+        case .list(let f): fields = f
+        case .structure(let f): fields = f
+        default:
+            throw IMError.invalidMessage("AttributeDataIB: expected list or structure")
         }
 
         // dataVersion is optional — omitted for unconditional writes (e.g., Apple Home ACL writes)
@@ -401,6 +420,8 @@ public struct AttributeStatusIB: Sendable, Equatable {
     }
 
     public func toTLVElement() -> TLVElement {
+        // Matter spec says LIST; CHIP SDK uses LIST; matter.js uses STRUCTURE.
+        // Use STRUCTURE to match matter.js (known-working with Apple Home).
         .structure([
             .init(tag: .contextSpecific(Tag.path), value: path.toTLVElement()),
             .init(tag: .contextSpecific(Tag.status), value: status.toTLVElement())
@@ -408,8 +429,13 @@ public struct AttributeStatusIB: Sendable, Equatable {
     }
 
     public static func fromTLVElement(_ element: TLVElement) throws -> AttributeStatusIB {
-        guard case .structure(let fields) = element else {
-            throw IMError.invalidMessage("AttributeStatusIB: expected structure")
+        // Accept both LIST (spec-correct) and STRUCTURE (for backward compatibility)
+        let fields: [TLVElement.TLVField]
+        switch element {
+        case .list(let f): fields = f
+        case .structure(let f): fields = f
+        default:
+            throw IMError.invalidMessage("AttributeStatusIB: expected list or structure")
         }
         guard let pathField = fields.first(where: { $0.tag == .contextSpecific(Tag.path) }) else {
             throw IMError.invalidMessage("AttributeStatusIB: missing path")
@@ -608,7 +634,8 @@ public struct WriteResponse: Sendable, Equatable {
             .init(
                 tag: .contextSpecific(Tag.writeResponses),
                 value: .array(writeResponses.map { $0.toTLVElement() })
-            )
+            ),
+            interactionModelRevisionField()
         ])
     }
 
@@ -749,7 +776,8 @@ public struct InvokeResponse: Sendable, Equatable {
             .init(
                 tag: .contextSpecific(Tag.invokeResponses),
                 value: .array(invokeResponses.map { $0.toTLVElement() })
-            )
+            ),
+            interactionModelRevisionField()
         ])
     }
 
@@ -950,7 +978,8 @@ public struct IMStatusResponse: Sendable, Equatable {
 
     public func tlvEncode() -> Data {
         TLVEncoder.encode(.structure([
-            .init(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status)))
+            .init(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))),
+            interactionModelRevisionField()
         ]))
     }
 
@@ -1258,7 +1287,9 @@ public struct SubscribeResponse: Sendable, Equatable {
 
     private enum Tag {
         static let subscriptionID: UInt8 = 0
-        static let maxInterval: UInt8 = 1
+        // Tag 1 is reserved (was used in older spec drafts).
+        // The Matter spec and CHIP SDK use tag 2 for MaxInterval.
+        static let maxInterval: UInt8 = 2
     }
 
     public let subscriptionID: SubscriptionID
@@ -1276,7 +1307,8 @@ public struct SubscribeResponse: Sendable, Equatable {
     public func toTLVElement() -> TLVElement {
         .structure([
             .init(tag: .contextSpecific(Tag.subscriptionID), value: .unsignedInt(UInt64(subscriptionID.rawValue))),
-            .init(tag: .contextSpecific(Tag.maxInterval), value: .unsignedInt(UInt64(maxInterval)))
+            .init(tag: .contextSpecific(Tag.maxInterval), value: .unsignedInt(UInt64(maxInterval))),
+            interactionModelRevisionField()
         ])
     }
 

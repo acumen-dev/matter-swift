@@ -206,6 +206,33 @@ struct ChipToolRunner: Sendable {
         ], timeout: timeout)
     }
 
+    // MARK: - Subscriptions
+
+    /// Subscribe to all attributes on all endpoints using wildcard paths.
+    ///
+    /// Runs: `chip-tool any subscribe-by-id 0xFFFFFFFF 0xFFFFFFFF <min> <max> <nodeID> 0xFFFF`
+    ///
+    /// The timeout controls how long chip-tool waits. It will subscribe, receive
+    /// the initial report, and then wait for periodic reports until the timeout.
+    /// chip-tool exits with 0 if the subscription was established successfully.
+    func subscribeAll(
+        nodeID: UInt64,
+        minInterval: UInt16 = 3,
+        maxInterval: UInt16 = 10,
+        stateDir: URL,
+        timeout: TimeInterval = 30
+    ) throws -> RunResult {
+        try run([
+            "any", "subscribe-by-id",
+            "0xFFFFFFFF",  // all clusters
+            "0xFFFFFFFF",  // all attributes
+            "\(minInterval)", "\(maxInterval)",
+            "\(nodeID)", "0xFFFF",  // all endpoints
+            "--storage-directory", stateDir.path,
+            "--timeout", "\(Int(timeout))",
+        ], timeout: timeout + 5)
+    }
+
     // MARK: - Temp State Directory
 
     /// Create a fresh temporary directory for chip-tool state.

@@ -14,6 +14,14 @@ public struct BasicInformationHandler: ClusterHandler {
 
     public let clusterID = ClusterID.basicInformation
 
+    // MARK: - Debug: Binary Search Filter
+    //
+    // Temporarily limit which attributes are reported to isolate "End of TLV" in Apple Home.
+    // Set to nil to report all attributes (normal behavior).
+    // Set to a range like 0x0000...0x0009 to report only attributes in that range.
+    // Global attributes (0xFFF8+) are always included regardless of this filter.
+    public nonisolated(unsafe) static var debugAttributeFilter: ClosedRange<UInt32>? = nil
+
     private let vendorName: String
     private let vendorID: UInt16
     private let productName: String
@@ -88,6 +96,16 @@ public struct BasicInformationHandler: ClusterHandler {
         if !productLabel.isEmpty {
             attrs.append((BasicInformationCluster.Attribute.productLabel, .utf8String(productLabel)))
         }
+
+        // Debug: filter attributes for binary search
+        if let filter = Self.debugAttributeFilter {
+            attrs = attrs.filter { attrID, _ in
+                let raw = attrID.rawValue
+                // Always include global attributes (0xFFF8+)
+                return raw >= 0xFFF8 || filter.contains(raw)
+            }
+        }
+
         return attrs
     }
 

@@ -57,6 +57,15 @@ public struct ColorControlHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            ColorControlCluster.Command.moveToHue,
+            ColorControlCluster.Command.moveToSaturation,
+            ColorControlCluster.Command.moveToColor,
+            ColorControlCluster.Command.moveToColorTemperature,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

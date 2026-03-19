@@ -58,6 +58,22 @@ public struct GroupKeyManagementHandler: ClusterHandler, @unchecked Sendable {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            GroupKeyManagementCluster.Command.keySetWrite,
+            GroupKeyManagementCluster.Command.keySetRead,
+            GroupKeyManagementCluster.Command.keySetRemove,
+            GroupKeyManagementCluster.Command.keySetReadAllIndices,
+        ]
+    }
+
+    public func generatedCommands() -> [CommandID] {
+        [
+            GroupKeyManagementCluster.Command.keySetReadResponse,
+            GroupKeyManagementCluster.Command.keySetReadAllIndicesResponse,
+        ]
+    }
+
     // MARK: - Response Command IDs
 
     /// Maps request command IDs to their response command IDs per the Matter spec.

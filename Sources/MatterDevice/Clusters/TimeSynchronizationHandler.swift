@@ -32,6 +32,10 @@ public struct TimeSynchronizationHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [TimeSynchronizationCluster.Command.setUTCTime]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

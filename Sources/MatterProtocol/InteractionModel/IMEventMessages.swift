@@ -133,12 +133,18 @@ public struct EventDataIB: Sendable, Equatable {
         if let eventData = data {
             fields.append(.init(tag: .contextSpecific(Tag.data), value: eventData))
         }
+        // Matter spec says LIST; matter.js uses STRUCTURE. Use STRUCTURE for Apple Home compat.
         return .structure(fields)
     }
 
     public static func fromTLVElement(_ element: TLVElement) throws -> EventDataIB {
-        guard case .structure(let fields) = element else {
-            throw IMError.invalidMessage("EventDataIB: expected structure")
+        // Accept both LIST (spec-correct) and STRUCTURE (for backward compatibility)
+        let fields: [TLVElement.TLVField]
+        switch element {
+        case .list(let f): fields = f
+        case .structure(let f): fields = f
+        default:
+            throw IMError.invalidMessage("EventDataIB: expected list or structure")
         }
 
         guard let pathField = fields.first(where: { $0.tag == .contextSpecific(Tag.path) }) else {
@@ -195,6 +201,7 @@ public struct EventStatusIB: Sendable, Equatable {
     }
 
     public func toTLVElement() -> TLVElement {
+        // Matter spec says LIST; matter.js uses STRUCTURE. Use STRUCTURE for Apple Home compat.
         .structure([
             .init(tag: .contextSpecific(Tag.path), value: path.toTLVElement()),
             .init(tag: .contextSpecific(Tag.status), value: status.toTLVElement())
@@ -202,8 +209,13 @@ public struct EventStatusIB: Sendable, Equatable {
     }
 
     public static func fromTLVElement(_ element: TLVElement) throws -> EventStatusIB {
-        guard case .structure(let fields) = element else {
-            throw IMError.invalidMessage("EventStatusIB: expected structure")
+        // Accept both LIST (spec-correct) and STRUCTURE (for backward compatibility)
+        let fields: [TLVElement.TLVField]
+        switch element {
+        case .list(let f): fields = f
+        case .structure(let f): fields = f
+        default:
+            throw IMError.invalidMessage("EventStatusIB: expected list or structure")
         }
         guard let pathField = fields.first(where: { $0.tag == .contextSpecific(Tag.path) }) else {
             throw IMError.invalidMessage("EventStatusIB: missing path")

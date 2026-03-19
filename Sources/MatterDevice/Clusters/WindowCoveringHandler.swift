@@ -39,6 +39,15 @@ public struct WindowCoveringHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            WindowCoveringCluster.Command.upOrOpen,
+            WindowCoveringCluster.Command.downOrClose,
+            WindowCoveringCluster.Command.stopMotion,
+            WindowCoveringCluster.Command.goToLiftPercentage,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

@@ -165,6 +165,68 @@ struct ChipToolIntegrationTests {
         try await Task.sleep(for: .milliseconds(500))
     }
 
+    // MARK: - Subscribe All (Chunked Report Test)
+
+    @Test("chip-tool subscribes to all attributes and receives periodic reports")
+    func chipToolSubscribeAll() async throws {
+        guard let chipTool = ChipToolRunner.findBinary() else {
+            return
+        }
+
+        let stateDir = try ChipToolRunner.createStateDirectory()
+        defer { ChipToolRunner.cleanupStateDirectory(stateDir) }
+
+        let (server, _) = try await startRealServer()
+        defer {
+            Task { await server.stop() }
+        }
+
+        try await Task.sleep(for: .milliseconds(500))
+
+        // Commission via direct IP
+        let pairResult = try chipTool.pairWithIP(
+            nodeID: Self.nodeID,
+            passcode: Self.serverConfig.passcode,
+            host: "127.0.0.1",
+            port: Self.serverConfig.port,
+            stateDir: stateDir,
+            timeout: 90
+        )
+        guard pairResult.succeeded else {
+            print("chip-tool pairing failed: \(pairResult.stderr)")
+            #expect(Bool(false), "chip-tool commissioning should succeed")
+            return
+        }
+
+        // Subscribe to all attributes on all endpoints with short intervals
+        // to trigger periodic reports quickly. The initial report for a bridge
+        // with multiple endpoints is large enough (~1260 bytes) to require
+        // chunking (2 chunks). This tests the chunked report delivery path.
+        let subscribeResult = try chipTool.subscribeAll(
+            nodeID: Self.nodeID,
+            minInterval: 3,
+            maxInterval: 10,
+            stateDir: stateDir,
+            timeout: 25
+        )
+
+        if !subscribeResult.succeeded {
+            let logFile = FileManager.default.temporaryDirectory.appendingPathComponent("chip-tool-subscribe.log")
+            try? subscribeResult.stdout.write(to: logFile, atomically: true, encoding: .utf8)
+            print("╔══════════════════════════════════════════════════")
+            print("║ chip-tool subscribe FAILED (exit code \(subscribeResult.exitCode))")
+            print("║ Full output: \(logFile.path)")
+            print("╚══════════════════════════════════════════════════")
+        }
+
+        // chip-tool exits with 0 if the subscription was established and
+        // at least one periodic report was received within the timeout.
+        #expect(subscribeResult.succeeded, "chip-tool subscribe-all should succeed")
+
+        await server.stop()
+        try await Task.sleep(for: .milliseconds(500))
+    }
+
     // MARK: - Helpers
 
     /// Start a device server with real UDP transport and mDNS discovery.

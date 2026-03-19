@@ -25,6 +25,14 @@ public struct IdentifyHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [IdentifyCluster.Command.identify, IdentifyCluster.Command.identifyQuery]
+    }
+
+    public func generatedCommands() -> [CommandID] {
+        [IdentifyCluster.ResponseCommand.identifyQueryResponse]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

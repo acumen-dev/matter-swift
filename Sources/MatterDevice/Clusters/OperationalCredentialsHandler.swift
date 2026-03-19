@@ -35,6 +35,27 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            OperationalCredentialsCluster.Command.attestationRequest,
+            OperationalCredentialsCluster.Command.certificateChainRequest,
+            OperationalCredentialsCluster.Command.csrRequest,
+            OperationalCredentialsCluster.Command.addNOC,
+            OperationalCredentialsCluster.Command.addTrustedRootCert,
+            OperationalCredentialsCluster.Command.removeFabric,
+            OperationalCredentialsCluster.Command.updateFabricLabel,
+        ]
+    }
+
+    public func generatedCommands() -> [CommandID] {
+        [
+            OperationalCredentialsCluster.Command.attestationResponse,
+            OperationalCredentialsCluster.Command.certificateChainResponse,
+            OperationalCredentialsCluster.Command.csrResponse,
+            OperationalCredentialsCluster.Command.nocResponse,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

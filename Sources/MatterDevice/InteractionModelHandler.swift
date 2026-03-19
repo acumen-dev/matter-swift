@@ -527,6 +527,7 @@ public struct InteractionModelHandler: Sendable {
         requestContext: IMRequestContext?
     ) async throws -> IMHandleResult {
         let request = try SubscribeRequest.fromTLV(payload)
+        logger.debug("[SUBSCRIBE-DIAG] SubscribeRequest: \(request.attributeRequests.count) attrPaths, \(request.eventRequests.count) eventPaths, \(request.eventFilters.count) eventFilters, keepSubs=\(request.keepSubscriptions), fabricFiltered=\(request.isFabricFiltered), min=\(request.minIntervalFloor), max=\(request.maxIntervalCeiling)")
 
         // Create subscription
         let (subID, maxInterval) = await subscriptions.subscribe(
@@ -568,6 +569,8 @@ public struct InteractionModelHandler: Sendable {
             eventReports = []
         }
 
+        logger.debug("[SUBSCRIBE-DIAG] Priming report: \(filteredReports.count) attrs, \(eventReports.count) events")
+
         let subResponse = SubscribeResponse(
             subscriptionID: subID,
             maxInterval: maxInterval
@@ -608,9 +611,9 @@ public struct InteractionModelHandler: Sendable {
                 return "ep\(ep)/0x\(String(cl, radix: 16, uppercase: true))/0x\(String(at, radix: 16, uppercase: true))"
             }
             let chunkTLV = chunk.tlvEncode()
-            let hexPrefix = chunkTLV.prefix(40).map { String(format: "%02x", $0) }.joined(separator: " ")
-            let hexSuffix = chunkTLV.suffix(20).map { String(format: "%02x", $0) }.joined(separator: " ")
-            logger.debug("[SUBSCRIBE-DIAG] Chunk \(i+1)/\(chunks.count) (\(chunkTLV.count)B, \(attrSummary.count) attrs) TLV[\(hexPrefix) ... \(hexSuffix)]: \(attrSummary.joined(separator: ", "))")
+            let fullHex = chunkTLV.map { String(format: "%02x", $0) }.joined(separator: " ")
+            logger.debug("[SUBSCRIBE-DIAG] Chunk \(i+1)/\(chunks.count) (\(chunkTLV.count)B, \(attrSummary.count) attrs): \(attrSummary.joined(separator: ", "))")
+            logger.debug("[SUBSCRIBE-DIAG] Chunk \(i+1) FULL TLV: \(fullHex)")
         }
 
         // Always use ChunkedReportContext, even for single-chunk subscribe reports.
