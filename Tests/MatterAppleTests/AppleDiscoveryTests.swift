@@ -8,15 +8,18 @@ import Network
 import MatterApple
 import MatterTransport
 
-@Suite("AppleDiscovery")
+@Suite("AppleDiscovery", .serialized)
 struct AppleDiscoveryTests {
+
+    /// Unique suffix per test run to avoid mDNS name conflicts with parallel tests.
+    private static let runID = UInt16.random(in: 1000...9999)
 
     @Test("Advertise and stop advertising")
     func advertiseAndStop() async throws {
         let discovery = AppleDiscovery()
 
         let service = MatterServiceRecord(
-            name: "TestDevice-3840",
+            name: "TestDevice-\(Self.runID)",
             serviceType: .commissionable,
             host: "",
             port: 5560,
@@ -32,8 +35,9 @@ struct AppleDiscoveryTests {
         let advertiser = AppleDiscovery()
         let browser = AppleDiscovery()
 
+        let browseName = "BrowseTest-\(Self.runID)"
         let service = MatterServiceRecord(
-            name: "BrowseTest-1234",
+            name: browseName,
             serviceType: .commissionable,
             host: "",
             port: 5562,
@@ -49,7 +53,7 @@ struct AppleDiscoveryTests {
         let found = await withTaskGroup(of: MatterServiceRecord?.self) { group in
             group.addTask {
                 for await record in stream {
-                    if record.name.contains("BrowseTest-1234") {
+                    if record.name.contains(browseName) {
                         return record
                     }
                 }
@@ -67,15 +71,18 @@ struct AppleDiscoveryTests {
         await advertiser.stopAdvertising()
 
         #expect(found != nil)
-        #expect(found?.name.contains("BrowseTest-1234") == true)
+        #expect(found?.name.contains(browseName) == true)
     }
 
     @Test("Multi-service advertising supports concurrent services")
     func multiServiceAdvertising() async throws {
         let discovery = AppleDiscovery()
 
+        let commName = "MultiComm-\(Self.runID)"
+        let opName = "MultiOp-\(Self.runID)"
+
         let commissionable = MatterServiceRecord(
-            name: "MultiTest-Comm",
+            name: commName,
             serviceType: .commissionable,
             host: "",
             port: 5570,
@@ -83,7 +90,7 @@ struct AppleDiscoveryTests {
         )
 
         let operational = MatterServiceRecord(
-            name: "MultiTest-Op",
+            name: opName,
             serviceType: .operational,
             host: "",
             port: 5571,
@@ -95,7 +102,7 @@ struct AppleDiscoveryTests {
         try await discovery.advertise(service: operational)
 
         // Selective stop should leave the other running
-        await discovery.stopAdvertising(name: "MultiTest-Comm")
+        await discovery.stopAdvertising(name: commName)
 
         // Clean up
         await discovery.stopAdvertising()

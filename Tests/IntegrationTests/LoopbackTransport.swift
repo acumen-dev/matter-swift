@@ -58,11 +58,28 @@ final class LoopbackTransport: MatterUDPTransport, @unchecked Sendable {
             throw LoopbackTransportError.bindFailed(errno)
         }
 
+        // Read back the actual bound port (important when binding to port 0)
+        var boundAddr = sockaddr_in()
+        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        withUnsafeMutablePointer(to: &boundAddr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                getsockname(socketFD, sockPtr, &boundLen)
+            }
+        }
+        self._boundPort = UInt16(bigEndian: boundAddr.sin_port)
+
         self.fd = socketFD
         self.running = true
 
         // Start the single shared receive loop
         startReceiveLoop()
+    }
+
+    /// The actual port the socket is bound to (may differ from requested port when using 0).
+    private(set) var _boundPort: UInt16 = 0
+
+    func boundPort() -> UInt16? {
+        _boundPort > 0 ? _boundPort : nil
     }
 
     func send(_ data: Data, to address: MatterAddress) async throws {
