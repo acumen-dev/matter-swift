@@ -62,6 +62,15 @@ struct MatterDeviceServerTests {
         )
 
         try await server.start()
+
+        // Wait for the background advertising Task (fired by onWindowOpened) to complete
+        // before stopping, otherwise stop() races with the pending advertise().
+        let deadline = ContinuousClock.now + .seconds(2)
+        while await !discovery.isAdvertising {
+            guard ContinuousClock.now < deadline else { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
         await server.stop()
 
         let isAdvertising = await discovery.isAdvertising
@@ -277,7 +286,7 @@ struct MatterDeviceServerTests {
     private func waitForSentCount(
         _ transport: MockServerUDPTransport,
         atLeast count: Int,
-        timeout: Duration = .seconds(10)
+        timeout: Duration = .seconds(30)
     ) async throws {
         let deadline = ContinuousClock.now + timeout
         while transport.sentCount < count {

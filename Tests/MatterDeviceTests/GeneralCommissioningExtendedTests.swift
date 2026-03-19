@@ -174,24 +174,11 @@ struct GeneralCommissioningExtendedTests {
 
     // MARK: - CommissioningComplete Event
 
-    @Test("generatedEvents returns commissioningComplete event for CommissioningComplete command")
-    func generatedEventsCommissioningComplete() {
+    @Test("generatedEvents returns empty — GeneralCommissioning has no spec-defined events")
+    func generatedEventsEmpty() {
         let (handler, store) = makeHandler()
         let events = handler.generatedEvents(
             commandID: GeneralCommissioningCluster.Command.commissioningComplete,
-            endpointID: endpoint,
-            store: store
-        )
-        #expect(events.count == 1)
-        #expect(events[0].eventID == GeneralCommissioningCluster.Event.commissioningComplete)
-        #expect(events[0].priority == .info)
-    }
-
-    @Test("generatedEvents returns empty for other commands")
-    func generatedEventsOtherCommands() {
-        let (handler, store) = makeHandler()
-        let events = handler.generatedEvents(
-            commandID: GeneralCommissioningCluster.Command.armFailSafe,
             endpointID: endpoint,
             store: store
         )
