@@ -51,13 +51,29 @@ extension MatterMessage {
     public static let defaultPort: UInt16 = 5540
 
     /// Maximum Matter message size over UDP.
-    public static let maxUDPPayloadSize = 1280
+    ///
+    /// IPv6 minimum MTU is 1280 bytes. Subtract 48 bytes for IPv6 (40) + UDP (8) headers.
+    public static let maxUDPPayloadSize = 1232
 
-    /// Overhead added by encryption (exchange header, MIC, framing).
-    public static let encryptedMessageOverhead = 42
+    /// Overhead added by encryption (message header, exchange header, MIC).
+    ///
+    /// Budget for worst-case header sizes (matches matter.js MATTER_MESSAGE_OVERHEAD):
+    /// - Message header: up to 28 bytes (flags + sessionID + securityFlags + counter
+    ///   + sourceNodeID + destinationNodeID). Secured unicast uses only 8, but we
+    ///   budget conservatively to match other implementations.
+    /// - Exchange header: up to 12 bytes (flags + opcode + exchangeID + vendorID
+    ///   + protocolID + ackCounter)
+    /// - AES-CCM MIC (MAC tag): 16 bytes
+    /// Total: 56 bytes worst-case. Use 54 to match matter.js (known-working with
+    /// Apple Home). The CHIP SDK uses a similar conservative budget.
+    public static let encryptedMessageOverhead = 54
 
     /// Maximum usable payload size for Interaction Model messages over UDP.
-    public static let maxIMPayloadSize = 1232
+    ///
+    /// This is the max TLV payload that, after adding encrypted message framing,
+    /// fits within a single UDP datagram on the minimum IPv6 MTU (1280 bytes).
+    /// = maxUDPPayloadSize - encryptedMessageOverhead = 1232 - 54 = 1178
+    public static let maxIMPayloadSize = maxUDPPayloadSize - encryptedMessageOverhead
 }
 
 // MARK: - Encoding (Unsecured)
