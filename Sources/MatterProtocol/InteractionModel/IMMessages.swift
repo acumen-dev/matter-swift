@@ -323,6 +323,64 @@ public struct AttributeReportIB: Sendable, Equatable {
     }
 }
 
+// MARK: - Attribute Report Chunking
+
+extension AttributeReportIB {
+
+    /// Whether this report contains a non-empty array attribute that can be chunked
+    /// into REPLACE-ALL + individual APPEND elements across multiple messages.
+    public var canBeChunked: Bool {
+        guard let data = attributeData else { return false }
+        guard data.path.listIndex == nil else { return false }
+        guard case .array(let elements) = data.data, !elements.isEmpty else { return false }
+        return true
+    }
+
+    /// Decompose an array-valued attribute report into chunked reports.
+    ///
+    /// Returns:
+    /// - First element: REPLACE-ALL report with the first array element packed in
+    ///   (path with `listIndex` absent, data = `.array([firstElement])`)
+    /// - Remaining elements: APPEND reports for each subsequent element
+    ///   (path with `listIndex = .null`, data = individual element value)
+    ///
+    /// If `canBeChunked` is false, returns `[self]` unchanged.
+    public func chunkArrayAttribute() -> [AttributeReportIB] {
+        guard let data = attributeData,
+              case .array(let elements) = data.data,
+              !elements.isEmpty else {
+            return [self]
+        }
+
+        var chunks: [AttributeReportIB] = []
+
+        // REPLACE-ALL: same path (listIndex absent), data = array with first element
+        chunks.append(AttributeReportIB(attributeData: AttributeDataIB(
+            dataVersion: data.dataVersion,
+            path: data.path,
+            data: .array([elements[0]])
+        )))
+
+        // APPEND: path with listIndex = .null, data = individual element
+        let appendPath = AttributePath(
+            endpointID: data.path.endpointID,
+            clusterID: data.path.clusterID,
+            attributeID: data.path.attributeID,
+            nodeID: data.path.nodeID,
+            listIndex: .null
+        )
+        for element in elements.dropFirst() {
+            chunks.append(AttributeReportIB(attributeData: AttributeDataIB(
+                dataVersion: data.dataVersion,
+                path: appendPath,
+                data: element
+            )))
+        }
+
+        return chunks
+    }
+}
+
 // MARK: - Attribute Data IB
 
 /// Attribute data within a report.

@@ -4,6 +4,21 @@
 import Foundation
 import MatterTypes
 
+// MARK: - List Index
+
+/// Three-state list index for attribute paths.
+///
+/// Per Matter spec, the `listIndex` field in an AttributePath has three semantic states:
+/// - absent (`nil` on `AttributePath.listIndex`): normal attribute, or REPLACE-ALL for arrays
+/// - null (`.null`): APPEND to list (used when chunking array elements across messages)
+/// - index (`.index(n)`): specific list element
+public enum ListIndex: Sendable, Equatable {
+    /// TLV null at tag 5 — append to list.
+    case null
+    /// TLV unsigned int at tag 5 — specific element index.
+    case index(UInt16)
+}
+
 /// An attribute path in the Interaction Model.
 ///
 /// Identifies a specific attribute on a specific cluster instance.
@@ -34,14 +49,14 @@ public struct AttributePath: Sendable, Equatable {
     public let clusterID: ClusterID?
     public let attributeID: AttributeID?
     public let nodeID: NodeID?
-    public let listIndex: UInt16?
+    public let listIndex: ListIndex?
 
     public init(
         endpointID: EndpointID? = nil,
         clusterID: ClusterID? = nil,
         attributeID: AttributeID? = nil,
         nodeID: NodeID? = nil,
-        listIndex: UInt16? = nil
+        listIndex: ListIndex? = nil
     ) {
         self.endpointID = endpointID
         self.clusterID = clusterID
@@ -56,7 +71,14 @@ public struct AttributePath: Sendable, Equatable {
         if let endpointID { fields.append(.init(tag: .contextSpecific(Tag.endpointID), value: .unsignedInt(UInt64(endpointID.rawValue)))) }
         if let clusterID { fields.append(.init(tag: .contextSpecific(Tag.clusterID), value: .unsignedInt(UInt64(clusterID.rawValue)))) }
         if let attributeID { fields.append(.init(tag: .contextSpecific(Tag.attributeID), value: .unsignedInt(UInt64(attributeID.rawValue)))) }
-        if let listIndex { fields.append(.init(tag: .contextSpecific(Tag.listIndex), value: .unsignedInt(UInt64(listIndex)))) }
+        switch listIndex {
+        case .none:
+            break
+        case .null:
+            fields.append(.init(tag: .contextSpecific(Tag.listIndex), value: .null))
+        case .index(let idx):
+            fields.append(.init(tag: .contextSpecific(Tag.listIndex), value: .unsignedInt(UInt64(idx))))
+        }
         return .list(fields)
     }
 
@@ -65,12 +87,28 @@ public struct AttributePath: Sendable, Equatable {
             throw IMError.invalidPath("AttributePath: expected list")
         }
 
+        let listIndex: ListIndex?
+        if let listField = fields.first(where: { $0.tag == .contextSpecific(Tag.listIndex) }) {
+            switch listField.value {
+            case .null:
+                listIndex = .null
+            default:
+                if let v = listField.value.uintValue {
+                    listIndex = .index(UInt16(v))
+                } else {
+                    listIndex = nil
+                }
+            }
+        } else {
+            listIndex = nil
+        }
+
         return AttributePath(
             endpointID: fields.first(where: { $0.tag == .contextSpecific(Tag.endpointID) })?.value.uintValue.map { EndpointID(rawValue: UInt16($0)) },
             clusterID: fields.first(where: { $0.tag == .contextSpecific(Tag.clusterID) })?.value.uintValue.map { ClusterID(rawValue: UInt32($0)) },
             attributeID: fields.first(where: { $0.tag == .contextSpecific(Tag.attributeID) })?.value.uintValue.map { AttributeID(rawValue: UInt32($0)) },
             nodeID: fields.first(where: { $0.tag == .contextSpecific(Tag.nodeID) })?.value.uintValue.map { NodeID(rawValue: $0) },
-            listIndex: fields.first(where: { $0.tag == .contextSpecific(Tag.listIndex) })?.value.uintValue.map { UInt16($0) }
+            listIndex: listIndex
         )
     }
 }
