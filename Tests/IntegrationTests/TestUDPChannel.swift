@@ -64,8 +64,8 @@ final class TestUDPChannel: @unchecked Sendable {
         self.fd = socketFD
         self.port = UInt16(bigEndian: boundAddr.sin_port)
 
-        // Set receive timeout (10 seconds)
-        var timeout = timeval(tv_sec: 10, tv_usec: 0)
+        // Set receive timeout (30 seconds — needs headroom when full test suite runs in parallel)
+        var timeout = timeval(tv_sec: 30, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
 

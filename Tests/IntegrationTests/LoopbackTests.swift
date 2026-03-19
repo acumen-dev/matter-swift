@@ -20,7 +20,6 @@ struct LoopbackTests {
 
     // MARK: - Shared Config
 
-    static let serverPort: UInt16 = 5555
     static let passcode: UInt32 = 20202021
     static let discriminator: UInt16 = 3840
     static let salt = Data(repeating: 0xAB, count: 32)
@@ -35,11 +34,13 @@ struct LoopbackTests {
         let advertiser = AppleDiscovery()
         let browser = AppleDiscovery()
 
+        let runID = UInt16.random(in: 1000...9999)
+        let serviceName = "SwiftMatter-\(runID)"
         let service = MatterServiceRecord(
-            name: "SwiftMatter-\(Self.discriminator)",
+            name: serviceName,
             serviceType: .commissionable,
             host: "",
-            port: 5556,  // Different port — no transport listener conflict
+            port: 5556,
             txtRecords: ["D": "\(Self.discriminator)", "CM": "1"]
         )
 
@@ -53,7 +54,7 @@ struct LoopbackTests {
         let found = await withTaskGroup(of: MatterServiceRecord?.self) { group in
             group.addTask {
                 for await record in browseStream {
-                    if record.name.contains("SwiftMatter-\(Self.discriminator)") {
+                    if record.name.contains(serviceName) {
                         return record
                     }
                 }
@@ -69,7 +70,7 @@ struct LoopbackTests {
         }
 
         #expect(found != nil, "Should discover the service via mDNS")
-        #expect(found?.name.contains("\(Self.discriminator)") == true)
+        #expect(found?.name.contains(serviceName) == true)
 
         await advertiser.stopAdvertising()
     }
@@ -78,9 +79,9 @@ struct LoopbackTests {
 
     @Test("Full PASE handshake over real UDP on localhost")
     func paseOverRealUDP() async throws {
-        let (server, _, config) = try await startServer()
+        let (server, _, config, serverPort) = try await startServer()
         let channel = try TestUDPChannel()
-        let serverAddress = MatterAddress(host: "127.0.0.1", port: Self.serverPort)
+        let serverAddress = MatterAddress(host: "127.0.0.1", port: serverPort)
 
         defer {
             channel.close()
@@ -110,9 +111,9 @@ struct LoopbackTests {
 
     @Test("Read OnOff attribute over encrypted PASE session on real UDP")
     func encryptedIMRead() async throws {
-        let (server, _, config) = try await startServer()
+        let (server, _, config, serverPort) = try await startServer()
         let channel = try TestUDPChannel()
-        let serverAddress = MatterAddress(host: "127.0.0.1", port: Self.serverPort)
+        let serverAddress = MatterAddress(host: "127.0.0.1", port: serverPort)
 
         defer {
             channel.close()
@@ -163,9 +164,9 @@ struct LoopbackTests {
 
     @Test("Write, invoke toggle, and read-back OnOff over encrypted PASE session")
     func encryptedIMWriteInvokeRead() async throws {
-        let (server, _, config) = try await startServer()
+        let (server, _, config, serverPort) = try await startServer()
         let channel = try TestUDPChannel()
-        let serverAddress = MatterAddress(host: "127.0.0.1", port: Self.serverPort)
+        let serverAddress = MatterAddress(host: "127.0.0.1", port: serverPort)
 
         defer {
             channel.close()
@@ -262,8 +263,8 @@ struct LoopbackTests {
 
     @Test("Full commissioning flow and CASE operational read")
     func fullCommissioningAndCASE() async throws {
-        let (server, _, _) = try await startServer()
-        let serverAddress = MatterAddress(host: "127.0.0.1", port: Self.serverPort)
+        let (server, _, _, serverPort) = try await startServer()
+        let serverAddress = MatterAddress(host: "127.0.0.1", port: serverPort)
 
         // Create controller with LoopbackTransport (POSIX socket — bidirectional on one port)
         let clientTransport = LoopbackTransport()
@@ -311,11 +312,12 @@ struct LoopbackTests {
 
     // MARK: - Helpers
 
-    /// Start a device server with a dimmable light on localhost.
+    /// Start a device server with a dimmable light on localhost using an ephemeral port.
     private func startServer() async throws -> (
         server: MatterDeviceServer,
         bridge: MatterBridge,
-        config: MatterDeviceServer.Config
+        config: MatterDeviceServer.Config,
+        serverPort: UInt16
     ) {
         let bridge = MatterBridge()
         bridge.addDimmableLight(name: "Test Light")
@@ -326,7 +328,7 @@ struct LoopbackTests {
         let config = MatterDeviceServer.Config(
             discriminator: Self.discriminator,
             passcode: Self.passcode,
-            port: Self.serverPort,
+            port: 0,  // ephemeral — avoids port contention in parallel test runs
             salt: Self.salt,
             iterations: Self.iterations
         )
@@ -343,7 +345,10 @@ struct LoopbackTests {
         // Brief delay for receive loop to start
         try await Task.sleep(for: .milliseconds(100))
 
-        return (server, bridge, config)
+        let actualPort = transport.boundPort() ?? 0
+        #expect(actualPort > 0, "Server should have bound to an ephemeral port")
+
+        return (server, bridge, config, actualPort)
     }
 
     /// Perform a full PASE handshake as the client/prover over real UDP.
