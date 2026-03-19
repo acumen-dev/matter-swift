@@ -221,14 +221,14 @@ struct EventStoreTests {
         #expect(events.allSatisfy { $0.eventNumber.rawValue >= 2 })
     }
 
-    @Test("Query with empty paths returns all events")
-    func queryEmptyPathsReturnsAll() async {
+    @Test("Query with empty paths returns no events")
+    func queryEmptyPathsReturnsNone() async {
         let store = makeStore()
 
         await store.record(endpointID: ep1, clusterID: clusterOnOff, eventID: eventID0, priority: .info)
         await store.record(endpointID: ep2, clusterID: clusterDoorLock, eventID: eventID1, priority: .critical, isUrgent: true)
 
         let events = await store.query(paths: [])
-        #expect(events.count == 2)
+        #expect(events.isEmpty)
     }
 }
