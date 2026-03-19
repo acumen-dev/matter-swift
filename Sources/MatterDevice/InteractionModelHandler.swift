@@ -65,10 +65,14 @@ public struct ChunkedReportContext: Sendable {
     public private(set) var nextChunkIndex: Int = 0
     /// True when all chunks have been delivered.
     public var isComplete: Bool { nextChunkIndex >= chunks.count }
+    /// True when the server initiated this exchange (subscription reports).
+    /// False when the client initiated (read/subscribe request responses).
+    public let isServerInitiated: Bool
 
-    public init(chunks: [ReportData], trailingResponses: [(InteractionModelOpcode, Data)] = []) {
+    public init(chunks: [ReportData], trailingResponses: [(InteractionModelOpcode, Data)] = [], isServerInitiated: Bool = false) {
         self.chunks = chunks
         self.trailingResponses = trailingResponses
+        self.isServerInitiated = isServerInitiated
     }
 
     /// Return the next chunk and advance the index. Returns nil when exhausted.
@@ -569,30 +573,56 @@ public struct InteractionModelHandler: Sendable {
             maxInterval: maxInterval
         )
 
+        // Sort attribute reports by (endpoint, cluster, attribute) for deterministic ordering.
+        // Apple Home may require attributes in ascending order per Matter spec recommendation.
+        let sortedReports = filteredReports.sorted { a, b in
+            let aPath = a.attributeData?.path ?? a.attributeStatus?.path ?? AttributePath()
+            let bPath = b.attributeData?.path ?? b.attributeStatus?.path ?? AttributePath()
+            let aEp = aPath.endpointID?.rawValue ?? 0
+            let bEp = bPath.endpointID?.rawValue ?? 0
+            if aEp != bEp { return aEp < bEp }
+            let aCl = aPath.clusterID?.rawValue ?? 0
+            let bCl = bPath.clusterID?.rawValue ?? 0
+            if aCl != bCl { return aCl < bCl }
+            let aAt = aPath.attributeID?.rawValue ?? 0
+            let bAt = bPath.attributeID?.rawValue ?? 0
+            return aAt < bAt
+        }
+
         // Chunk the initial report (suppressResponse=false — client must ack each chunk)
         let chunker = ReportDataChunker()
         let chunks = chunker.chunk(
             subscriptionID: subID,
-            attributeReports: filteredReports,
+            attributeReports: sortedReports,
             eventReports: eventReports,
             suppressResponseOnFinal: false
         )
 
-        if chunks.count == 1 {
-            // Single chunk — send both together
-            return .responses([
-                (.reportData, chunks[0].tlvEncode()),
-                (.subscribeResponse, subResponse.tlvEncode())
-            ])
-        } else {
-            // Multiple chunks — return as chunked report with subscribe response appended
-            // after the final chunk. We signal this by appending the SubscribeResponse
-            // data as a trailing response in the context.
-            return .chunkedReport(ChunkedReportContext(
-                chunks: chunks,
-                trailingResponses: [(.subscribeResponse, subResponse.tlvEncode())]
-            ))
+        // [SUBSCRIBE-DIAG] Log what's in each chunk for debugging Apple Home compatibility
+        for (i, chunk) in chunks.enumerated() {
+            let attrSummary = chunk.attributeReports.compactMap { report -> String? in
+                guard let data = report.attributeData else { return nil }
+                let ep = data.path.endpointID?.rawValue ?? 0
+                let cl = data.path.clusterID?.rawValue ?? 0
+                let at = data.path.attributeID?.rawValue ?? 0
+                return "ep\(ep)/0x\(String(cl, radix: 16, uppercase: true))/0x\(String(at, radix: 16, uppercase: true))"
+            }
+            let chunkTLV = chunk.tlvEncode()
+            let hexPrefix = chunkTLV.prefix(40).map { String(format: "%02x", $0) }.joined(separator: " ")
+            let hexSuffix = chunkTLV.suffix(20).map { String(format: "%02x", $0) }.joined(separator: " ")
+            logger.debug("[SUBSCRIBE-DIAG] Chunk \(i+1)/\(chunks.count) (\(chunkTLV.count)B, \(attrSummary.count) attrs) TLV[\(hexPrefix) ... \(hexSuffix)]: \(attrSummary.joined(separator: ", "))")
         }
+
+        // Always use ChunkedReportContext, even for single-chunk subscribe reports.
+        // The SubscribeResponse MUST be sent only after the client acknowledges the
+        // final ReportData with a StatusResponse (Matter spec §8.5.3). Sending
+        // ReportData and SubscribeResponse together as .responses() violates the
+        // protocol — Apple Home never gets its StatusResponse ACKed and retransmits
+        // indefinitely.
+        return .chunkedReport(ChunkedReportContext(
+            chunks: chunks,
+            trailingResponses: [(.subscribeResponse, subResponse.tlvEncode())]
+        ))
     }
 
     // MARK: - Status Response

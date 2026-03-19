@@ -92,14 +92,35 @@ public struct ReportDataChunker: Sendable {
             currentSize += itemSize
         }
 
-        // Process attribute reports
+        // Process attribute reports.
+        // Prefer breaking chunks at cluster boundaries (when endpoint or cluster changes).
+        // matter.js uses a similar approach (needSendNext flag) — Apple Home's
+        // ClusterStateCache may have issues with clusters split across chunks.
+        var prevEndpoint: UInt16?
+        var prevCluster: UInt32?
         for attr in attributeReports {
             let itemSize = encodedSize(attr)
-            if currentSize + itemSize > budget && (!currentEvents.isEmpty || !currentAttributes.isEmpty) {
+
+            // Detect cluster boundary (endpoint or cluster changed)
+            let attrEndpoint = attr.attributeData?.path.endpointID?.rawValue
+                ?? attr.attributeStatus?.path.endpointID?.rawValue
+            let attrCluster = attr.attributeData?.path.clusterID?.rawValue
+                ?? attr.attributeStatus?.path.clusterID?.rawValue
+            let clusterChanged = (prevEndpoint != nil || prevCluster != nil)
+                && (attrEndpoint != prevEndpoint || attrCluster != prevCluster)
+
+            // Flush if: (a) item won't fit, or (b) cluster boundary and chunk is non-trivial
+            let wouldExceedBudget = currentSize + itemSize > budget
+            let shouldBreakAtBoundary = clusterChanged && currentSize > budget / 2
+            if (wouldExceedBudget || shouldBreakAtBoundary)
+                && (!currentEvents.isEmpty || !currentAttributes.isEmpty) {
                 flushChunk()
             }
+
             currentAttributes.append(attr)
             currentSize += itemSize
+            prevEndpoint = attrEndpoint
+            prevCluster = attrCluster
         }
 
         // Emit final chunk
@@ -117,10 +138,15 @@ public struct ReportDataChunker: Sendable {
 
     // MARK: - Private Helpers
 
-    /// Compute the TLV size of the envelope of an empty `ReportData` (with moreChunkedMessages=true).
+    /// Compute the TLV overhead of a `ReportData` envelope (with moreChunkedMessages=true).
     ///
     /// This overhead is subtracted from `maxPayloadSize` to get the budget available
     /// for actual report items.
+    ///
+    /// The skeleton uses empty arrays which are OMITTED from TLV encoding, but actual
+    /// chunks include the `attributeReports` array container (2-byte tag + 1-byte
+    /// end-of-container = 3 bytes) and potentially the `eventReports` container.
+    /// We add 6 bytes to account for both possible array containers.
     private func envelopeOverhead(subscriptionID: SubscriptionID?) -> Int {
         let skeleton = ReportData(
             subscriptionID: subscriptionID,
@@ -129,7 +155,9 @@ public struct ReportDataChunker: Sendable {
             moreChunkedMessages: true,
             suppressResponse: false
         )
-        return TLVEncoder.encode(skeleton.toTLVElement()).count
+        // +6 for attributeReports array container (3 bytes) + eventReports array container (3 bytes)
+        // These are omitted from the skeleton but present in actual encoded chunks.
+        return TLVEncoder.encode(skeleton.toTLVElement()).count + 6
     }
 
     /// Compute the TLV-encoded size of a single `AttributeReportIB`.
