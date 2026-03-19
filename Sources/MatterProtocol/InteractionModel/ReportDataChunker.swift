@@ -11,6 +11,21 @@ import MatterTypes
 /// message, the data must be split across multiple `ReportData` chunks. Intermediate
 /// chunks carry `moreChunkedMessages = true`; the final chunk carries `false`.
 ///
+/// The chunker implements three key capabilities modeled on the matter.js reference:
+///
+/// 1. **List attribute chunking** — When a single array attribute (e.g., PartsList)
+///    exceeds the chunk budget, it is decomposed into a REPLACE-ALL report (empty
+///    array, `listIndex` absent) plus individual APPEND reports (`listIndex = null`)
+///    that are greedily packed across messages.
+///
+/// 2. **40-byte minimum guard** — Items are not added when fewer than 40 bytes
+///    remain in the current chunk, preventing edge cases where encoding variance
+///    causes an overfull message.
+///
+/// 3. **Item queueing** — If an item does not fit the current chunk, it is queued
+///    so smaller items from the same cluster can fill the remaining space. Cluster
+///    boundaries trigger a flush of the queue before new clusters are started.
+///
 /// ```swift
 /// let chunker = ReportDataChunker()
 /// let chunks = chunker.chunk(
@@ -26,6 +41,15 @@ public struct ReportDataChunker: Sendable {
 
     /// Maximum TLV payload size per chunk.
     public let maxPayloadSize: Int
+
+    /// Minimum bytes that must remain available before we stop adding items.
+    /// An empty DataReport is roughly 23 bytes, so 40 bytes provides a safe margin.
+    /// Matches matter.js `DATA_REPORT_MIN_AVAILABLE_BYTES_BEFORE_SENDING`.
+    static let minAvailableBytesBeforeSending = 40
+
+    /// Maximum queued attribute reports before forcing a flush.
+    /// Matches matter.js `DATA_REPORT_MAX_QUEUED_ATTRIBUTE_MESSAGES`.
+    static let maxQueuedAttributeMessages = 20
 
     public init(maxPayloadSize: Int = MatterMessage.maxIMPayloadSize) {
         self.maxPayloadSize = maxPayloadSize
@@ -58,95 +82,232 @@ public struct ReportDataChunker: Sendable {
             )]
         }
 
-        // Measure envelope overhead: a skeleton ReportData with empty arrays + moreChunkedMessages=true
-        let skeletonOverhead = envelopeOverhead(subscriptionID: subscriptionID)
-        let budget = maxPayloadSize - skeletonOverhead
+        let emptyEnvelopeSize = envelopeOverhead(subscriptionID: subscriptionID)
+        // 3 bytes per array container (context tag + end-of-container)
+        let arrayContainerOverhead = 3
 
         var chunks: [ReportData] = []
-        var currentEvents: [EventReportIB] = []
         var currentAttributes: [AttributeReportIB] = []
-        var currentSize = 0
+        var currentEvents: [EventReportIB] = []
+        var messageSize = emptyEnvelopeSize
 
         // Helper: flush current accumulator as an intermediate chunk
         func flushChunk() {
-            let chunk = ReportData(
+            guard !currentAttributes.isEmpty || !currentEvents.isEmpty else { return }
+            chunks.append(ReportData(
                 subscriptionID: subscriptionID,
                 attributeReports: currentAttributes,
                 eventReports: currentEvents,
                 moreChunkedMessages: true,
                 suppressResponse: false
-            )
-            chunks.append(chunk)
-            currentEvents = []
+            ))
             currentAttributes = []
-            currentSize = 0
+            currentEvents = []
+            messageSize = emptyEnvelopeSize
         }
 
-        // Process event reports first (per spec ordering)
+        // --- Process event reports first (per spec ordering) ---
         for event in eventReports {
             let itemSize = encodedSize(event)
-            if currentSize + itemSize > budget && (!currentEvents.isEmpty || !currentAttributes.isEmpty) {
-                flushChunk()
-            }
-            currentEvents.append(event)
-            currentSize += itemSize
-        }
-
-        // Process attribute reports.
-        // Prefer breaking chunks at cluster boundaries (when endpoint or cluster changes).
-        // matter.js uses a similar approach (needSendNext flag) — Apple Home's
-        // ClusterStateCache may have issues with clusters split across chunks.
-        var prevEndpoint: UInt16?
-        var prevCluster: UInt32?
-        for attr in attributeReports {
-            let itemSize = encodedSize(attr)
-
-            // Detect cluster boundary (endpoint or cluster changed)
-            let attrEndpoint = attr.attributeData?.path.endpointID?.rawValue
-                ?? attr.attributeStatus?.path.endpointID?.rawValue
-            let attrCluster = attr.attributeData?.path.clusterID?.rawValue
-                ?? attr.attributeStatus?.path.clusterID?.rawValue
-            let clusterChanged = (prevEndpoint != nil || prevCluster != nil)
-                && (attrEndpoint != prevEndpoint || attrCluster != prevCluster)
-
-            // Flush if: (a) item won't fit, or (b) cluster boundary and chunk is non-trivial
-            let wouldExceedBudget = currentSize + itemSize > budget
-            let shouldBreakAtBoundary = clusterChanged && currentSize > budget / 2
-            if (wouldExceedBudget || shouldBreakAtBoundary)
+            let overhead = currentEvents.isEmpty ? arrayContainerOverhead : 0
+            if messageSize + overhead + itemSize > maxPayloadSize
                 && (!currentEvents.isEmpty || !currentAttributes.isEmpty) {
                 flushChunk()
             }
+            if currentEvents.isEmpty {
+                messageSize += arrayContainerOverhead
+            }
+            currentEvents.append(event)
+            messageSize += itemSize
+        }
 
-            currentAttributes.append(attr)
-            currentSize += itemSize
-            prevEndpoint = attrEndpoint
-            prevCluster = attrCluster
+        // --- Process attribute reports with queue ---
+        var queue: [QueueItem] = []
+        var inputIndex = 0
+        var processQueueFirst = true
+
+        while inputIndex < attributeReports.count || !queue.isEmpty {
+            // Feed from input into queue when appropriate
+            let shouldReadInput = inputIndex < attributeReports.count
+                && (queue.isEmpty
+                    || (queue.count <= Self.maxQueuedAttributeMessages
+                        && !processQueueFirst
+                        && !(queue.first?.needSendNext ?? false)))
+
+            if shouldReadInput {
+                let report = attributeReports[inputIndex]
+                inputIndex += 1
+                let size = encodedSize(report)
+
+                if queue.isEmpty {
+                    queue.append(QueueItem(report: report, encodedSize: size, needSendNext: false))
+                } else {
+                    let firstPath = queue[0].report.attributeData?.path
+                    let newPath = report.attributeData?.path
+                    let sameCluster = firstPath?.endpointID == newPath?.endpointID
+                        && firstPath?.clusterID == newPath?.clusterID
+
+                    if sameCluster {
+                        // Prioritize same-cluster for better packing
+                        queue.insert(QueueItem(report: report, encodedSize: size, needSendNext: false), at: 0)
+                    } else {
+                        // Cluster change: mark all queued items for immediate send
+                        for i in queue.indices {
+                            queue[i].needSendNext = true
+                        }
+                        queue.append(QueueItem(report: report, encodedSize: size, needSendNext: false))
+                    }
+                }
+                continue
+            }
+
+            // All input consumed: mark remaining queue items for immediate send
+            if inputIndex >= attributeReports.count && !queue.isEmpty {
+                for i in queue.indices {
+                    queue[i].needSendNext = true
+                }
+            }
+
+            // Process queue front
+            guard !queue.isEmpty else { break }
+            let item = queue.removeFirst()
+
+            let attrArrayOverhead = currentAttributes.isEmpty ? arrayContainerOverhead : 0
+            let availableBytes = maxPayloadSize - messageSize - attrArrayOverhead
+
+            if item.encodedSize <= availableBytes {
+                // Item fits: add to current chunk
+                if currentAttributes.isEmpty {
+                    messageSize += arrayContainerOverhead
+                }
+                currentAttributes.append(item.report)
+                messageSize += item.encodedSize
+            } else if (item.needSendNext || inputIndex >= attributeReports.count)
+                        && item.report.canBeChunked {
+                // Array decomposition: break into REPLACE-ALL + APPEND elements
+                let decomposed = item.report.chunkArrayAttribute()
+                guard decomposed.count >= 2 else {
+                    // Degenerate case: treat as non-chunkable
+                    if !currentAttributes.isEmpty || !currentEvents.isEmpty {
+                        flushChunk()
+                    }
+                    if currentAttributes.isEmpty {
+                        messageSize += arrayContainerOverhead
+                    }
+                    currentAttributes.append(item.report)
+                    messageSize += item.encodedSize
+                    continue
+                }
+
+                // First chunk is REPLACE-ALL (with first element packed in)
+                let replaceAll = decomposed[0]
+                let replaceAllSize = encodedSize(replaceAll)
+                let initialOverhead = currentAttributes.isEmpty ? arrayContainerOverhead : 0
+
+                if replaceAllSize <= maxPayloadSize - messageSize - initialOverhead {
+                    // REPLACE-ALL fits in current chunk
+                    if currentAttributes.isEmpty {
+                        messageSize += arrayContainerOverhead
+                    }
+                    currentAttributes.append(replaceAll)
+                    messageSize += replaceAllSize
+
+                    // Greedily pack APPEND elements
+                    var appendIndex = 1
+                    while appendIndex < decomposed.count {
+                        let appendItem = decomposed[appendIndex]
+                        let appendSize = encodedSize(appendItem)
+                        if messageSize + appendSize > maxPayloadSize {
+                            break
+                        }
+                        currentAttributes.append(appendItem)
+                        messageSize += appendSize
+                        appendIndex += 1
+                    }
+
+                    // Queue remaining APPEND elements with needSendNext
+                    if appendIndex < decomposed.count {
+                        let remaining = decomposed[appendIndex...]
+                        for chunk in remaining.reversed() {
+                            queue.insert(
+                                QueueItem(report: chunk, encodedSize: encodedSize(chunk), needSendNext: true),
+                                at: 0
+                            )
+                        }
+                    }
+                } else {
+                    // REPLACE-ALL doesn't fit: flush and retry
+                    if !currentAttributes.isEmpty || !currentEvents.isEmpty {
+                        flushChunk()
+                    }
+                    // Re-queue all decomposed chunks
+                    for chunk in decomposed.reversed() {
+                        queue.insert(
+                            QueueItem(report: chunk, encodedSize: encodedSize(chunk), needSendNext: true),
+                            at: 0
+                        )
+                    }
+                }
+            } else if item.needSendNext {
+                // Item must go now but doesn't fit: flush and retry
+                flushChunk()
+                queue.insert(item, at: 0)
+            } else {
+                // Item doesn't fit and isn't urgent: re-queue at end, try smaller items
+                queue.append(item)
+                processQueueFirst = false
+            }
+
+            // 40-byte minimum guard
+            let currentAvailable = maxPayloadSize - messageSize
+            if currentAvailable < Self.minAvailableBytesBeforeSending
+                && (!currentAttributes.isEmpty || !currentEvents.isEmpty) {
+                flushChunk()
+                processQueueFirst = true
+            }
+
+            // Queue overflow guard
+            if queue.count >= Self.maxQueuedAttributeMessages
+                && (!currentAttributes.isEmpty || !currentEvents.isEmpty) {
+                flushChunk()
+                processQueueFirst = true
+            }
+
+            // Queue front needSendNext guard
+            if let first = queue.first, first.needSendNext,
+               first.encodedSize > maxPayloadSize - messageSize - (currentAttributes.isEmpty ? arrayContainerOverhead : 0),
+               !currentAttributes.isEmpty || !currentEvents.isEmpty {
+                flushChunk()
+                processQueueFirst = true
+            }
         }
 
         // Emit final chunk
-        let finalChunk = ReportData(
+        chunks.append(ReportData(
             subscriptionID: subscriptionID,
             attributeReports: currentAttributes,
             eventReports: currentEvents,
             moreChunkedMessages: false,
             suppressResponse: suppressResponseOnFinal
-        )
-        chunks.append(finalChunk)
+        ))
 
         return chunks
     }
 
     // MARK: - Private Helpers
 
+    /// A queued attribute report with cached encoded size.
+    private struct QueueItem {
+        let report: AttributeReportIB
+        let encodedSize: Int
+        var needSendNext: Bool
+    }
+
     /// Compute the TLV overhead of a `ReportData` envelope (with moreChunkedMessages=true).
     ///
-    /// This overhead is subtracted from `maxPayloadSize` to get the budget available
-    /// for actual report items.
-    ///
-    /// The skeleton uses empty arrays which are OMITTED from TLV encoding, but actual
-    /// chunks include the `attributeReports` array container (2-byte tag + 1-byte
-    /// end-of-container = 3 bytes) and potentially the `eventReports` container.
-    /// We add 6 bytes to account for both possible array containers.
+    /// This includes the structure container, subscription ID, moreChunkedMessages flag,
+    /// suppressResponse flag, and InteractionModelRevision — but NOT the attribute/event
+    /// array containers (those are accounted for separately per the 3-byte overhead).
     private func envelopeOverhead(subscriptionID: SubscriptionID?) -> Int {
         let skeleton = ReportData(
             subscriptionID: subscriptionID,
@@ -155,9 +316,7 @@ public struct ReportDataChunker: Sendable {
             moreChunkedMessages: true,
             suppressResponse: false
         )
-        // +6 for attributeReports array container (3 bytes) + eventReports array container (3 bytes)
-        // These are omitted from the skeleton but present in actual encoded chunks.
-        return TLVEncoder.encode(skeleton.toTLVElement()).count + 6
+        return TLVEncoder.encode(skeleton.toTLVElement()).count
     }
 
     /// Compute the TLV-encoded size of a single `AttributeReportIB`.

@@ -38,13 +38,13 @@ struct IMPathTests {
             clusterID: ClusterID(rawValue: 0x0008),
             attributeID: AttributeID(rawValue: 0),
             nodeID: NodeID(rawValue: 0x1234),
-            listIndex: 5
+            listIndex: .index(5)
         )
         let element = path.toTLVElement()
         let decoded = try AttributePath.fromTLVElement(element)
         #expect(decoded == path)
         #expect(decoded.nodeID == NodeID(rawValue: 0x1234))
-        #expect(decoded.listIndex == 5)
+        #expect(decoded.listIndex == .index(5))
     }
 
     @Test("CommandPath TLV round-trip")
