@@ -30,6 +30,10 @@ public struct DoorLockHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [DoorLockCluster.Command.lockDoor, DoorLockCluster.Command.unlockDoor]
+    }
+
     // MARK: - Timed Interaction
 
     /// LockDoor and UnlockDoor are security-sensitive and require a timed interaction.

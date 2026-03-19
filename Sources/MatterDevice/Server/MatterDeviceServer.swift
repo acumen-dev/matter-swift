@@ -383,6 +383,15 @@ public actor MatterDeviceServer {
                     // Send the first chunk. Server-initiated subscription reports
                     // use initiator=true because the server starts this exchange.
                     guard let firstChunk = chunks.first else { continue }
+
+                    // Store remaining chunks BEFORE sending — the StatusResponse for
+                    // chunk 1 can arrive during the `await transport.send()` suspension,
+                    // and `handleSecuredMessage` needs the entry to exist at that point.
+                    if chunks.count > 1 {
+                        let remainingChunks = Array(chunks.dropFirst())
+                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: remainingChunks, isServerInitiated: true)
+                    }
+
                     let exchangeHeader = ExchangeHeader(
                         flags: ExchangeFlags(initiator: true, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
@@ -400,13 +409,9 @@ public actor MatterDeviceServer {
                     try await transport.send(encrypted, to: entry.address)
                     await bridge.reportSent(subscriptionID: report.subscriptionID)
                     logger.debug("Sent subscription report \(report.subscriptionID) chunk 1/\(chunks.count) to \(entry.address)")
-
-                    // If there are more chunks, store remainder for delivery on StatusResponse
-                    if chunks.count > 1 {
-                        let remainingChunks = Array(chunks.dropFirst())
-                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: remainingChunks)
-                    }
                 } catch {
+                    // Clean up pending chunks if send failed
+                    pendingChunkedReports.removeValue(forKey: exchangeID)
                     logger.warning("Failed to send subscription report: \(error)")
                 }
             }
@@ -1327,14 +1332,29 @@ public actor MatterDeviceServer {
 
             // Check if this is a StatusResponse on an exchange with pending chunks
             if opcode == .statusResponse, var context = pendingChunkedReports[exchangeHeader.exchangeID] {
-                // Client acknowledged the previous chunk — send the next one
+                // Parse StatusResponse to check for errors (matter.js: throwIfErrorStatusMessage)
+                let statusResponse = try IMStatusResponse.fromTLV(payload)
+                logger.debug("[CHUNK-FLOW] StatusResponse on exchange \(exchangeHeader.exchangeID): status=0x\(String(statusResponse.status, radix: 16)) chunkIndex=\(context.nextChunkIndex)/\(context.chunks.count)")
+
+                // Abort chunk delivery if the client rejected a chunk
+                if statusResponse.status != 0x00 {
+                    logger.warning("[CHUNK-FLOW] Client rejected chunk with status=0x\(String(statusResponse.status, radix: 16)) on exchange \(exchangeHeader.exchangeID) — aborting chunk delivery")
+                    pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                    return
+                }
+
                 if let nextChunk = context.nextChunk() {
+                    // Client acknowledged the previous chunk — send the next one.
+                    // initiator flag matches who started the exchange:
+                    // true for server-initiated subscription reports,
+                    // false for client-initiated read/subscribe responses.
+                    let ackCounter = pendingAck
                     let chunkHeader = ExchangeHeader(
-                        flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                        flags: ExchangeFlags(initiator: context.isServerInitiated, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
                         exchangeID: exchangeHeader.exchangeID,
                         protocolID: MatterProtocolID.interactionModel.rawValue,
-                        acknowledgedMessageCounter: pendingAck
+                        acknowledgedMessageCounter: ackCounter
                     )
                     pendingAck = nil
                     let encrypted = try SecureMessageCodec.encode(
@@ -1343,15 +1363,35 @@ public actor MatterDeviceServer {
                         session: session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
+                    logger.debug("[CHUNK-FLOW] Sending chunk \(context.nextChunkIndex)/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(nextChunk.tlvEncode().count)B TLV, moreChunked=\(nextChunk.moreChunkedMessages), ackCounter=\(String(describing: ackCounter))")
                     try await transport.send(encrypted, to: address)
-                }
+                    await trackForRetransmission(
+                        exchangeID: exchangeHeader.exchangeID,
+                        message: encrypted,
+                        peerAddress: address
+                    )
 
-                if context.isComplete {
+                    if context.isComplete && !context.trailingResponses.isEmpty {
+                        // Last chunk just sent but there are trailing responses
+                        // (e.g., SubscribeResponse). Keep context in map so we wait
+                        // for the client's StatusResponse acknowledging this last chunk
+                        // before sending trailing responses with the ACK piggybacked.
+                        pendingChunkedReports[exchangeHeader.exchangeID] = context
+                    } else if context.isComplete {
+                        // Last chunk sent, no trailing responses — done.
+                        pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                    } else {
+                        // More chunks remain.
+                        pendingChunkedReports[exchangeHeader.exchangeID] = context
+                    }
+                } else if context.isComplete && !context.trailingResponses.isEmpty {
+                    // All chunks already sent — this StatusResponse acknowledges
+                    // the final chunk. Now send trailing responses (SubscribeResponse)
+                    // with the ACK for this StatusResponse piggybacked.
                     pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
-                    // Send any trailing responses (e.g., SubscribeResponse after final chunk)
                     for (trailingOpcode, trailingData) in context.trailingResponses {
                         let trailingHeader = ExchangeHeader(
-                            flags: ExchangeFlags(initiator: false, reliableDelivery: true),
+                            flags: ExchangeFlags(initiator: context.isServerInitiated, reliableDelivery: true),
                             protocolOpcode: trailingOpcode.rawValue,
                             exchangeID: exchangeHeader.exchangeID,
                             protocolID: MatterProtocolID.interactionModel.rawValue,
@@ -1365,9 +1405,15 @@ public actor MatterDeviceServer {
                             sourceNodeID: NodeID(rawValue: 0)
                         )
                         try await transport.send(encrypted, to: address)
+                        await trackForRetransmission(
+                            exchangeID: exchangeHeader.exchangeID,
+                            message: encrypted,
+                            peerAddress: address
+                        )
                     }
                 } else {
-                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                    // No more chunks, no trailing responses — clean up.
+                    pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
                 }
                 return
             }
@@ -1428,35 +1474,53 @@ public actor MatterDeviceServer {
                         session: session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
+                    logger.debug("[CHUNK-FLOW] Sending first chunk 1/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(firstChunk.tlvEncode().count)B TLV, moreChunked=\(firstChunk.moreChunkedMessages)")
                     try await transport.send(encrypted, to: address)
+                    await trackForRetransmission(
+                        exchangeID: exchangeHeader.exchangeID,
+                        message: encrypted,
+                        peerAddress: address
+                    )
                 }
-                // Store remaining chunks for delivery on subsequent StatusResponse messages
-                if !context.isComplete {
+                // Store context for delivery on subsequent StatusResponse messages.
+                // Even if all chunks are sent, we keep the context when there are
+                // trailing responses (e.g., SubscribeResponse) — those must wait for
+                // the client's StatusResponse acknowledging the final chunk so we can
+                // piggyback the ACK. Without the piggybacked ACK, the client
+                // retransmits the StatusResponse until MRP timeout.
+                if !context.isComplete || !context.trailingResponses.isEmpty {
                     pendingChunkedReports[exchangeHeader.exchangeID] = context
-                } else if !context.trailingResponses.isEmpty {
-                    // Single chunk but has trailing responses — send them now
-                    for (trailingOpcode, trailingData) in context.trailingResponses {
-                        let trailingHeader = ExchangeHeader(
-                            flags: ExchangeFlags(initiator: false, reliableDelivery: true),
-                            protocolOpcode: trailingOpcode.rawValue,
-                            exchangeID: exchangeHeader.exchangeID,
-                            protocolID: MatterProtocolID.interactionModel.rawValue,
-                            acknowledgedMessageCounter: pendingAck
-                        )
-                        pendingAck = nil
-                        let encrypted = try SecureMessageCodec.encode(
-                            exchangeHeader: trailingHeader,
-                            payload: trailingData,
-                            session: session,
-                            sourceNodeID: NodeID(rawValue: 0)
-                        )
-                        try await transport.send(encrypted, to: address)
-                    }
                 }
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {
             // Handle secure channel messages (e.g., MRP acks, close session)
             logger.debug("Secure channel message on session \(session.localSessionID): opcode=\(exchangeHeader.protocolOpcode)")
+
+            // Apple Home sends a StandaloneAck (not StatusResponse) for the final
+            // chunk of a subscription priming report. If there are pending trailing
+            // responses (e.g., SubscribeResponse) on this exchange, treat the
+            // StandaloneAck as acknowledgment and send them now.
+            if let context = pendingChunkedReports[exchangeHeader.exchangeID],
+               context.isComplete && !context.trailingResponses.isEmpty {
+                pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                for (trailingOpcode, trailingData) in context.trailingResponses {
+                    let trailingHeader = ExchangeHeader(
+                        flags: ExchangeFlags(initiator: context.isServerInitiated, reliableDelivery: true),
+                        protocolOpcode: trailingOpcode.rawValue,
+                        exchangeID: exchangeHeader.exchangeID,
+                        protocolID: MatterProtocolID.interactionModel.rawValue,
+                        acknowledgedMessageCounter: nil
+                    )
+                    let encrypted = try SecureMessageCodec.encode(
+                        exchangeHeader: trailingHeader,
+                        payload: trailingData,
+                        session: session,
+                        sourceNodeID: NodeID(rawValue: 0)
+                    )
+                    try await transport.send(encrypted, to: address)
+                    logger.debug("Sent trailing \(trailingOpcode) on exchange \(exchangeHeader.exchangeID) after StandaloneAck")
+                }
+            }
         } else {
             logger.debug("Unknown protocol \(exchangeHeader.protocolID) on session \(session.localSessionID)")
         }

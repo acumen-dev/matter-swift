@@ -2,8 +2,11 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterCrypto
+
+private let logger = Logger(label: "matter.protocol.codec")
 
 /// Encodes and decodes encrypted Matter messages.
 ///
@@ -77,6 +80,14 @@ public enum SecureMessageCodec {
 
         var result = headerBytes
         result.append(encrypted)
+
+        // Validate the encrypted message fits within the Matter UDP MTU.
+        // Messages exceeding this limit will be truncated or fragmented at the IP layer,
+        // causing "End of TLV" parse errors on the receiver (especially Apple Home).
+        if result.count > MatterMessage.maxUDPPayloadSize {
+            logger.error("Encrypted message (\(result.count)B) exceeds max UDP payload (\(MatterMessage.maxUDPPayloadSize)B) — receiver will likely fail to parse. IM payload was \(payload.count)B, max is \(MatterMessage.maxIMPayloadSize)B.")
+        }
+
         return result
     }
 

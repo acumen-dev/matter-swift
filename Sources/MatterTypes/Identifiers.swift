@@ -37,6 +37,21 @@ public struct ClusterID: RawRepresentable, Sendable, Hashable, Codable {
 public struct AttributeID: RawRepresentable, Sendable, Hashable, Codable {
     public let rawValue: UInt32
     public init(rawValue: UInt32) { self.rawValue = rawValue }
+
+    // MARK: - Global Attributes (Matter Core Spec §7.13)
+
+    /// GeneratedCommandList — list of command IDs the cluster can generate.
+    public static let generatedCommandList = AttributeID(rawValue: 0xFFF8)
+    /// AcceptedCommandList — list of command IDs the cluster accepts.
+    public static let acceptedCommandList  = AttributeID(rawValue: 0xFFF9)
+    /// EventList — list of event IDs the cluster can emit. (Matter 1.2+)
+    public static let eventList            = AttributeID(rawValue: 0xFFFA)
+    /// AttributeList — list of attribute IDs supported by this cluster instance.
+    public static let attributeList        = AttributeID(rawValue: 0xFFFB)
+    /// FeatureMap — bitmask of enabled cluster features.
+    public static let featureMap           = AttributeID(rawValue: 0xFFFC)
+    /// ClusterRevision — implementation revision of this cluster.
+    public static let clusterRevision      = AttributeID(rawValue: 0xFFFD)
 }
 
 /// A Matter command ID (32-bit).

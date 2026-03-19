@@ -56,6 +56,22 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            GeneralCommissioningCluster.Command.armFailSafe,
+            GeneralCommissioningCluster.Command.setRegulatoryConfig,
+            GeneralCommissioningCluster.Command.commissioningComplete,
+        ]
+    }
+
+    public func generatedCommands() -> [CommandID] {
+        [
+            GeneralCommissioningCluster.Command.armFailSafeResponse,
+            GeneralCommissioningCluster.Command.setRegulatoryConfigResponse,
+            GeneralCommissioningCluster.Command.commissioningCompleteResponse,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,
@@ -204,17 +220,11 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
 
     // MARK: - Event Generation
 
-    /// Emit a CommissioningComplete event when the CommissioningComplete command succeeds.
+    /// GeneralCommissioning cluster does not define any events in the Matter spec.
+    /// Previously emitted a bogus "commissioningComplete" event (ID 0x02) which
+    /// caused Apple Home to reject subscribe priming reports with InvalidAction.
     public func generatedEvents(commandID: CommandID, endpointID: EndpointID, store: AttributeStore) -> [ClusterEvent] {
-        guard commandID == GeneralCommissioningCluster.Command.commissioningComplete else { return [] }
-        // Only emit the event if commissioning actually completed successfully (fail-safe was armed)
-        // The command handler already committed the state, so if we're here it succeeded
-        return [ClusterEvent(
-            eventID: GeneralCommissioningCluster.Event.commissioningComplete,
-            priority: .info,
-            data: nil,
-            isUrgent: false
-        )]
+        return []
     }
 
     // MARK: - CommissioningComplete

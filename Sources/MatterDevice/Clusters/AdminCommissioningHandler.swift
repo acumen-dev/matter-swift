@@ -71,6 +71,14 @@ public struct AdminCommissioningHandler: ClusterHandler, @unchecked Sendable {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            Command.openCommissioningWindow,
+            Command.openBasicCommissioningWindow,
+            Command.revokeCommissioning,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

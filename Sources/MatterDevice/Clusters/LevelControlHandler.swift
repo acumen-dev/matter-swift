@@ -39,6 +39,16 @@ public struct LevelControlHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            LevelControlCluster.Command.moveToLevel,
+            LevelControlCluster.Command.move,
+            LevelControlCluster.Command.step,
+            LevelControlCluster.Command.stop,
+            LevelControlCluster.Command.moveToLevelWithOnOff,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

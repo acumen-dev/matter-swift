@@ -51,6 +51,26 @@ public struct GroupsHandler: ClusterHandler, @unchecked Sendable {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [
+            GroupsCluster.Command.addGroup,
+            GroupsCluster.Command.viewGroup,
+            GroupsCluster.Command.getGroupMembership,
+            GroupsCluster.Command.removeGroup,
+            GroupsCluster.Command.removeAllGroups,
+            GroupsCluster.Command.addGroupIfIdentifying,
+        ]
+    }
+
+    public func generatedCommands() -> [CommandID] {
+        [
+            GroupsCluster.ResponseCommand.addGroupResponse,
+            GroupsCluster.ResponseCommand.viewGroupResponse,
+            GroupsCluster.ResponseCommand.getGroupMembershipResponse,
+            GroupsCluster.ResponseCommand.removeGroupResponse,
+        ]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

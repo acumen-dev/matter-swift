@@ -29,6 +29,10 @@ public struct OnOffHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [OnOffCluster.Command.off, OnOffCluster.Command.on, OnOffCluster.Command.toggle]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,

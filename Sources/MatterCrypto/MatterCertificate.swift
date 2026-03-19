@@ -1,3 +1,5 @@
+
+
 // MatterCertificate.swift
 // Copyright 2026 Monagle Pty Ltd
 
@@ -448,13 +450,13 @@ public struct MatterDistinguishedName: Sendable, Equatable {
     public let nodeID: NodeID?
 
     /// Firmware signing ID.
-    public let firmwareSigningID: UInt32?
+    public let firmwareSigningID: UInt64?
 
     /// ICAC ID (for ICAC subjects).
-    public let icacID: UInt32?
+    public let icacID: UInt64?
 
     /// RCAC ID (for RCAC subjects).
-    public let rcacID: UInt32?
+    public let rcacID: UInt64?
 
     /// Fabric ID.
     public let fabricID: FabricID?
@@ -468,9 +470,9 @@ public struct MatterDistinguishedName: Sendable, Equatable {
 
     public init(
         nodeID: NodeID? = nil,
-        firmwareSigningID: UInt32? = nil,
-        icacID: UInt32? = nil,
-        rcacID: UInt32? = nil,
+        firmwareSigningID: UInt64? = nil,
+        icacID: UInt64? = nil,
+        rcacID: UInt64? = nil,
         fabricID: FabricID? = nil,
         caseAuthenticatedTags: [UInt32] = [],
         orderedAttributes: [Attribute]? = nil
@@ -596,9 +598,9 @@ public struct MatterDistinguishedName: Sendable, Equatable {
         }
 
         var nodeID: NodeID?
-        var firmwareSigningID: UInt32?
-        var icacID: UInt32?
-        var rcacID: UInt32?
+        var firmwareSigningID: UInt64?
+        var icacID: UInt64?
+        var rcacID: UInt64?
         var fabricID: FabricID?
         var cats: [UInt32] = []
         var ordered: [Attribute] = []
@@ -612,15 +614,15 @@ public struct MatterDistinguishedName: Sendable, Equatable {
                 case Tag.nodeID:
                     nodeID = NodeID(rawValue: val)
                 case Tag.firmwareSigningID:
-                    firmwareSigningID = UInt32(val)
+                    firmwareSigningID = val
                 case Tag.icacID:
-                    icacID = UInt32(val)
+                    icacID = val
                 case Tag.rcacID:
-                    rcacID = UInt32(val)
+                    rcacID = val
                 case Tag.fabricID:
                     fabricID = FabricID(rawValue: val)
                 case Tag.caseAuthenticatedTag:
-                    cats.append(UInt32(val))
+                    cats.append(UInt32(truncatingIfNeeded: val))
                 default:
                     break
                 }
@@ -915,7 +917,7 @@ extension MatterCertificate {
     /// - Returns: A self-signed RCAC.
     public static func generateRCAC(
         key: P256.Signing.PrivateKey,
-        rcacID: UInt32 = 1,
+        rcacID: UInt64 = 1,
         fabricID: FabricID,
         notBefore: UInt32? = nil,
         notAfter: UInt32? = nil,

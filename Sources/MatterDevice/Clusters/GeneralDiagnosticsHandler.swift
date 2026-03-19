@@ -54,6 +54,10 @@ public struct GeneralDiagnosticsHandler: ClusterHandler {
         ]
     }
 
+    public func acceptedCommands() -> [CommandID] {
+        [GeneralDiagnosticsCluster.Command.testEventTrigger]
+    }
+
     public func handleCommand(
         commandID: CommandID,
         fields: TLVElement?,
