@@ -100,16 +100,31 @@ public struct ACLChecker: Sendable {
         }
 
         // Rule 2-4: Evaluate ACLs for CASE sessions
-        for ace in acls {
+        for (aceIndex, ace) in acls.enumerated() {
             // Only consider CASE auth mode for CASE sessions
-            guard ace.authMode == .case else { continue }
+            guard ace.authMode == .case else {
+                #if DEBUG
+                print("[ACL-TRACE] ACE[\(aceIndex)] SKIP: authMode=\(ace.authMode) != .case")
+                #endif
+                continue
+            }
 
             // Check privilege level — ACE must grant at least the required privilege
-            guard ace.privilege >= requiredPrivilege else { continue }
+            guard ace.privilege >= requiredPrivilege else {
+                #if DEBUG
+                print("[ACL-TRACE] ACE[\(aceIndex)] SKIP: privilege=\(ace.privilege.rawValue) < required=\(requiredPrivilege.rawValue)")
+                #endif
+                continue
+            }
 
             // Check subject match — empty subjects means "any authenticated node on this fabric"
             if !ace.subjects.isEmpty {
-                guard ace.subjects.contains(context.subjectNodeID) else { continue }
+                guard ace.subjects.contains(context.subjectNodeID) else {
+                    #if DEBUG
+                    print("[ACL-TRACE] ACE[\(aceIndex)] SKIP: subject mismatch — session subjectNodeID=\(context.subjectNodeID) (0x\(String(context.subjectNodeID, radix: 16))) NOT IN ace.subjects=\(ace.subjects.map { "\($0) (0x\(String($0, radix: 16)))" })")
+                    #endif
+                    continue
+                }
             }
 
             // Check target match — nil targets means "all endpoints and clusters"
@@ -117,12 +132,21 @@ public struct ACLChecker: Sendable {
                 let targetMatch = targets.contains { target in
                     matchesTarget(target, endpointID: endpointID, clusterID: clusterID)
                 }
-                guard targetMatch else { continue }
+                guard targetMatch else {
+                    #if DEBUG
+                    print("[ACL-TRACE] ACE[\(aceIndex)] SKIP: target mismatch — ep=\(endpointID.rawValue) cluster=0x\(String(format: "%04X", clusterID.rawValue))")
+                    #endif
+                    continue
+                }
             }
 
             // All checks passed — this ACE grants access
             return .allowed
         }
+
+        #if DEBUG
+        print("[ACL-TRACE] DENIED: no matching ACE for ep=\(endpointID.rawValue) cluster=0x\(String(format: "%04X", clusterID.rawValue)) required=\(requiredPrivilege.rawValue) subjectNodeID=\(context.subjectNodeID) (0x\(String(context.subjectNodeID, radix: 16))) fabricIndex=\(context.fabricIndex.rawValue) aclCount=\(acls.count)")
+        #endif
 
         // No matching ACE found
         return .denied

@@ -116,6 +116,24 @@ public final class AttributeStore: @unchecked Sendable {
         return true
     }
 
+    /// Mark an attribute as dirty without changing its value.
+    ///
+    /// Used after command handling to ensure subscription reports are sent even when
+    /// the command sets the same value that's already stored (e.g., "On" when already on).
+    /// The controller expects a subscription report to confirm every command.
+    public func markDirty(endpoint: EndpointID, cluster: ClusterID, attribute: AttributeID) {
+        guard var endpointStorage = storage[endpoint],
+              var clusterStorage = endpointStorage[cluster] else {
+            #if DEBUG
+            print("[ATTR-STORE] markDirty GUARD FAILED: ep=\(endpoint.rawValue) cluster=0x\(String(format: "%04X", cluster.rawValue)) attr=0x\(String(format: "%04X", attribute.rawValue)) — endpoint/cluster not in storage")
+            #endif
+            return
+        }
+        clusterStorage.dirtyAttributes.insert(attribute)
+        endpointStorage[cluster] = clusterStorage
+        storage[endpoint] = endpointStorage
+    }
+
     /// Remove all data for an endpoint.
     public func removeEndpoint(_ endpoint: EndpointID) {
         storage.removeValue(forKey: endpoint)

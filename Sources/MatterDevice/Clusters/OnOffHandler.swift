@@ -42,16 +42,21 @@ public struct OnOffHandler: ClusterHandler {
         switch commandID {
         case OnOffCluster.Command.off:
             store.set(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff, value: .bool(false))
+            // Always mark dirty so subscription reports confirm the command,
+            // even when the value was already false (no-op write).
+            store.markDirty(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff)
             onChange?(false)
 
         case OnOffCluster.Command.on:
             store.set(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff, value: .bool(true))
+            store.markDirty(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff)
             onChange?(true)
 
         case OnOffCluster.Command.toggle:
             let current = store.get(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff)
             let isOn = current?.boolValue ?? false
             store.set(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff, value: .bool(!isOn))
+            store.markDirty(endpoint: endpointID, cluster: clusterID, attribute: OnOffCluster.Attribute.onOff)
             onChange?(!isOn)
 
         default:

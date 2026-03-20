@@ -122,6 +122,17 @@ public final class CommissioningState: @unchecked Sendable {
     /// Committed ACL entries per fabric.
     public private(set) var committedACLs: [FabricIndex: [AccessControlCluster.AccessControlEntry]] = [:]
 
+    /// Update committed ACLs for a specific fabric and persist.
+    ///
+    /// Called by `AccessControlHandler` for post-commissioning ACL writes.
+    /// During commissioning, ACL writes are staged and committed by `commitCommissioning()`.
+    /// After commissioning, this method updates the committed ACLs directly.
+    public func updateCommittedACLs(fabricIndex: FabricIndex, entries: [AccessControlCluster.AccessControlEntry]) {
+        committedACLs[fabricIndex] = entries
+        // Persist asynchronously — the save is best-effort
+        Task { await saveToStore() }
+    }
+
     // MARK: - Persistence
 
     /// Optional fabric store for persisting committed state across restarts.
