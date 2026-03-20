@@ -384,12 +384,16 @@ public actor MatterDeviceServer {
                     // use initiator=true because the server starts this exchange.
                     guard let firstChunk = chunks.first else { continue }
 
-                    // Store remaining chunks BEFORE sending — the StatusResponse for
+                    // Store context BEFORE sending — the StatusResponse for
                     // chunk 1 can arrive during the `await transport.send()` suspension,
                     // and `handleSecuredMessage` needs the entry to exist at that point.
+                    // For single-chunk reports, store an empty context so the final
+                    // StatusResponse is handled by the chunked report handler and ACK'd.
                     if chunks.count > 1 {
                         let remainingChunks = Array(chunks.dropFirst())
                         pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: remainingChunks, isServerInitiated: true)
+                    } else {
+                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: [], isServerInitiated: true)
                     }
 
                     let exchangeHeader = ExchangeHeader(
@@ -1317,7 +1321,21 @@ public actor MatterDeviceServer {
                 && !bridge.commissioningState.stagedACLs.isEmpty {
                 acls = bridge.commissioningState.stagedACLs
             }
-            logger.debug("ACL check: session=\(session.establishment) fabric=\(fabricIndex) committed=\(bridge.commissioningState.committedACLs[fabricIndex]?.count ?? 0) staged=\(bridge.commissioningState.stagedACLs.count) using=\(acls.count)")
+            logger.debug("ACL check: session=\(session.establishment) fabric=\(fabricIndex) committed=\(bridge.commissioningState.committedACLs[fabricIndex]?.count ?? 0) staged=\(bridge.commissioningState.stagedACLs.count) using=\(acls.count) peerNodeID=\(session.peerNodeID.rawValue)")
+            for (i, ace) in acls.enumerated() {
+                let subDesc = ace.subjects.map { String($0) }.joined(separator: ",")
+                let targDesc: String
+                if let targets = ace.targets {
+                    targDesc = targets.map { t in
+                        let ep = t.endpoint?.rawValue.description ?? "*"
+                        let cl = t.cluster.map { "0x" + String($0.rawValue, radix: 16) } ?? "*"
+                        return "ep\(ep)/\(cl)"
+                    }.joined(separator: ",")
+                } else {
+                    targDesc = "*/*"
+                }
+                logger.debug("ACL[\(i)]: priv=\(ace.privilege) auth=\(ace.authMode) subs=[\(subDesc)] targ=[\(targDesc)] fab=\(ace.fabricIndex)")
+            }
             let requestContext = IMRequestContext(
                 checkerContext: ACLChecker.RequestContext(
                     isPASE: session.establishment == .pase,
@@ -1378,8 +1396,9 @@ public actor MatterDeviceServer {
                         // before sending trailing responses with the ACK piggybacked.
                         pendingChunkedReports[exchangeHeader.exchangeID] = context
                     } else if context.isComplete {
-                        // Last chunk sent, no trailing responses — done.
-                        pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                        // Last chunk sent, no trailing responses — keep context so we
+                        // ACK the client's final StatusResponse on the next iteration.
+                        pendingChunkedReports[exchangeHeader.exchangeID] = context
                     } else {
                         // More chunks remain.
                         pendingChunkedReports[exchangeHeader.exchangeID] = context
@@ -1412,8 +1431,27 @@ public actor MatterDeviceServer {
                         )
                     }
                 } else {
-                    // No more chunks, no trailing responses — clean up.
+                    // All chunks delivered, no trailing responses — send standalone ACK
+                    // for this final StatusResponse and clean up.
                     pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                    if let ack = pendingAck {
+                        let ackHeader = ExchangeHeader(
+                            flags: ExchangeFlags(initiator: context.isServerInitiated, reliableDelivery: false),
+                            protocolOpcode: SecureChannelOpcode.standaloneAck.rawValue,
+                            exchangeID: exchangeHeader.exchangeID,
+                            protocolID: MatterProtocolID.secureChannel.rawValue,
+                            acknowledgedMessageCounter: ack
+                        )
+                        pendingAck = nil
+                        let encrypted = try SecureMessageCodec.encode(
+                            exchangeHeader: ackHeader,
+                            payload: Data(),
+                            session: session,
+                            sourceNodeID: NodeID(rawValue: 0)
+                        )
+                        try await transport.send(encrypted, to: address)
+                        logger.debug("[CHUNK-FLOW] Sent standalone ACK for final StatusResponse on exchange \(exchangeHeader.exchangeID)")
+                    }
                 }
                 return
             }
@@ -1455,6 +1493,25 @@ public actor MatterDeviceServer {
                         message: encrypted,
                         peerAddress: address
                     )
+                }
+
+                // If no response was sent but we owe an ACK, send a standalone ACK.
+                if let ack = pendingAck {
+                    let ackHeader = ExchangeHeader(
+                        flags: ExchangeFlags(initiator: false, reliableDelivery: false),
+                        protocolOpcode: SecureChannelOpcode.standaloneAck.rawValue,
+                        exchangeID: exchangeHeader.exchangeID,
+                        protocolID: MatterProtocolID.secureChannel.rawValue,
+                        acknowledgedMessageCounter: ack
+                    )
+                    pendingAck = nil
+                    let encrypted = try SecureMessageCodec.encode(
+                        exchangeHeader: ackHeader,
+                        payload: Data(),
+                        session: session,
+                        sourceNodeID: NodeID(rawValue: 0)
+                    )
+                    try await transport.send(encrypted, to: address)
                 }
 
             case .chunkedReport(var context):

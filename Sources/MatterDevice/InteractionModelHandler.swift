@@ -303,6 +303,10 @@ public struct InteractionModelHandler: Sendable {
             return .responses([(.statusResponse, IMStatusResponse.success.tlvEncode())])
         }
 
+        for writeReq in request.writeRequests {
+            logger.debug("  WriteRequest: ep=\(writeReq.path.endpointID.map { "\($0.rawValue)" } ?? "*") cluster=0x\(String(format: "%04X", writeReq.path.clusterID?.rawValue ?? 0xFFFF)) attr=0x\(String(format: "%04X", writeReq.path.attributeID?.rawValue ?? 0xFFFF))")
+        }
+
         // Timed interaction window enforcement
         if request.timedRequest {
             let windowResult = await timedRequestTracker.consumeTimedWindow(exchangeID: exchangeID)
@@ -434,6 +438,7 @@ public struct InteractionModelHandler: Sendable {
                     acls: ctx.acls
                 )
                 if decision == .denied {
+                    logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → ACL DENIED")
                     invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
                         commandPath: cmd.commandPath,
                         status: .unsupportedAccess
@@ -459,7 +464,9 @@ public struct InteractionModelHandler: Sendable {
             }
 
             do {
+                logger.debug("  [INVOKE-DIAG] Calling handleCommand for ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue))")
                 let (result, recordedEvents) = try await endpoints.handleCommand(path: cmd.commandPath, fields: cmd.commandFields)
+                logger.debug("  [INVOKE-DIAG] handleCommand returned: hasResult=\(result != nil) events=\(recordedEvents.count)")
                 if let responseData = result {
                     // Command returned response data.
                     // Per Matter spec §10.7.14.2, the CommandPath in InvokeResponse MUST use
@@ -505,7 +512,10 @@ public struct InteractionModelHandler: Sendable {
         // Notify subscriptions of attribute changes from commands
         let dirty = store.dirtyPaths()
         if !dirty.isEmpty {
+            logger.debug("[INVOKE-SUB] \(dirty.count) dirty paths after invoke: \(dirty.map { "ep\($0.endpointID?.rawValue ?? 0)/0x\(String($0.clusterID?.rawValue ?? 0, radix: 16))/0x\(String($0.attributeID?.rawValue ?? 0, radix: 16))" }.joined(separator: ", "))")
             await subscriptions.attributesChanged(dirty)
+        } else {
+            logger.debug("[INVOKE-SUB] No dirty paths after invoke")
         }
 
         let response = InvokeResponse(invokeResponses: invokeResponses)

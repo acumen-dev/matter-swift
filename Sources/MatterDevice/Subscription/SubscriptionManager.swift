@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterProtocol
 
@@ -38,6 +39,7 @@ public actor SubscriptionManager {
 
     private var subscriptions: [SubscriptionID: ActiveSubscription] = [:]
     private var nextID: UInt32 = 1
+    private let logger = Logger(label: "matter.device.subscriptions")
 
     public init() {}
 
@@ -92,6 +94,10 @@ public actor SubscriptionManager {
             }
             if matches {
                 subscriptions[id]?.pendingReport = true
+                logger.debug("[SUB-NOTIFY] Sub \(id) marked pending (session=\(sub.sessionID), \(sub.attributePaths.count) paths)")
+            } else {
+                let subPathsDesc = sub.attributePaths.map { "ep\($0.endpointID?.rawValue.description ?? "*")/cl\($0.clusterID?.rawValue.description ?? "*")/at\($0.attributeID?.rawValue.description ?? "*")" }
+                logger.debug("[SUB-NOTIFY] Sub \(id) NO MATCH: subPaths=\(subPathsDesc)")
             }
         }
     }
@@ -124,6 +130,9 @@ public actor SubscriptionManager {
                     sessionID: sub.sessionID,
                     reason: .attributeChanged
                 ))
+                logger.debug("[SUB-PENDING] Sub \(id) pending: reason=attributeChanged sinceLastReport=\(String(format: "%.1f", sinceLastReport))s minInterval=\(sub.minInterval)")
+            } else if sub.pendingReport {
+                logger.debug("[SUB-PENDING] Sub \(id) pendingReport=true but gated: sinceLastReport=\(String(format: "%.1f", sinceLastReport))s < minInterval=\(sub.minInterval)")
             }
             // Max interval keepalive
             else if sinceLastReport >= Double(sub.maxInterval) {
