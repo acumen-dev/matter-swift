@@ -49,8 +49,8 @@ public struct GeneralDiagnosticsHandler: ClusterHandler {
             (GeneralDiagnosticsCluster.Attribute.activeRadioFaults, .array([])),
             (GeneralDiagnosticsCluster.Attribute.activeNetworkFaults, .array([])),
             (GeneralDiagnosticsCluster.Attribute.testEventTriggersEnabled, .bool(false)),
-            (GeneralDiagnosticsCluster.Attribute.featureMap, .unsignedInt(0)),
-            (GeneralDiagnosticsCluster.Attribute.clusterRevision, .unsignedInt(1)),
+            (AttributeID.featureMap, .unsignedInt(0)),
+            (AttributeID.clusterRevision, .unsignedInt(1)),
         ]
     }
 

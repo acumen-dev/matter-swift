@@ -26,11 +26,11 @@ public struct IdentifyHandler: ClusterHandler {
     }
 
     public func acceptedCommands() -> [CommandID] {
-        [IdentifyCluster.Command.identify, IdentifyCluster.Command.identifyQuery]
+        [IdentifyCluster.Command.identify, IdentifyCluster.Command.triggerEffect]
     }
 
     public func generatedCommands() -> [CommandID] {
-        [IdentifyCluster.ResponseCommand.identifyQueryResponse]
+        []
     }
 
     public func handleCommand(
@@ -59,16 +59,10 @@ public struct IdentifyHandler: ClusterHandler {
             )
             return nil
 
-        // MARK: IdentifyQuery (0x01) — return current identifyTime
-        case IdentifyCluster.Command.identifyQuery:
-            let current = store.get(
-                endpoint: endpointID,
-                cluster: clusterID,
-                attribute: IdentifyCluster.Attribute.identifyTime
-            )?.uintValue ?? 0
-            return .structure([
-                TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(current))
-            ])
+        // MARK: TriggerEffect (0x40)
+        case IdentifyCluster.Command.triggerEffect:
+            // Accept but no-op for now
+            return nil
 
         default:
             return nil
