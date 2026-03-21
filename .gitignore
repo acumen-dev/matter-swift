@@ -17,3 +17,6 @@ Tools/RefImpl/matter-js/node_modules/
 
 # Local tooling
 .matter-js-ref/
+
+# Claude Code
+.claude/
