@@ -40,10 +40,11 @@ jobs:
             --output ../../Sources/MatterModel/Generated
 
       - name: Check for uncommitted changes
+        working-directory: ${{ github.workspace }}
         run: |
-          if [ -n "$(git diff --name-only Sources/MatterModel/Generated/)" ]; then
+          if [ -n "$(git diff --name-only -- Sources/MatterModel/Generated/)" ]; then
             echo "::error::Generated code is out of date. Run 'make generate-model' and commit the results."
-            git diff --stat Sources/MatterModel/Generated/
+            git diff --stat -- Sources/MatterModel/Generated/
             exit 1
           fi
           echo "Generated code is up to date."
