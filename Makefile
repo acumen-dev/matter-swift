@@ -41,6 +41,7 @@ generate-model:
 		--input $(CHIP_DIR)/data_model/1.4 \
 		--output ../../Sources/MatterModel/Generated
 
+
 ## ── Reference Tests ──────────────────────────────────────────────────────────
 
 CHIPCERT     = Tools/RefImpl/bin/chip-cert
