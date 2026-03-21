@@ -88,8 +88,8 @@ extension MessagesCluster {
         clusterID: ClusterID(rawValue: 0x0097),
         revision: 3,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Messages", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveMessageIDs", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Messages", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveMessageIDs", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "PresentMessagesRequest", conformance: .mandatory),

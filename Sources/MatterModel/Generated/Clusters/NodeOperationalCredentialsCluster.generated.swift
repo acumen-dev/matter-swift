@@ -77,12 +77,12 @@ extension NodeOperationalCredentialsCluster {
         clusterID: ClusterID(rawValue: 0x003E),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NOCs", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Fabrics", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedFabrics", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CommissionedFabrics", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TrustedRootCertificates", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CurrentFabricIndex", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NOCs", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Fabrics", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedFabrics", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CommissionedFabrics", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TrustedRootCertificates", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CurrentFabricIndex", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "AttestationRequest", conformance: .mandatory),

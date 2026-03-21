@@ -58,12 +58,12 @@ extension ThreadBorderRouterManagementCluster {
         clusterID: ClusterID(rawValue: 0x0452),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "BorderRouterName", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "BorderAgentID", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadVersion", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "InterfaceEnabled", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "ActiveDatasetTimestamp", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "PendingDatasetTimestamp", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "BorderRouterName", conformance: .mandatory, type: .string, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "BorderAgentID", conformance: .mandatory, type: .octstr, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadVersion", conformance: .mandatory, type: .uint16, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "InterfaceEnabled", conformance: .mandatory, type: .bool, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "ActiveDatasetTimestamp", conformance: .mandatory, type: .uint64, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "PendingDatasetTimestamp", conformance: .mandatory, type: .uint64, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetActiveDatasetRequest", conformance: .mandatory),

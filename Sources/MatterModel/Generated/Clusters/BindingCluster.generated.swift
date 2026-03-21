@@ -26,7 +26,7 @@ extension BindingCluster {
         clusterID: ClusterID(rawValue: 0x001E),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Binding", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Binding", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
         ]

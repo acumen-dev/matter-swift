@@ -26,7 +26,7 @@ extension UserLabelCluster {
         clusterID: ClusterID(rawValue: 0x0041),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "LabelList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "LabelList", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
         ]

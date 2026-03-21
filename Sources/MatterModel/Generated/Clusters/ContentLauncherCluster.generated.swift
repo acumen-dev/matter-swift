@@ -94,8 +94,8 @@ extension ContentLauncherCluster {
         clusterID: ClusterID(rawValue: 0x050A),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AcceptHeader", conformance: .mandatoryIf(.feature(1 << 1))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedStreamingProtocols", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AcceptHeader", conformance: .mandatoryIf(.feature(1 << 1)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedStreamingProtocols", conformance: .mandatoryIf(.feature(1 << 1)), type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "LaunchContent", conformance: .mandatoryIf(.feature(1 << 0))),

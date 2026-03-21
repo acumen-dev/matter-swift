@@ -13,10 +13,10 @@ extension GroupKeyManagementCluster {
         clusterID: ClusterID(rawValue: 0x003F),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "GroupKeyMap", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "GroupTable", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxGroupsPerFabric", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "MaxGroupKeysPerFabric", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "GroupKeyMap", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "GroupTable", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxGroupsPerFabric", conformance: .mandatory, type: .uint16, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "MaxGroupKeysPerFabric", conformance: .mandatory, type: .uint16, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "KeySetWrite Command", conformance: .mandatory),

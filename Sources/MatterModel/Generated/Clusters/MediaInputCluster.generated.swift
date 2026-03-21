@@ -65,8 +65,8 @@ extension MediaInputCluster {
         clusterID: ClusterID(rawValue: 0x0507),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "InputList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentInput", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "InputList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentInput", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectInput", conformance: .mandatory),

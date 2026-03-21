@@ -55,8 +55,8 @@ extension AudioOutputCluster {
         clusterID: ClusterID(rawValue: 0x050B),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OutputList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentOutput", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OutputList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentOutput", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectOutput", conformance: .mandatory),

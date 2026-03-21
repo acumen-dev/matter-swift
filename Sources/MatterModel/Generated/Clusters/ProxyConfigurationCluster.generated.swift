@@ -26,7 +26,7 @@ extension ProxyConfigurationCluster {
         clusterID: ClusterID(rawValue: 0x0042),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ConfigurationList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ConfigurationList", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
         ]

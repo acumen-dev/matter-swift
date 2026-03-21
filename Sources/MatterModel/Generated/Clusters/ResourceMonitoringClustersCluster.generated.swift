@@ -75,12 +75,12 @@ extension ResourceMonitoringClustersCluster {
         clusterID: ClusterID(rawValue: 0x0071),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Condition", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "DegradationDirection", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ChangeIndication", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "InPlaceIndicator", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "LastChangedTime", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ReplacementProductList", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Condition", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "DegradationDirection", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ChangeIndication", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "InPlaceIndicator", conformance: .optional, type: .bool, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "LastChangedTime", conformance: .optional, type: .unknown, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ReplacementProductList", conformance: .mandatoryIf(.feature(1 << 2)), type: .list, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "ResetCondition", conformance: .optional),

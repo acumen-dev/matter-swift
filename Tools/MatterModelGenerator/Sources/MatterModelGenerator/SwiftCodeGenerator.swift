@@ -441,6 +441,100 @@ struct SwiftCodeGenerator {
 
     // MARK: - Cluster Spec Generation
 
+    /// Maps an XML attribute type string to a `MatterAttributeType` Swift expression.
+    ///
+    /// Handles primitive types, semantic aliases from the Matter spec §7.18.2,
+    /// and named types (enums/bitmaps/structs) defined within the cluster.
+    /// Falls back to `.unknown` for unresolvable cross-cluster references.
+    private static func matterTypeToSwift(_ typeName: String, cluster: ClusterDefinition) -> String {
+        let t = typeName.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return ".unknown" }
+
+        switch t.lowercased() {
+        // Boolean
+        case "bool":
+            return ".bool"
+
+        // Unsigned integers — primitives and semantic aliases
+        case "uint8", "enum8", "bitmap8",
+             "percent", "action_id", "status":
+            return ".uint8"
+        case "uint16", "enum16", "bitmap16",
+             "percent100ths", "unsignedtemperature",
+             "vendor", "vendor_id",
+             "group_id", "endpoint_no", "halftime":
+            return ".uint16"
+        case "uint24":
+            return ".uint24"
+        case "uint32", "elapsed", "elapsed_s", "utc", "epoch", "epoch_s",
+             "event_no", "data_ver", "cluster_id", "devtype_id",
+             "bitmap32", "namespace", "tag":
+            return ".uint32"
+        case "uint64", "node", "node_id",
+             "fabric_id", "fabric_idx",
+             "eui64", "entry_idx":
+            return ".uint64"
+
+        // Signed integers — primitives and semantic aliases
+        case "int8":
+            return ".int8"
+        case "int16",
+             "temperature", "signedtemperature", "temperaturedifference":
+            return ".int16"
+        case "int32":
+            return ".int32"
+        case "int64",
+             "amperage", "amperage_ma",
+             "energy", "energy_mwh",
+             "voltage", "voltage_mv",
+             "power", "power_mw":
+            return ".int64"
+
+        // Floating point
+        case "single":
+            return ".single"
+        case "double":
+            return ".double"
+
+        // String types
+        case "string", "char_string", "long_char_string":
+            return ".string"
+
+        // Octet string types — includes IP address types stored as byte arrays
+        case "octstr", "octet_string", "long_octet_string",
+             "ipv6adr", "ipv6pre", "ipv4adr",
+             "hwadr", "ipadr":
+            return ".octstr"
+
+        // List / array
+        case "list", "datatypelist":
+            return ".list"
+
+        default:
+            break
+        }
+
+        // Named types — resolve from this cluster's parsed data types
+        if let enumDef = cluster.enums.first(where: { $0.name == t }) {
+            let maxValue = enumDef.items.map(\.value).max() ?? 0
+            return maxValue > 255 ? ".uint16" : ".uint8"
+        }
+
+        if let bitmapDef = cluster.bitmaps.first(where: { $0.name == t }) {
+            let maxBit = bitmapDef.bitfields.map(\.bit).max() ?? 0
+            if maxBit >= 16 { return ".uint32" }
+            if maxBit >= 8 { return ".uint16" }
+            return ".uint8"
+        }
+
+        if cluster.structs.contains(where: { $0.name == t }) {
+            return ".structure"
+        }
+
+        // Cross-cluster reference or unrecognised type — skip type checking
+        return ".unknown"
+    }
+
     /// Build a feature code → bit position map for a cluster.
     private static func featureCodeToBit(for cluster: ClusterDefinition) -> [String: Int] {
         var map: [String: Int] = [:]
@@ -475,7 +569,9 @@ struct SwiftCodeGenerator {
             if seenAttrNames.contains(propName) { continue }
             seenAttrNames.insert(propName)
             let confCode = attr.conformance.toSwiftCode(featureCodeToBit: featureMap)
-            lines.append("            AttributeSpec(id: AttributeID(rawValue: 0x\(hex(attr.id))), name: \"\(attr.name)\", conformance: \(confCode)),")
+            let typeCode = matterTypeToSwift(attr.type, cluster: cluster)
+            let nullable = attr.isNullable ? "true" : "false"
+            lines.append("            AttributeSpec(id: AttributeID(rawValue: 0x\(hex(attr.id))), name: \"\(attr.name)\", conformance: \(confCode), type: \(typeCode), isNullable: \(nullable)),")
         }
         lines.append("        ],")
 

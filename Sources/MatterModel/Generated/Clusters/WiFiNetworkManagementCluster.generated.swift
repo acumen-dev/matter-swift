@@ -35,8 +35,8 @@ extension WiFiNetworkManagementCluster {
         clusterID: ClusterID(rawValue: 0x0451),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SSID", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "PassphraseSurrogate", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SSID", conformance: .mandatory, type: .octstr, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "PassphraseSurrogate", conformance: .mandatory, type: .uint64, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "NetworkPassphraseRequest", conformance: .mandatory),

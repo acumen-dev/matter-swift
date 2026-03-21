@@ -60,12 +60,12 @@ extension ElectricalEnergyMeasurementCluster {
         clusterID: ClusterID(rawValue: 0x0091),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Accuracy", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CumulativeEnergyImported", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 2)]))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CumulativeEnergyExported", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 2)]))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PeriodicEnergyImported", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 3)]))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "PeriodicEnergyExported", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 3)]))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CumulativeEnergyReset", conformance: .optionalIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Accuracy", conformance: .mandatory, type: .unknown, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CumulativeEnergyImported", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 2)])), type: .structure, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CumulativeEnergyExported", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 2)])), type: .structure, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PeriodicEnergyImported", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 3)])), type: .structure, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "PeriodicEnergyExported", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 3)])), type: .structure, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CumulativeEnergyReset", conformance: .optionalIf(.feature(1 << 2)), type: .structure, isNullable: true),
         ],
         commands: [
         ]

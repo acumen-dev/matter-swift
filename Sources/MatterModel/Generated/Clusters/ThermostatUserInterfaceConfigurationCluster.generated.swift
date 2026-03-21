@@ -49,9 +49,9 @@ extension ThermostatUserInterfaceConfigurationCluster {
         clusterID: ClusterID(rawValue: 0x0204),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureDisplayMode", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "KeypadLockout", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ScheduleProgrammingVisibility", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureDisplayMode", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "KeypadLockout", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ScheduleProgrammingVisibility", conformance: .optional, type: .uint8, isNullable: false),
         ],
         commands: [
         ]

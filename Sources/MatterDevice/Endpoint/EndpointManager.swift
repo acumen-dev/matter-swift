@@ -279,6 +279,21 @@ public final class EndpointManager: @unchecked Sendable {
                 continue
             }
 
+            // Type pre-check against spec metadata (before calling the handler)
+            if let spec = ClusterSpecRegistry.spec(for: clusterID),
+               let attrSpec = spec.attributes.first(where: { $0.id == attributeID }),
+               attrSpec.type != .unknown {
+                if case .null = write.data {
+                    if !attrSpec.isNullable {
+                        statuses.append(AttributeStatusIB(path: write.path, status: StatusIB(status: 0x87)))
+                        continue
+                    }
+                } else if !attrSpec.type.isCompatible(with: write.data) {
+                    statuses.append(AttributeStatusIB(path: write.path, status: StatusIB(status: 0x87)))
+                    continue
+                }
+            }
+
             // Validate the write
             let validation = handler.validateWrite(attributeID: attributeID, value: write.data)
             switch validation {

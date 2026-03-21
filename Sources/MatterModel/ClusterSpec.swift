@@ -37,6 +37,77 @@ public struct ClusterSpec: Sendable {
     }
 }
 
+// MARK: - Attribute Type
+
+/// The TLV-compatible type category of a Matter attribute.
+///
+/// Used for runtime type checking of attribute values against the spec.
+/// Named enum/bitmap types (e.g., `StartUpOnOffEnum`) are resolved to their
+/// underlying integer width at code-generation time.
+public enum MatterAttributeType: Sendable, Equatable {
+    case bool
+    case uint8
+    case uint16
+    case uint24
+    case uint32
+    case uint64
+    case int8
+    case int16
+    case int32
+    case int64
+    case single
+    case double
+    /// UTF-8 string.
+    case string
+    /// Octet string (raw bytes).
+    case octstr
+    /// Structure (tagged fields).
+    case structure
+    /// Array/list of elements.
+    case list
+    /// Named type that could not be resolved to a primitive. Type checking is skipped.
+    case unknown
+
+    /// Returns `true` if the given TLV element is compatible with this type.
+    ///
+    /// Compatibility is checked by TLV category — all unsigned integer widths map
+    /// to `.unsignedInt`, all signed widths to `.signedInt`, etc. Nullability is
+    /// handled separately by the caller.
+    public func isCompatible(with element: TLVElement) -> Bool {
+        switch self {
+        case .bool:
+            if case .bool = element { return true }
+            return false
+        case .uint8, .uint16, .uint24, .uint32, .uint64:
+            if case .unsignedInt = element { return true }
+            return false
+        case .int8, .int16, .int32, .int64:
+            if case .signedInt = element { return true }
+            return false
+        case .single:
+            if case .float = element { return true }
+            return false
+        case .double:
+            if case .double = element { return true }
+            return false
+        case .string:
+            if case .utf8String = element { return true }
+            return false
+        case .octstr:
+            if case .octetString = element { return true }
+            return false
+        case .structure:
+            if case .structure = element { return true }
+            return false
+        case .list:
+            if case .array = element { return true }
+            return false
+        case .unknown:
+            return true
+        }
+    }
+}
+
 // MARK: - Attribute Specification
 
 /// Spec metadata for a single cluster attribute.
@@ -51,10 +122,24 @@ public struct AttributeSpec: Sendable {
     /// The conformance rule for this attribute.
     public let conformance: SpecConformance
 
-    public init(id: AttributeID, name: String, conformance: SpecConformance) {
+    /// The TLV-compatible type of this attribute's value.
+    public let type: MatterAttributeType
+
+    /// Whether this attribute accepts a null value.
+    public let isNullable: Bool
+
+    public init(
+        id: AttributeID,
+        name: String,
+        conformance: SpecConformance,
+        type: MatterAttributeType = .unknown,
+        isNullable: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.conformance = conformance
+        self.type = type
+        self.isNullable = isNullable
     }
 }
 

@@ -35,8 +35,8 @@ extension LaundryDryerControlsCluster {
         clusterID: ClusterID(rawValue: 0x004A),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedDrynessLevels", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SelectedDrynessLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedDrynessLevels", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SelectedDrynessLevel", conformance: .mandatory, type: .uint8, isNullable: true),
         ],
         commands: [
         ]

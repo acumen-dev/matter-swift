@@ -66,12 +66,12 @@ extension OperationalStateCluster {
         clusterID: ClusterID(rawValue: 0x0060),
         revision: 3,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PhaseList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentPhase", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CountdownTime", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "OperationalStateList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "OperationalState", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OperationalError", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PhaseList", conformance: .mandatory, type: .list, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentPhase", conformance: .mandatory, type: .uint8, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CountdownTime", conformance: .optional, type: .unknown, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "OperationalStateList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "OperationalState", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OperationalError", conformance: .mandatory, type: .structure, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "Pause", conformance: .optional),

@@ -32,10 +32,10 @@ extension TemperatureMeasurementCluster {
         clusterID: ClusterID(rawValue: 0x0402),
         revision: 4,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Tolerance", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatory, type: .int16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatory, type: .int16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatory, type: .int16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Tolerance", conformance: .optional, type: .uint16, isNullable: false),
         ],
         commands: [
         ]

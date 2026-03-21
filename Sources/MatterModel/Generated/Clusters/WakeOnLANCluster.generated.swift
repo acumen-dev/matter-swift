@@ -28,8 +28,8 @@ extension WakeOnLANCluster {
         clusterID: ClusterID(rawValue: 0x0503),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MACAddress", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "LinkLocalAddress", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MACAddress", conformance: .optional, type: .string, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "LinkLocalAddress", conformance: .optional, type: .octstr, isNullable: false),
         ],
         commands: [
         ]

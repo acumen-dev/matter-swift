@@ -58,7 +58,7 @@ extension GroupsCluster {
         clusterID: ClusterID(rawValue: 0x0004),
         revision: 4,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NameSupport", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NameSupport", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddGroup", conformance: .mandatory),

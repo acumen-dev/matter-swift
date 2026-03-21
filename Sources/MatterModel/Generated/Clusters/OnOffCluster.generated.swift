@@ -91,11 +91,11 @@ extension OnOffCluster {
         clusterID: ClusterID(rawValue: 0x0006),
         revision: 6,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OnOff", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x4000), name: "GlobalSceneControl", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x4001), name: "OnTime", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x4002), name: "OffWaitTime", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x4003), name: "StartUpOnOff", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OnOff", conformance: .mandatory, type: .bool, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x4000), name: "GlobalSceneControl", conformance: .mandatoryIf(.feature(1 << 0)), type: .bool, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x4001), name: "OnTime", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint16, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x4002), name: "OffWaitTime", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint16, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x4003), name: "StartUpOnOff", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "Off", conformance: .mandatory),

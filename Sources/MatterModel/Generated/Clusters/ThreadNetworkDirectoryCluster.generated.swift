@@ -41,9 +41,9 @@ extension ThreadNetworkDirectoryCluster {
         clusterID: ClusterID(rawValue: 0x0453),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PreferredExtendedPanID", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ThreadNetworks", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadNetworkTableSize", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PreferredExtendedPanID", conformance: .mandatory, type: .octstr, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ThreadNetworks", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadNetworkTableSize", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddNetwork", conformance: .mandatory),

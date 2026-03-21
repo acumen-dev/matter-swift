@@ -61,9 +61,9 @@ extension TimeFormatLocalizationCluster {
         clusterID: ClusterID(rawValue: 0x002C),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "HourFormat", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveCalendarType", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedCalendarTypes", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "HourFormat", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveCalendarType", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedCalendarTypes", conformance: .mandatoryIf(.feature(1 << 0)), type: .list, isNullable: false),
         ],
         commands: [
         ]

@@ -41,10 +41,10 @@ extension DishwasherModeCluster {
         clusterID: ClusterID(rawValue: 0x0059),
         revision: 3,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedModes", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentMode", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "StartUpMode", conformance: .disallowed),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "OnMode", conformance: .disallowed),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedModes", conformance: .mandatory, type: .unknown, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentMode", conformance: .mandatory, type: .unknown, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "StartUpMode", conformance: .disallowed, type: .unknown, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "OnMode", conformance: .disallowed, type: .unknown, isNullable: false),
         ],
         commands: [
         ]

@@ -57,8 +57,8 @@ extension ApplicationLauncherCluster {
         clusterID: ClusterID(rawValue: 0x050C),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CatalogList", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentApp", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CatalogList", conformance: .mandatoryIf(.feature(1 << 0)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentApp", conformance: .optional, type: .structure, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "LaunchApp", conformance: .mandatory),

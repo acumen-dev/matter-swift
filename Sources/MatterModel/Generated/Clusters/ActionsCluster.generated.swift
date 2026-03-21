@@ -113,9 +113,9 @@ extension ActionsCluster {
         clusterID: ClusterID(rawValue: 0x0025),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ActionList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "EndpointLists", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SetupURL", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ActionList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "EndpointLists", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SetupURL", conformance: .optional, type: .string, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "InstantAction", conformance: .optional),

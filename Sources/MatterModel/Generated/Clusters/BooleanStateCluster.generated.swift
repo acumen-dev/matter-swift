@@ -33,7 +33,7 @@ extension BooleanStateCluster {
         clusterID: ClusterID(rawValue: 0x0045),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "StateValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "StateValue", conformance: .mandatory, type: .bool, isNullable: false),
         ],
         commands: [
         ]

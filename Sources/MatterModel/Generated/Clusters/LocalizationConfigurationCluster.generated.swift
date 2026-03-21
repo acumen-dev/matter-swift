@@ -28,8 +28,8 @@ extension LocalizationConfigurationCluster {
         clusterID: ClusterID(rawValue: 0x002B),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ActiveLocale", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedLocales", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ActiveLocale", conformance: .mandatory, type: .string, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedLocales", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
         ]

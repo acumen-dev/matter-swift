@@ -32,10 +32,10 @@ extension RelativeHumidityMeasurementCluster {
         clusterID: ClusterID(rawValue: 0x0405),
         revision: 3,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Tolerance", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatory, type: .uint16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatory, type: .uint16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatory, type: .uint16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Tolerance", conformance: .optional, type: .uint16, isNullable: false),
         ],
         commands: [
         ]

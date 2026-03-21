@@ -52,12 +52,12 @@ extension ModeSelectCluster {
         clusterID: ClusterID(rawValue: 0x0050),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Description", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "StandardNamespace", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedModes", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentMode", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "StartUpMode", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OnMode", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Description", conformance: .mandatory, type: .string, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "StandardNamespace", conformance: .mandatory, type: .uint16, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedModes", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentMode", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "StartUpMode", conformance: .optional, type: .uint8, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OnMode", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeToMode", conformance: .mandatory),

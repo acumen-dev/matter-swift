@@ -87,9 +87,9 @@ extension ChannelCluster {
         clusterID: ClusterID(rawValue: 0x0504),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ChannelList", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Lineup", conformance: .mandatoryIf(.feature(1 << 1))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentChannel", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ChannelList", conformance: .mandatoryIf(.feature(1 << 0)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Lineup", conformance: .mandatoryIf(.feature(1 << 1)), type: .structure, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentChannel", conformance: .optional, type: .structure, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeChannel", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),

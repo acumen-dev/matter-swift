@@ -65,12 +65,12 @@ extension ServiceAreaCluster {
         clusterID: ClusterID(rawValue: 0x0150),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedAreas", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedMaps", conformance: .mandatoryIf(.feature(1 << 2))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SelectedAreas", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentArea", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "EstimatedEndTime", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "Progress", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedAreas", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedMaps", conformance: .mandatoryIf(.feature(1 << 2)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SelectedAreas", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentArea", conformance: .optional, type: .uint32, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "EstimatedEndTime", conformance: .optional, type: .unknown, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "Progress", conformance: .mandatoryIf(.feature(1 << 1)), type: .list, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectAreas", conformance: .mandatory),

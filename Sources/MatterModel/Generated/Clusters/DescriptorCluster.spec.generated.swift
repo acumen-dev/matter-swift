@@ -13,11 +13,11 @@ extension DescriptorCluster {
         clusterID: ClusterID(rawValue: 0x001D),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "DeviceTypeList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ServerList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ClientList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PartsList", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TagList", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "DeviceTypeList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ServerList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ClientList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PartsList", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TagList", conformance: .mandatoryIf(.feature(1 << 0)), type: .list, isNullable: false),
         ],
         commands: [
         ]

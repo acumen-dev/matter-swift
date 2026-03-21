@@ -46,13 +46,15 @@ public enum ClusterValidator {
         }
 
         let featureMap = handler.featureMap
-        let providedAttributes = Set(handler.initialAttributes().map { $0.0 })
+        let initialAttrs = handler.initialAttributes()
+        let providedAttributes = Set(initialAttrs.map { $0.0 })
+        let providedValues = Dictionary(initialAttrs.map { ($0.0, $0.1) }, uniquingKeysWith: { first, _ in first })
         let providedCommands = Set(handler.acceptedCommands())
 
         var errors: [String] = []
-        let warnings: [String] = []
+        var warnings: [String] = []
 
-        // Check attributes
+        // Check attributes: presence and type
         for attrSpec in spec.attributes {
             // Skip global attributes — they are auto-populated by EndpointManager
             if attrSpec.id.rawValue >= 0xFFF8 { continue }
@@ -64,6 +66,23 @@ public enum ClusterValidator {
                         "\"\(attrSpec.name)\" (0x\(hex(attrSpec.id.rawValue)))"
                     )
                 }
+            }
+
+            // Type check the value if provided
+            guard attrSpec.type != .unknown, let value = providedValues[attrSpec.id] else { continue }
+
+            if case .null = value {
+                if !attrSpec.isNullable {
+                    errors.append(
+                        "Cluster 0x\(hex(clusterID.rawValue)) attribute \"\(attrSpec.name)\" " +
+                        "(0x\(hex(attrSpec.id.rawValue))) is non-nullable but has null value"
+                    )
+                }
+            } else if !attrSpec.type.isCompatible(with: value) {
+                errors.append(
+                    "Cluster 0x\(hex(clusterID.rawValue)) attribute \"\(attrSpec.name)\" " +
+                    "(0x\(hex(attrSpec.id.rawValue))) type mismatch: expected \(attrSpec.type)"
+                )
             }
         }
 

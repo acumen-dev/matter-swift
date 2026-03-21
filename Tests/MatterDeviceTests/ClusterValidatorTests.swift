@@ -172,4 +172,85 @@ struct ClusterValidatorTests {
         let unknownSpec = ClusterSpecRegistry.spec(for: ClusterID(rawValue: 0xFFFF9999))
         #expect(unknownSpec == nil)
     }
+
+    // MARK: - Type Enforcement Tests
+
+    @Test("Bool attribute with wrong TLV type produces error")
+    func boolAttrWithWrongType() {
+        // OnOff attribute (0x0000) is type bool — giving it an unsignedInt is a type error
+        let handler = TestHandler(
+            clusterID: .onOff,
+            attributes: [
+                (OnOffCluster.Attribute.onOff, .unsignedInt(0)),  // wrong: should be .bool
+            ],
+            commands: [
+                OnOffCluster.Command.off,
+                OnOffCluster.Command.on,
+                OnOffCluster.Command.toggle,
+            ]
+        )
+        let result = ClusterValidator.validate(handler: handler)
+        #expect(!result.isValid)
+        #expect(result.errors.contains { $0.contains("OnOff") && $0.contains("type mismatch") })
+    }
+
+    @Test("Nullable attribute with null value produces no error")
+    func nullableAttrWithNullValue() {
+        // StartUpOnOff (0x4003) is nullable — .null should be accepted
+        let handler = TestHandler(
+            clusterID: .onOff,
+            featureMap: 1 << 0,  // LT feature — makes StartUpOnOff mandatory
+            attributes: [
+                (OnOffCluster.Attribute.onOff, .bool(false)),
+                (OnOffCluster.Attribute.globalSceneControl, .bool(true)),
+                (OnOffCluster.Attribute.onTime, .unsignedInt(0)),
+                (OnOffCluster.Attribute.offWaitTime, .unsignedInt(0)),
+                (OnOffCluster.Attribute.startUpOnOff, .null),  // null is valid — attr is nullable
+            ],
+            commands: [
+                OnOffCluster.Command.off,
+                OnOffCluster.Command.on,
+                OnOffCluster.Command.toggle,
+                OnOffCluster.Command.offWithEffect,
+                OnOffCluster.Command.onWithRecallGlobalScene,
+                OnOffCluster.Command.onWithTimedOff,
+            ]
+        )
+        let result = ClusterValidator.validate(handler: handler)
+        #expect(result.isValid, "null value for nullable attribute should not produce errors")
+    }
+
+    @Test("Non-nullable attribute with null value produces error")
+    func nonNullableAttrWithNullValue() {
+        // OnOff (0x0000) is NOT nullable — a null value should be an error
+        let handler = TestHandler(
+            clusterID: .onOff,
+            attributes: [
+                (OnOffCluster.Attribute.onOff, .null),  // wrong: not nullable
+            ],
+            commands: [
+                OnOffCluster.Command.off,
+                OnOffCluster.Command.on,
+                OnOffCluster.Command.toggle,
+            ]
+        )
+        let result = ClusterValidator.validate(handler: handler)
+        #expect(!result.isValid)
+        #expect(result.errors.contains { $0.contains("OnOff") && $0.contains("non-nullable") })
+    }
+
+    @Test("Unknown type attribute accepts any TLV value")
+    func unknownTypeAttributeAcceptsAny() {
+        // Use a vendor-specific cluster where the validator skips entirely
+        let handler = TestHandler(
+            clusterID: ClusterID(rawValue: 0xFFFF1234),
+            attributes: [
+                (AttributeID(rawValue: 0x0000), .unsignedInt(42)),
+                (AttributeID(rawValue: 0x0001), .bool(true)),
+                (AttributeID(rawValue: 0x0002), .null),
+            ]
+        )
+        let result = ClusterValidator.validate(handler: handler)
+        #expect(result.isValid, "vendor-specific cluster should skip all type checks")
+    }
 }

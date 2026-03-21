@@ -51,7 +51,7 @@ extension AirQualityCluster {
         clusterID: ClusterID(rawValue: 0x005B),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AirQuality", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AirQuality", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
         ]

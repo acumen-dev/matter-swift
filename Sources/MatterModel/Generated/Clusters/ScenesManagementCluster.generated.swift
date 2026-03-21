@@ -66,9 +66,9 @@ extension ScenesManagementCluster {
         clusterID: ClusterID(rawValue: 0x0062),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "LastConfiguredBy", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SceneTableSize", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "FabricSceneInfo", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "LastConfiguredBy", conformance: .optional, type: .unknown, isNullable: true),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SceneTableSize", conformance: .mandatory, type: .uint16, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "FabricSceneInfo", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddScene", conformance: .mandatory),

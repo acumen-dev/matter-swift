@@ -52,11 +52,11 @@ extension EnergyPreferenceCluster {
         clusterID: ClusterID(rawValue: 0x009B),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "EnergyBalances", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentEnergyBalance", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "EnergyPriorities", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "LowPowerModeSensitivities", conformance: .mandatoryIf(.feature(1 << 1))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "CurrentLowPowerModeSensitivity", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "EnergyBalances", conformance: .mandatoryIf(.feature(1 << 0)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentEnergyBalance", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "EnergyPriorities", conformance: .mandatoryIf(.feature(1 << 0)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "LowPowerModeSensitivities", conformance: .mandatoryIf(.feature(1 << 1)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "CurrentLowPowerModeSensitivity", conformance: .mandatoryIf(.feature(1 << 1)), type: .uint8, isNullable: false),
         ],
         commands: [
         ]

@@ -43,8 +43,8 @@ extension PowerTopologyCluster {
         clusterID: ClusterID(rawValue: 0x009C),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AvailableEndpoints", conformance: .mandatoryIf(.feature(1 << 2))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveEndpoints", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AvailableEndpoints", conformance: .mandatoryIf(.feature(1 << 2)), type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveEndpoints", conformance: .mandatoryIf(.feature(1 << 3)), type: .list, isNullable: false),
         ],
         commands: [
         ]

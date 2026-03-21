@@ -33,7 +33,7 @@ extension ValidProxiesCluster {
         clusterID: ClusterID(rawValue: 0x0044),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ValidProxyList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ValidProxyList", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetValidProxiesRequest", conformance: .mandatory),

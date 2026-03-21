@@ -80,12 +80,12 @@ extension WaterHeaterManagementCluster {
         clusterID: ClusterID(rawValue: 0x0094),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "HeaterTypes", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "HeatDemand", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "TankVolume", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "EstimatedHeatRequired", conformance: .mandatoryIf(.feature(1 << 0))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TankPercentage", conformance: .mandatoryIf(.feature(1 << 1))),
-            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "BoostState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "HeaterTypes", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "HeatDemand", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "TankVolume", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint16, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "EstimatedHeatRequired", conformance: .mandatoryIf(.feature(1 << 0)), type: .unknown, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TankPercentage", conformance: .mandatoryIf(.feature(1 << 1)), type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "BoostState", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "Boost", conformance: .mandatory),

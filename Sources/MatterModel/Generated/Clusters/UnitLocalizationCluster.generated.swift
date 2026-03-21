@@ -41,7 +41,7 @@ extension UnitLocalizationCluster {
         clusterID: ClusterID(rawValue: 0x002D),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureUnit", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureUnit", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: false),
         ],
         commands: [
         ]

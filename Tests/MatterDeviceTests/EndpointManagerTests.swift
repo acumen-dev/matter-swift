@@ -202,6 +202,45 @@ struct EndpointManagerTests {
         #expect(statuses[0].status == .unsupportedWrite)
     }
 
+    @Test("Write with wrong TLV type returns constraintError")
+    func writeWrongTLVType() {
+        let (manager, _) = makeManager()
+        let ep = EndpointID(rawValue: 3)
+        manager.addEndpoint(makeOnOffEndpoint(id: ep))
+
+        // OnOff is a bool attribute — writing unsignedInt is a type violation
+        let statuses = manager.writeAttributes([
+            AttributeDataIB(
+                dataVersion: DataVersion(rawValue: 0),
+                path: AttributePath(endpointID: ep, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff),
+                data: .unsignedInt(1)  // wrong type — should be .bool
+            )
+        ])
+
+        #expect(statuses.count == 1)
+        #expect(statuses[0].status.status == 0x87, "Expected constraintError (0x87)")
+    }
+
+    @Test("Write non-null value with correct TLV type succeeds")
+    func writeCorrectTLVType() {
+        let (manager, store) = makeManager()
+        let ep = EndpointID(rawValue: 3)
+        manager.addEndpoint(makeOnOffEndpoint(id: ep))
+
+        let statuses = manager.writeAttributes([
+            AttributeDataIB(
+                dataVersion: DataVersion(rawValue: 0),
+                path: AttributePath(endpointID: ep, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff),
+                data: .bool(true)
+            )
+        ])
+
+        #expect(statuses.count == 1)
+        #expect(statuses[0].status == .success)
+        let value = store.get(endpoint: ep, cluster: .onOff, attribute: OnOffCluster.Attribute.onOff)
+        #expect(value == .bool(true))
+    }
+
     @Test("Write to non-existent endpoint returns unsupported endpoint")
     func writeNonExistentEndpoint() {
         let (manager, _) = makeManager()

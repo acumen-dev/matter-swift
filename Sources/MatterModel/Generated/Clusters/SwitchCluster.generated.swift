@@ -68,9 +68,9 @@ extension SwitchCluster {
         clusterID: ClusterID(rawValue: 0x003B),
         revision: 2,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NumberOfPositions", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentPosition", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MultiPressMax", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NumberOfPositions", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentPosition", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MultiPressMax", conformance: .mandatoryIf(.feature(1 << 4)), type: .uint8, isNullable: false),
         ],
         commands: [
         ]

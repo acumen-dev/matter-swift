@@ -55,10 +55,10 @@ extension SoftwareDiagnosticsCluster {
         clusterID: ClusterID(rawValue: 0x0034),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ThreadMetrics", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentHeapFree", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentHeapUsed", conformance: .optional),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentHeapHighWatermark", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ThreadMetrics", conformance: .optional, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentHeapFree", conformance: .optional, type: .uint64, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentHeapUsed", conformance: .optional, type: .uint64, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentHeapHighWatermark", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint64, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "ResetWatermarks", conformance: .mandatoryIf(.feature(1 << 0))),

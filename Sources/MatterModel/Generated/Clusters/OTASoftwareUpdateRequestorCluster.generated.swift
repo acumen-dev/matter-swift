@@ -76,10 +76,10 @@ extension OTASoftwareUpdateRequestorCluster {
         clusterID: ClusterID(rawValue: 0x002A),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "DefaultOTAProviders", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "UpdatePossible", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "UpdateState", conformance: .mandatory),
-            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "UpdateStateProgress", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "DefaultOTAProviders", conformance: .mandatory, type: .list, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "UpdatePossible", conformance: .mandatory, type: .bool, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "UpdateState", conformance: .mandatory, type: .uint8, isNullable: false),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "UpdateStateProgress", conformance: .mandatory, type: .uint8, isNullable: true),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "AnnounceOTAProvider", conformance: .optional),

@@ -48,7 +48,7 @@ extension CommissionerControlCluster {
         clusterID: ClusterID(rawValue: 0x0751),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedDeviceCategories", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedDeviceCategories", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "RequestCommissioningApproval", conformance: .mandatory),

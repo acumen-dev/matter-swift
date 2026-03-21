@@ -26,7 +26,7 @@ extension PowerSourceConfigurationCluster {
         clusterID: ClusterID(rawValue: 0x002E),
         revision: 1,
         attributes: [
-            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Sources", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Sources", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
         ]
