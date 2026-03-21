@@ -38,3 +38,25 @@ public enum ApplicationBasicCluster {
         case activeVisibleNotFocus = 3
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ApplicationBasicCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x050D),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "VendorName", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "VendorID", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ApplicationName", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "ProductID", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "Application", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "Status", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "ApplicationVersion", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "AllowedVendorList", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

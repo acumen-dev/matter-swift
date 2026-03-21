@@ -56,3 +56,23 @@ public enum MediaInputCluster {
         case other = 11
     }
 }
+
+// MARK: - Spec Metadata
+
+extension MediaInputCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0507),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "InputList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentInput", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectInput", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ShowInputStatus", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "HideInputStatus", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "RenameInput", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

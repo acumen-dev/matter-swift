@@ -81,3 +81,28 @@ public enum ConcentrationMeasurementClustersCluster {
         case bqM3 = 7
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ConcentrationMeasurementClustersCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x040C),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PeakMeasuredValue", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "PeakMeasuredValueWindow", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "AverageMeasuredValue", conformance: .mandatoryIf(.feature(1 << 5))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "AverageMeasuredValueWindow", conformance: .mandatoryIf(.feature(1 << 5))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "Uncertainty", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "MeasurementUnit", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "MeasurementMedium", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "LevelValue", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+        ]
+    )
+}

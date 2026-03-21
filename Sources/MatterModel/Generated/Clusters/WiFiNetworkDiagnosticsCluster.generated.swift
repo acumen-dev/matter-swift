@@ -101,3 +101,31 @@ public enum WiFiNetworkDiagnosticsCluster {
         case ah = 6
     }
 }
+
+// MARK: - Spec Metadata
+
+extension WiFiNetworkDiagnosticsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0036),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "BSSID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SecurityType", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "WiFiVersion", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "ChannelNumber", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "RSSI", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "BeaconLostCount", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "BeaconRxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "PacketMulticastRxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "PacketMulticastTxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "PacketUnicastRxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "PacketUnicastTxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "CurrentMaxRate", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "OverrunCount", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ResetCounts", conformance: .mandatoryIf(.feature(1 << 1))),
+        ]
+    )
+}

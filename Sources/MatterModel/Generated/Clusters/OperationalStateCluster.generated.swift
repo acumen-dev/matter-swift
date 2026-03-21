@@ -57,3 +57,27 @@ public enum OperationalStateCluster {
         case generalStates = 0
     }
 }
+
+// MARK: - Spec Metadata
+
+extension OperationalStateCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0060),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PhaseList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentPhase", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CountdownTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "OperationalStateList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "OperationalState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OperationalError", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Pause", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Stop", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Start", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Resume", conformance: .optional),
+        ]
+    )
+}

@@ -32,3 +32,18 @@ public enum RefrigeratorAlarmCluster {
         public static let doorOpen = AlarmBitmap(rawValue: 1 << 0)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension RefrigeratorAlarmCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0057),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ModifyEnabledAlarms", conformance: .disallowed),
+        ]
+    )
+}

@@ -44,3 +44,23 @@ public enum RVCOperationalStateCluster {
         case docked = 66
     }
 }
+
+// MARK: - Spec Metadata
+
+extension RVCOperationalStateCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0061),
+        revision: 2,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Pause", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Stop", conformance: .disallowed),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Start", conformance: .disallowed),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Resume", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "OperationalCommandResponse", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0080), name: "GoHome", conformance: .optional),
+        ]
+    )
+}

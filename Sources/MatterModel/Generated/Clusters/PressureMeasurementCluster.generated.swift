@@ -42,3 +42,26 @@ public enum PressureMeasurementCluster {
         public static let scale = AttributeID(rawValue: 0x0014)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension PressureMeasurementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0403),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Tolerance", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "ScaledValue", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "MinScaledValue", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "MaxScaledValue", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0013), name: "ScaledTolerance", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0014), name: "Scale", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+        ]
+    )
+}

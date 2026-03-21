@@ -55,3 +55,28 @@ public enum MicrowaveOvenControlCluster {
         public static let addMoreTime = CommandID(rawValue: 0x0001)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension MicrowaveOvenControlCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x005F),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CookTime", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MaxCookTime", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "PowerSetting", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "MinPower", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "MaxPower", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "PowerStep", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "SupportedWatts", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "SelectedWattIndex", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "WattRating", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetCookingParameters", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "AddMoreTime", conformance: .optional),
+        ]
+    )
+}

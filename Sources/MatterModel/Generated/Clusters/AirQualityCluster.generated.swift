@@ -42,3 +42,18 @@ public enum AirQualityCluster {
         case extremelyPoor = 6
     }
 }
+
+// MARK: - Spec Metadata
+
+extension AirQualityCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x005B),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AirQuality", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

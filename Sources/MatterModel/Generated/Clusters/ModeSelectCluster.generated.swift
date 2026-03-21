@@ -43,3 +43,24 @@ public enum ModeSelectCluster {
         public static let changeToMode = CommandID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ModeSelectCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0050),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Description", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "StandardNamespace", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedModes", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentMode", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "StartUpMode", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OnMode", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeToMode", conformance: .mandatory),
+        ]
+    )
+}

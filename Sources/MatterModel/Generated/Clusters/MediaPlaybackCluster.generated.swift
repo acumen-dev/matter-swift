@@ -131,3 +131,42 @@ public enum MediaPlaybackCluster {
         case seekOutOfRange = 5
     }
 }
+
+// MARK: - Spec Metadata
+
+extension MediaPlaybackCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0506),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CurrentState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "StartTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "Duration", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "SampledPosition", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "PlaybackSpeed", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "SeekRangeEnd", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "SeekRangeStart", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "ActiveAudioTrack", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "AvailableAudioTracks", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "ActiveTextTrack", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "AvailableTextTracks", conformance: .mandatoryIf(.feature(1 << 2))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Play", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Pause", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Stop", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StartOver", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "Previous", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "Next", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "Rewind", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "FastForward", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "SkipForward", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SkipBackward", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "Seek", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "ActivateAudioTrack", conformance: .mandatoryIf(.feature(1 << 3))),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "ActivateTextTrack", conformance: .mandatoryIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x000E), name: "DeactivateTextTrack", conformance: .mandatoryIf(.feature(1 << 2))),
+        ]
+    )
+}

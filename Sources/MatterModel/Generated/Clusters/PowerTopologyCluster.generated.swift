@@ -34,3 +34,19 @@ public enum PowerTopologyCluster {
         public static let activeEndpoints = AttributeID(rawValue: 0x0001)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension PowerTopologyCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x009C),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AvailableEndpoints", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveEndpoints", conformance: .mandatoryIf(.feature(1 << 3))),
+        ],
+        commands: [
+        ]
+    )
+}

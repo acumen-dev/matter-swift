@@ -40,3 +40,20 @@ public enum ThermostatUserInterfaceConfigurationCluster {
         case fahrenheit = 1
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ThermostatUserInterfaceConfigurationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0204),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureDisplayMode", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "KeypadLockout", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ScheduleProgrammingVisibility", conformance: .optional),
+        ],
+        commands: [
+        ]
+    )
+}

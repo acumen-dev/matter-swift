@@ -36,3 +36,18 @@ public enum DiagnosticLogsCluster {
         case bdx = 1
     }
 }
+
+// MARK: - Spec Metadata
+
+extension DiagnosticLogsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0032),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "RetrieveLogsRequest", conformance: .mandatory),
+        ]
+    )
+}

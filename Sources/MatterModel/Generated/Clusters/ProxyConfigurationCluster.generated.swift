@@ -17,3 +17,18 @@ public enum ProxyConfigurationCluster {
         public static let configurationList = AttributeID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ProxyConfigurationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0042),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ConfigurationList", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

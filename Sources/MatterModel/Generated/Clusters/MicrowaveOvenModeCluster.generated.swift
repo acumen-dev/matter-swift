@@ -41,3 +41,23 @@ public enum MicrowaveOvenModeCluster {
         public static let changeToModeResponse = CommandID(rawValue: 0x0001)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension MicrowaveOvenModeCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x005E),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedModes", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentMode", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "StartUpMode", conformance: .disallowed),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "OnMode", conformance: .disallowed),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeToMode", conformance: .disallowed),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ChangeToModeResponse", conformance: .disallowed),
+        ]
+    )
+}

@@ -283,3 +283,49 @@ public enum PowerSourceCluster {
         case underVoltage = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension PowerSourceCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x002F),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Status", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Order", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "Description", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "WiredAssessedInputVoltage", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "WiredAssessedInputFrequency", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "WiredCurrentType", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "WiredAssessedCurrent", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "WiredNominalVoltage", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "WiredMaximumCurrent", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "WiredPresent", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "ActiveWiredFaults", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "BatVoltage", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "BatPercentRemaining", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000D), name: "BatTimeRemaining", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000E), name: "BatChargeLevel", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000F), name: "BatReplacementNeeded", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "BatReplaceability", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "BatPresent", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "ActiveBatFaults", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0013), name: "BatReplacementDescription", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0014), name: "BatCommonDesignation", conformance: .optionalIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0015), name: "BatANSIDesignation", conformance: .optionalIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0016), name: "BatIECDesignation", conformance: .optionalIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0017), name: "BatApprovedChemistry", conformance: .optionalIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0018), name: "BatCapacity", conformance: .optionalIf(.or([.feature(1 << 3), .feature(1 << 2)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0019), name: "BatQuantity", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x001A), name: "BatChargeState", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x001B), name: "BatTimeToFullCharge", conformance: .optionalIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x001C), name: "BatFunctionalWhileCharging", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x001D), name: "BatChargingCurrent", conformance: .optionalIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x001E), name: "ActiveBatChargeFaults", conformance: .optionalIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x001F), name: "EndpointList", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

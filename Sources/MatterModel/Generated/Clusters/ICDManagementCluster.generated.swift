@@ -88,3 +88,30 @@ public enum ICDManagementCluster {
         public static let appDefinedButton = UserActiveModeTriggerBitmap(rawValue: 1 << 16)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ICDManagementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0046),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "IdleModeDuration", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveModeDuration", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ActiveModeThreshold", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "RegisteredClients", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "ICDCounter", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ClientsSupportedPerFabric", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "UserActiveModeTriggerHint", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "UserActiveModeTriggerInstruction", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "OperatingMode", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "MaximumCheckInBackoff", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "RegisterClient", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "UnregisterClient", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StayActiveRequest", conformance: .optionalIf(.feature(1 << 2))),
+        ]
+    )
+}

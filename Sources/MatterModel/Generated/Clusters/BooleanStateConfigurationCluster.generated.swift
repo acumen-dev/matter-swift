@@ -77,3 +77,27 @@ public enum BooleanStateConfigurationCluster {
         public static let generalFault = SensorFaultBitmap(rawValue: 1 << 0)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension BooleanStateConfigurationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0080),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CurrentSensitivityLevel", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedSensitivityLevels", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "DefaultSensitivityLevel", conformance: .optionalIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "AlarmsActive", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "AlarmsSuppressed", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "AlarmsEnabled", conformance: .optionalIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "AlarmsSupported", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "SensorFault", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SuppressAlarm", conformance: .mandatoryIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "EnableDisableAlarm", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+        ]
+    )
+}

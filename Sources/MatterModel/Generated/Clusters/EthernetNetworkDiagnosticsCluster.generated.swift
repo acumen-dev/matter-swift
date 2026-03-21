@@ -64,3 +64,27 @@ public enum EthernetNetworkDiagnosticsCluster {
         case rate400G = 9
     }
 }
+
+// MARK: - Spec Metadata
+
+extension EthernetNetworkDiagnosticsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0037),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PHYRate", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "FullDuplex", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "PacketRxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PacketTxCount", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "TxErrCount", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CollisionCount", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "OverrunCount", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "CarrierDetect", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "TimeSinceReset", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ResetCounts", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+        ]
+    )
+}

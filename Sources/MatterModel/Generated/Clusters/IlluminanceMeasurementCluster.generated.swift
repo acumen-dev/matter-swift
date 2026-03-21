@@ -30,3 +30,22 @@ public enum IlluminanceMeasurementCluster {
         case cmos = 1
     }
 }
+
+// MARK: - Spec Metadata
+
+extension IlluminanceMeasurementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0400),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MeasuredValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinMeasuredValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxMeasuredValue", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Tolerance", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "LightSensorType", conformance: .optional),
+        ],
+        commands: [
+        ]
+    )
+}

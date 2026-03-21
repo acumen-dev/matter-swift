@@ -121,3 +121,35 @@ public enum TimeSynchronizationCluster {
         case none = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension TimeSynchronizationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0038),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "UTCTime", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Granularity", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "TimeSource", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "TrustedTimeSource", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "DefaultNTP", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "TimeZone", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "DSTOffset", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "LocalTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "TimeZoneDatabase", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "NTPServerAvailable", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "TimeZoneListMaxSize", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "DSTOffsetListMaxSize", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "SupportsDNSResolve", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetUTCTime", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "SetTrustedTimeSource", conformance: .mandatoryIf(.feature(1 << 3))),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "SetTimeZone", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "SetDSTOffset", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetDefaultNTP", conformance: .mandatoryIf(.feature(1 << 1))),
+        ]
+    )
+}

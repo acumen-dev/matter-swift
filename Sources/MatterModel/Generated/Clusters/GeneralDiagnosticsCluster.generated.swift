@@ -117,3 +117,30 @@ public enum GeneralDiagnosticsCluster {
         case ethernetFault = 6
     }
 }
+
+// MARK: - Spec Metadata
+
+extension GeneralDiagnosticsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0033),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NetworkInterfaces", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "RebootCount", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "UpTime", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "TotalOperationalHours", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "BootReason", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ActiveHardwareFaults", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "ActiveRadioFaults", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "ActiveNetworkFaults", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "TestEventTriggersEnabled", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "DoNotUse", conformance: .disallowed),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "TestEventTrigger", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "TimeSnapshot", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "PayloadTestRequest", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

@@ -46,3 +46,22 @@ public enum SoftwareDiagnosticsCluster {
         public static let softwareFault = EventID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension SoftwareDiagnosticsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0034),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ThreadMetrics", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentHeapFree", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentHeapUsed", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentHeapHighWatermark", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ResetWatermarks", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

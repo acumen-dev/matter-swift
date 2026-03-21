@@ -57,3 +57,28 @@ public enum ScenesManagementCluster {
         public static let copyAllScenes = CopyModeBitmap(rawValue: 1 << 0)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ScenesManagementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0062),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "LastConfiguredBy", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SceneTableSize", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "FabricSceneInfo", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddScene", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ViewScene", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "RemoveScene", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "RemoveAllScenes", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "StoreScene", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "RecallScene", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "GetSceneMembership", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0040), name: "CopyScene", conformance: .optional),
+        ]
+    )
+}

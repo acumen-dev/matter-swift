@@ -84,3 +84,30 @@ public enum ValveConfigurationAndControlCluster {
         public static let currentExceeded = ValveFaultBitmap(rawValue: 1 << 5)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ValveConfigurationAndControlCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0081),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OpenDuration", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "DefaultOpenDuration", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "AutoCloseTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "RemainingDuration", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "CurrentState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "TargetState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "CurrentLevel", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "TargetLevel", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "DefaultOpenLevel", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "ValveFault", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "LevelStep", conformance: .optionalIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Open", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Close", conformance: .mandatory),
+        ]
+    )
+}

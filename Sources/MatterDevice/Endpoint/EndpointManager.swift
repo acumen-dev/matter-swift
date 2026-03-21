@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterModel
 import MatterProtocol
@@ -17,6 +18,7 @@ public final class EndpointManager: @unchecked Sendable {
     private var endpoints: [EndpointID: EndpointConfig] = [:]
     private let store: AttributeStore
     private var nextDynamicEndpointRaw: UInt16 = 3  // 0=root, 1=aggregator, 2=reserved
+    private let logger = Logger(label: "matter.endpoint-manager")
 
     /// The aggregator endpoint ID (manages PartsList of dynamic endpoints).
     public static let aggregatorEndpoint = EndpointID(rawValue: 1)
@@ -63,6 +65,14 @@ public final class EndpointManager: @unchecked Sendable {
 
             // Auto-populate mandatory global attributes (Matter Core Spec §7.13)
             populateGlobalAttributes(for: handler, on: config.endpointID)
+        }
+
+        // Validate handlers against cluster specs
+        for handler in config.clusterHandlers {
+            let result = ClusterValidator.validate(handler: handler)
+            for error in result.errors {
+                logger.warning("\(error)")
+            }
         }
 
         // Auto-populate the Descriptor serverList from the registered handler cluster IDs.

@@ -50,6 +50,20 @@ struct SwiftCodeGenerator {
         0xFFFD, // ClusterRevision
     ]
 
+    /// Hand-written cluster enum name overrides.
+    /// Maps XML cluster name (without " Cluster" suffix) → actual Swift enum name.
+    static let skipClusterEnumNames: [String: String] = [
+        "Access Control": "AccessControlCluster",
+        "Basic Information": "BasicInformationCluster",
+        "Bridged Device Basic Information": "BridgedDeviceBasicInfoCluster",
+        "General Commissioning": "GeneralCommissioningCluster",
+        "Descriptor": "DescriptorCluster",
+        "Group Key Management": "GroupKeyManagementCluster",
+        "Network Commissioning": "NetworkCommissioningCluster",
+        "Operational Credentials": "OperationalCredentialsCluster",
+        // Administrator Commissioning has no hand-written cluster enum — skip spec generation
+    ]
+
     /// Generates all Swift source files for the given clusters and device types.
     static func generate(
         clusters: [ClusterDefinition],
@@ -62,6 +76,7 @@ struct SwiftCodeGenerator {
 
         // Generate individual cluster files
         var generatedClusters: [(id: UInt32, xmlName: String, enumName: String)] = []
+        var registryEntries: [(clusterIDProp: String, enumName: String)] = []
 
         for cluster in clusters.sorted(by: { $0.id < $1.id }) {
             // Skip abstract/template clusters with ID 0
@@ -78,13 +93,33 @@ struct SwiftCodeGenerator {
                 ?? NamingConventions.clusterEnumName(from: cluster.name)
             generatedClusters.append((id: cluster.id, xmlName: cluster.name, enumName: enumName))
 
-            if shouldSkip { continue }
+            // Build the ClusterID property name for the registry
+            let clusterIDProp = clusterIDNameOverrides[cluster.name]
+                ?? NamingConventions.clusterIDPropertyName(from: cluster.name)
+
+            if shouldSkip {
+                // For skipped clusters, generate a separate spec file
+                let skipEnumName = skipClusterEnumNames[cluster.name]
+                    ?? skipClusterEnumNames[xmlNameClean]
+                if let skipEnumName {
+                    let specContent = generateSkippedClusterSpec(
+                        cluster: cluster, enumName: skipEnumName, sourceDir: sourceDir
+                    )
+                    let specFileURL = clustersDir.appendingPathComponent(
+                        "\(skipEnumName).spec.generated.swift"
+                    )
+                    try specContent.write(to: specFileURL, atomically: true, encoding: .utf8)
+                    registryEntries.append((clusterIDProp: clusterIDProp, enumName: skipEnumName))
+                }
+                continue
+            }
 
             let content = generateClusterFile(cluster: cluster, enumName: enumName, sourceDir: sourceDir)
             let fileURL = clustersDir.appendingPathComponent(
                 NamingConventions.clusterFileName(enumName: enumName)
             )
             try content.write(to: fileURL, atomically: true, encoding: .utf8)
+            registryEntries.append((clusterIDProp: clusterIDProp, enumName: enumName))
         }
 
         // Generate ClusterDefinitions.generated.swift
@@ -94,6 +129,11 @@ struct SwiftCodeGenerator {
         )
         let defsURL = outputDir.appendingPathComponent("ClusterDefinitions.generated.swift")
         try defsContent.write(to: defsURL, atomically: true, encoding: .utf8)
+
+        // Generate ClusterMetadata.generated.swift
+        let metaContent = generateClusterMetadata(entries: registryEntries)
+        let metaURL = outputDir.appendingPathComponent("ClusterMetadata.generated.swift")
+        try metaContent.write(to: metaURL, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Cluster File Generation
@@ -224,6 +264,10 @@ struct SwiftCodeGenerator {
 
         lines.append("}")
         lines.append("")
+
+        // Generate spec metadata as an extension
+        let specLines = generateClusterSpecExtension(cluster: cluster, enumName: enumName)
+        lines.append(contentsOf: specLines)
 
         return lines.joined(separator: "\n")
     }
@@ -393,5 +437,118 @@ struct SwiftCodeGenerator {
             return "`\(name)`"
         }
         return name
+    }
+
+    // MARK: - Cluster Spec Generation
+
+    /// Build a feature code → bit position map for a cluster.
+    private static func featureCodeToBit(for cluster: ClusterDefinition) -> [String: Int] {
+        var map: [String: Int] = [:]
+        for feat in cluster.features {
+            map[feat.code] = feat.bit
+        }
+        return map
+    }
+
+    /// Generates `static let spec` extension lines for a generated cluster.
+    private static func generateClusterSpecExtension(
+        cluster: ClusterDefinition,
+        enumName: String
+    ) -> [String] {
+        var lines: [String] = []
+        let featureMap = featureCodeToBit(for: cluster)
+
+        lines.append("// MARK: - Spec Metadata")
+        lines.append("")
+        lines.append("extension \(enumName) {")
+        lines.append("")
+        lines.append("    public static let spec = ClusterSpec(")
+        lines.append("        clusterID: ClusterID(rawValue: 0x\(hex(cluster.id))),")
+        lines.append("        revision: \(cluster.revision),")
+
+        // Attributes (excluding globals)
+        let userAttributes = cluster.attributes.filter { !globalAttributeIDs.contains($0.id) }
+        lines.append("        attributes: [")
+        var seenAttrNames = Set<String>()
+        for attr in userAttributes {
+            let propName = NamingConventions.propertyName(from: attr.name)
+            if seenAttrNames.contains(propName) { continue }
+            seenAttrNames.insert(propName)
+            let confCode = attr.conformance.toSwiftCode(featureCodeToBit: featureMap)
+            lines.append("            AttributeSpec(id: AttributeID(rawValue: 0x\(hex(attr.id))), name: \"\(attr.name)\", conformance: \(confCode)),")
+        }
+        lines.append("        ],")
+
+        // Commands (only commandToServer)
+        let clientCommands = cluster.commands.filter { $0.direction == "commandToServer" }
+        lines.append("        commands: [")
+        for cmd in clientCommands {
+            let confCode = cmd.conformance.toSwiftCode(featureCodeToBit: featureMap)
+            lines.append("            CommandSpec(id: CommandID(rawValue: 0x\(hex(cmd.id))), name: \"\(cmd.name)\", conformance: \(confCode)),")
+        }
+        lines.append("        ]")
+        lines.append("    )")
+        lines.append("}")
+        lines.append("")
+
+        return lines
+    }
+
+    /// Generates a separate spec file for a skipped (hand-written) cluster.
+    private static func generateSkippedClusterSpec(
+        cluster: ClusterDefinition,
+        enumName: String,
+        sourceDir: String
+    ) -> String {
+        var lines: [String] = []
+
+        lines.append("// \(enumName).spec.generated.swift")
+        lines.append("// GENERATED by MatterModelGenerator — DO NOT EDIT")
+        lines.append("// Source: connectedhomeip \(sourceDir)")
+        lines.append("// Copyright 2026 Monagle Pty Ltd")
+        lines.append("")
+        lines.append("import MatterTypes")
+        lines.append("")
+
+        let specLines = generateClusterSpecExtension(cluster: cluster, enumName: enumName)
+        lines.append(contentsOf: specLines)
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Generates the ClusterMetadata.generated.swift registry file.
+    private static func generateClusterMetadata(
+        entries: [(clusterIDProp: String, enumName: String)]
+    ) -> String {
+        var lines: [String] = []
+
+        lines.append("// ClusterMetadata.generated.swift")
+        lines.append("// GENERATED by MatterModelGenerator — DO NOT EDIT")
+        lines.append("// Copyright 2026 Monagle Pty Ltd")
+        lines.append("")
+        lines.append("import MatterTypes")
+        lines.append("")
+        lines.append("/// Registry of cluster spec metadata for runtime validation.")
+        lines.append("///")
+        lines.append("/// Used by `ClusterValidator` to look up mandatory attributes and commands")
+        lines.append("/// for a given cluster ID.")
+        lines.append("public enum ClusterSpecRegistry {")
+        lines.append("")
+        lines.append("    /// Returns the spec metadata for a standard cluster, or `nil` for unknown/vendor clusters.")
+        lines.append("    public static func spec(for clusterID: ClusterID) -> ClusterSpec? {")
+        lines.append("        specs[clusterID]")
+        lines.append("    }")
+        lines.append("")
+        lines.append("    private static let specs: [ClusterID: ClusterSpec] = [")
+
+        for entry in entries {
+            lines.append("        .\(escaped(entry.clusterIDProp)): \(entry.enumName).spec,")
+        }
+
+        lines.append("    ]")
+        lines.append("}")
+        lines.append("")
+
+        return lines.joined(separator: "\n")
     }
 }

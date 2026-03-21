@@ -26,3 +26,19 @@ public enum LaundryDryerControlsCluster {
         case max = 3
     }
 }
+
+// MARK: - Spec Metadata
+
+extension LaundryDryerControlsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x004A),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedDrynessLevels", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SelectedDrynessLevel", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

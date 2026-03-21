@@ -67,3 +67,22 @@ public enum OTASoftwareUpdateRequestorCluster {
         case delayedOnUserConsent = 8
     }
 }
+
+// MARK: - Spec Metadata
+
+extension OTASoftwareUpdateRequestorCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x002A),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "DefaultOTAProviders", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "UpdatePossible", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "UpdateState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "UpdateStateProgress", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AnnounceOTAProvider", conformance: .optional),
+        ]
+    )
+}

@@ -49,3 +49,27 @@ public enum ThreadBorderRouterManagementCluster {
         public static let setPendingDatasetRequest = CommandID(rawValue: 0x0004)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ThreadBorderRouterManagementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0452),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "BorderRouterName", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "BorderAgentID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadVersion", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "InterfaceEnabled", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "ActiveDatasetTimestamp", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "PendingDatasetTimestamp", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetActiveDatasetRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "GetPendingDatasetRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "SetActiveDatasetRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "SetPendingDatasetRequest", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

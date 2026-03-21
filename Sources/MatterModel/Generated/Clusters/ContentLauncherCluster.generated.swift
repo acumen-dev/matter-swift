@@ -85,3 +85,21 @@ public enum ContentLauncherCluster {
         public static let hls = SupportedProtocolsBitmap(rawValue: 1 << 1)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ContentLauncherCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x050A),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AcceptHeader", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedStreamingProtocols", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "LaunchContent", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "LaunchURL", conformance: .mandatoryIf(.feature(1 << 1))),
+        ]
+    )
+}

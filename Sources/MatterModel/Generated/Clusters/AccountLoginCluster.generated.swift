@@ -28,3 +28,20 @@ public enum AccountLoginCluster {
         public static let loggedOut = EventID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension AccountLoginCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x050E),
+        revision: 2,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetSetupPIN", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Login", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Logout", conformance: .mandatory),
+        ]
+    )
+}

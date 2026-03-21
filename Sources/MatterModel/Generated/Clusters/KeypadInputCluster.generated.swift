@@ -125,3 +125,18 @@ public enum KeypadInputCluster {
         case invalidKeyInCurrentState = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension KeypadInputCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0509),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SendKey", conformance: .mandatory),
+        ]
+    )
+}

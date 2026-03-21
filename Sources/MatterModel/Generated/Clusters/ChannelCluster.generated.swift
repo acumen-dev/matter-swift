@@ -78,3 +78,26 @@ public enum ChannelCluster {
         public static let recorded = RecordingFlagBitmap(rawValue: 1 << 2)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ChannelCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0504),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ChannelList", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "Lineup", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentChannel", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeChannel", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "ChangeChannelByNumber", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "SkipChannel", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GetProgramGuide", conformance: .mandatoryIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "RecordProgram", conformance: .mandatoryIf(.and([.feature(1 << 3), .feature(1 << 2)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "CancelRecordProgram", conformance: .mandatoryIf(.and([.feature(1 << 3), .feature(1 << 2)]))),
+        ]
+    )
+}

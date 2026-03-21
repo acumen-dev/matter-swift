@@ -83,3 +83,36 @@ public enum ElectricalPowerMeasurementCluster {
         case ac = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ElectricalPowerMeasurementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0090),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PowerMode", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "NumberOfMeasurementTypes", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "Accuracy", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Ranges", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "Voltage", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ActiveCurrent", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "ReactiveCurrent", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "ApparentCurrent", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "ActivePower", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "ReactivePower", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "ApparentPower", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "RMSVoltage", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "RMSCurrent", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000D), name: "RMSPower", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000E), name: "Frequency", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000F), name: "HarmonicCurrents", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "HarmonicPhases", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "PowerFactor", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "NeutralCurrent", conformance: .optionalIf(.feature(1 << 2))),
+        ],
+        commands: [
+        ]
+    )
+}

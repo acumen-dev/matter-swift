@@ -24,3 +24,18 @@ public enum ProxyDiscoveryCluster {
         public static let proxyDiscoverResponse = CommandID(rawValue: 0x0001)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ProxyDiscoveryCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0043),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ProxyDiscoverRequest", conformance: .mandatory),
+        ]
+    )
+}

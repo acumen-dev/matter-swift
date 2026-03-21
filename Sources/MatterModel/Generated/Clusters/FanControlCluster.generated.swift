@@ -109,3 +109,30 @@ public enum FanControlCluster {
         public static let naturalWind = WindBitmap(rawValue: 1 << 1)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension FanControlCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0202),
+        revision: 4,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "FanMode", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "FanModeSequence", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "PercentSetting", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "PercentCurrent", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "SpeedMax", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "SpeedSetting", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "SpeedCurrent", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "RockSupport", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "RockSetting", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "WindSupport", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "WindSetting", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "AirflowDirection", conformance: .mandatoryIf(.feature(1 << 5))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Step", conformance: .mandatoryIf(.feature(1 << 4))),
+        ]
+    )
+}

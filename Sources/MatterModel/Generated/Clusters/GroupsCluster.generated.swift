@@ -49,3 +49,24 @@ public enum GroupsCluster {
         public static let groupNames = NameSupportBitmap(rawValue: 1 << 7)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension GroupsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0004),
+        revision: 4,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NameSupport", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddGroup", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ViewGroup", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetGroupMembership", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "RemoveGroup", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "RemoveAllGroups", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "AddGroupIfIdentifying", conformance: .mandatory),
+        ]
+    )
+}

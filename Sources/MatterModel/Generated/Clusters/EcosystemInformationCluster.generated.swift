@@ -10,3 +10,17 @@ public enum EcosystemInformationCluster {
 
     public static let revision: UInt16 = 1
 }
+
+// MARK: - Spec Metadata
+
+extension EcosystemInformationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0750),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+        ]
+    )
+}

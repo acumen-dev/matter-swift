@@ -66,3 +66,24 @@ public enum ResourceMonitoringClustersCluster {
         case oem = 4
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ResourceMonitoringClustersCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0071),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Condition", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "DegradationDirection", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ChangeIndication", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "InPlaceIndicator", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "LastChangedTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ReplacementProductList", conformance: .mandatoryIf(.feature(1 << 2))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ResetCondition", conformance: .optional),
+        ]
+    )
+}

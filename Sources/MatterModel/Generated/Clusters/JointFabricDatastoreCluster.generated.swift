@@ -84,3 +84,46 @@ public enum JointFabricDatastoreCluster {
         case deletePending = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension JointFabricDatastoreCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0752),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "AnchorRootCA", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "AnchorNodeID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "AnchorVendorID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "FriendlyName", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "GroupKeySetList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "GroupList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "NodeList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "AdminList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "StatusEntry", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddKeySet Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "UpdateKeySet Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "RemoveKeySet Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "AddGroup Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "UpdateGroup Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "RemoveGroup Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "AddAdmin Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "UpdateAdmin Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "RemoveAdmin Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "AddPendingNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "RefreshNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "UpdateNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "RemoveNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "UpdateEndpointForNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x000E), name: "AddGroupIDToEndpointForNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x000F), name: "RemoveGroupIDFromEndpointForNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0010), name: "AddBindingToEndpointForNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0011), name: "RemoveBindingFromEndpointForNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0012), name: "AddACLToNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0013), name: "RemoveACLFromNode Command", conformance: .mandatory),
+        ]
+    )
+}

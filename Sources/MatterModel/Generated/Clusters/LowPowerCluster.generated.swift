@@ -17,3 +17,18 @@ public enum LowPowerCluster {
         public static let sleep = CommandID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension LowPowerCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0508),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Sleep", conformance: .mandatory),
+        ]
+    )
+}

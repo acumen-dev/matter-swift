@@ -19,3 +19,19 @@ public enum WakeOnLANCluster {
         public static let linkLocalAddress = AttributeID(rawValue: 0x0001)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension WakeOnLANCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0503),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "MACAddress", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "LinkLocalAddress", conformance: .optional),
+        ],
+        commands: [
+        ]
+    )
+}

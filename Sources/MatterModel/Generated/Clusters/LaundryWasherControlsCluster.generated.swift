@@ -41,3 +41,21 @@ public enum LaundryWasherControlsCluster {
         case max = 3
     }
 }
+
+// MARK: - Spec Metadata
+
+extension LaundryWasherControlsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0053),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SpinSpeeds", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SpinSpeedCurrent", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "NumberOfRinses", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "SupportedRinses", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+        ]
+    )
+}

@@ -17,3 +17,18 @@ public enum UserLabelCluster {
         public static let labelList = AttributeID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension UserLabelCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0041),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "LabelList", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

@@ -119,3 +119,44 @@ public enum ContentControlCluster {
         public static let saturday = DayOfWeekBitmapType(rawValue: 1 << 6)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ContentControlCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x050F),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Enabled", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "OnDemandRatings", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "OnDemandRatingThreshold", conformance: .mandatoryIf(.feature(1 << 3))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "ScheduledContentRatings", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "ScheduledContentRatingThreshold", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "ScreenDailyTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "RemainingScreenTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "BlockUnrated", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "BlockChannelList", conformance: .mandatoryIf(.feature(1 << 5))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "BlockApplicationList", conformance: .mandatoryIf(.feature(1 << 6))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "BlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "UpdatePIN", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ResetPIN", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Enable", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "Disable", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "AddBonusTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetScreenDailyTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "BlockUnratedContent", conformance: .mandatoryIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "UnblockUnratedContent", conformance: .mandatoryIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SetOnDemandRatingThreshold", conformance: .mandatoryIf(.feature(1 << 3))),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "SetScheduledContentRatingThreshold", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "AddBlockChannels", conformance: .mandatoryIf(.feature(1 << 5))),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "RemoveBlockChannels", conformance: .mandatoryIf(.feature(1 << 5))),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "AddBlockApplications", conformance: .mandatoryIf(.feature(1 << 6))),
+            CommandSpec(id: CommandID(rawValue: 0x000E), name: "RemoveBlockApplications", conformance: .mandatoryIf(.feature(1 << 6))),
+            CommandSpec(id: CommandID(rawValue: 0x000F), name: "SetBlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7))),
+            CommandSpec(id: CommandID(rawValue: 0x0010), name: "RemoveBlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7))),
+        ]
+    )
+}

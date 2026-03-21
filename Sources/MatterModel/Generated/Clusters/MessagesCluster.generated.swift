@@ -79,3 +79,21 @@ public enum MessagesCluster {
         public static let messageProtected = MessageControlBitmap(rawValue: 1 << 4)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension MessagesCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0097),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Messages", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveMessageIDs", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "PresentMessagesRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "CancelMessagesRequest", conformance: .mandatory),
+        ]
+    )
+}

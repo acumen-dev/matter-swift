@@ -151,3 +151,33 @@ public enum DeviceEnergyManagementCluster {
         case gridOptimizationAdjustment = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension DeviceEnergyManagementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0098),
+        revision: 4,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ESAType", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ESACanGenerate", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ESAState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "AbsMinPower", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "AbsMaxPower", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "PowerAdjustmentCapability", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "Forecast", conformance: .mandatoryIf(.or([.feature(1 << 1), .feature(1 << 2)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "OptOutState", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 3), .feature(1 << 4), .feature(1 << 5), .feature(1 << 6)]))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "PowerAdjustRequest", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "CancelPowerAdjustRequest", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "StartTimeAdjustRequest", conformance: .mandatoryIf(.feature(1 << 3))),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "PauseRequest", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "ResumeRequest", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "ModifyForecastRequest", conformance: .mandatoryIf(.feature(1 << 5))),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "RequestConstraintBasedForecast", conformance: .mandatoryIf(.feature(1 << 6))),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "CancelRequest", conformance: .mandatoryIf(.or([.feature(1 << 3), .feature(1 << 5), .feature(1 << 6)]))),
+        ]
+    )
+}

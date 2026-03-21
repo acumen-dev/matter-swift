@@ -193,3 +193,51 @@ public enum WindowCoveringCluster {
         public static let protection = SafetyStatusBitmap(rawValue: 1 << 11)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension WindowCoveringCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0102),
+        revision: 5,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Type", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "PhysicalClosedLimitLift", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 2), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "PhysicalClosedLimitTilt", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 4), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentPositionLift", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 2), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "CurrentPositionTilt", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 4), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "NumberOfActuationsLift", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "NumberOfActuationsTilt", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "ConfigStatus", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "CurrentPositionLiftPercentage", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 2)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "CurrentPositionTiltPercentage", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 4)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "OperationalStatus", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "TargetPositionLiftPercent100ths", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 2)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "TargetPositionTiltPercent100ths", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 4)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000D), name: "EndProductType", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x000E), name: "CurrentPositionLiftPercent100ths", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 2)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000F), name: "CurrentPositionTiltPercent100ths", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 4)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "InstalledOpenLimitLift", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 2), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "InstalledClosedLimitLift", conformance: .mandatoryIf(.and([.feature(1 << 0), .feature(1 << 2), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "InstalledOpenLimitTilt", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 4), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0013), name: "InstalledClosedLimitTilt", conformance: .mandatoryIf(.and([.feature(1 << 1), .feature(1 << 4), .feature(1 << 3)]))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0014), name: "VelocityLift", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0015), name: "AccelerationTimeLift", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0016), name: "DecelerationTimeLift", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0017), name: "Mode", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0018), name: "IntermediateSetpointsLift", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0019), name: "IntermediateSetpointsTilt", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x001A), name: "SafetyStatus", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "UpOrOpen", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "DownOrClose", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "StopMotion", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GoToLiftValue", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 3)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "GoToLiftPercentage", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 2)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "GoToTiltValue", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 3)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "GoToTiltPercentage", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 4)]))),
+        ]
+    )
+}

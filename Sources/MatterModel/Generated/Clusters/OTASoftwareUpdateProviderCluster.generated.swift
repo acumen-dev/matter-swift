@@ -41,3 +41,20 @@ public enum OTASoftwareUpdateProviderCluster {
         case downloadProtocolNotSupported = 3
     }
 }
+
+// MARK: - Spec Metadata
+
+extension OTASoftwareUpdateProviderCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0029),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "QueryImage", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "ApplyUpdateRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "NotifyUpdateApplied", conformance: .mandatory),
+        ]
+    )
+}

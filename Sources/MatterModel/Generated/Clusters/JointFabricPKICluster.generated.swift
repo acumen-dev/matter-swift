@@ -38,3 +38,20 @@ public enum JointFabricPKICluster {
         case ref_TransferAnchorStatusNoUserConsent = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension JointFabricPKICluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0753),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ICACSRRequest Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Transfer Anchor Request Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "Transfer Anchor Complete Command", conformance: .mandatory),
+        ]
+    )
+}

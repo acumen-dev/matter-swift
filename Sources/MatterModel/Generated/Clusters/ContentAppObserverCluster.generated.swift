@@ -22,3 +22,18 @@ public enum ContentAppObserverCluster {
         case unexpectedData = 1
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ContentAppObserverCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0510),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ContentAppMessage", conformance: .mandatory),
+        ]
+    )
+}

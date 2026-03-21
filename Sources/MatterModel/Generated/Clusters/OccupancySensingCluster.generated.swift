@@ -94,3 +94,31 @@ public enum OccupancySensingCluster {
         public static let physicalContact = OccupancySensorTypeBitmap(rawValue: 1 << 2)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension OccupancySensingCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0406),
+        revision: 5,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Occupancy", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "OccupancySensorType", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "OccupancySensorTypeBitmap", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "HoldTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "HoldTimeLimits", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "PIROccupiedToUnoccupiedDelay", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "PIRUnoccupiedToOccupiedDelay", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "PIRUnoccupiedToOccupiedThreshold", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0020), name: "UltrasonicOccupiedToUnoccupiedDelay", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0021), name: "UltrasonicUnoccupiedToOccupiedDelay", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0022), name: "UltrasonicUnoccupiedToOccupiedThreshold", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0030), name: "PhysicalContactOccupiedToUnoccupiedDelay", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0031), name: "PhysicalContactUnoccupiedToOccupiedDelay", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0032), name: "PhysicalContactUnoccupiedToOccupiedThreshold", conformance: .deprecated),
+        ],
+        commands: [
+        ]
+    )
+}

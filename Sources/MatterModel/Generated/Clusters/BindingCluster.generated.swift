@@ -17,3 +17,18 @@ public enum BindingCluster {
         public static let binding = AttributeID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension BindingCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x001E),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Binding", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

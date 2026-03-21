@@ -171,3 +171,47 @@ public enum EnergyEVSECluster {
         public static let saturday = TargetDayOfWeekBitmap(rawValue: 1 << 6)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension EnergyEVSECluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0099),
+        revision: 3,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "State", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupplyState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "FaultState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "ChargingEnabledUntil", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "DischargingEnabledUntil", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CircuitCapacity", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "MinimumChargeCurrent", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "MaximumChargeCurrent", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "MaximumDischargeCurrent", conformance: .mandatoryIf(.feature(1 << 4))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "UserMaximumChargeCurrent", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "RandomizationDelayWindow", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0023), name: "NextChargeStartTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0024), name: "NextChargeTargetTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0025), name: "NextChargeRequiredEnergy", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0026), name: "NextChargeTargetSoC", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0027), name: "ApproximateEVEfficiency", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0030), name: "StateOfCharge", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0031), name: "BatteryCapacity", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0032), name: "VehicleID", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0040), name: "SessionID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0041), name: "SessionDuration", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0042), name: "SessionEnergyCharged", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0043), name: "SessionEnergyDischarged", conformance: .mandatoryIf(.feature(1 << 4))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Disable", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "EnableCharging", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "EnableDischarging", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "StartDiagnostics", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetTargets", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "GetTargets", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "ClearTargets", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

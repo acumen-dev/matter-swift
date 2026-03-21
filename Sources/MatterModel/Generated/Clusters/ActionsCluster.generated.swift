@@ -104,3 +104,32 @@ public enum ActionsCluster {
         public static let disableActionWithDuration = CommandBits(rawValue: 1 << 11)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ActionsCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0025),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ActionList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "EndpointLists", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SetupURL", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "InstantAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "InstantActionWithTransition", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "StartAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StartActionWithDuration", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "StopAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "PauseAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "PauseActionWithDuration", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "ResumeAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "EnableAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "EnableActionWithDuration", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "DisableAction", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "DisableActionWithDuration", conformance: .optional),
+        ]
+    )
+}

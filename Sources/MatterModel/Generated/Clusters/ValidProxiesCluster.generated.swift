@@ -24,3 +24,19 @@ public enum ValidProxiesCluster {
         public static let getValidProxiesRequest = CommandID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ValidProxiesCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0044),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ValidProxyList", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetValidProxiesRequest", conformance: .mandatory),
+        ]
+    )
+}

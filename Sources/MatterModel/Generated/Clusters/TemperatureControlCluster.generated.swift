@@ -47,3 +47,24 @@ public enum TemperatureControlCluster {
         public static let setTemperature = CommandID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension TemperatureControlCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0056),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureSetpoint", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "MinTemperature", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MaxTemperature", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "Step", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "SelectedTemperatureLevel", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "SupportedTemperatureLevels", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetTemperature", conformance: .mandatory),
+        ]
+    )
+}

@@ -21,3 +21,17 @@ public enum DishwasherAlarmCluster {
         public static let waterLevelError = AlarmBitmap(rawValue: 1 << 5)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension DishwasherAlarmCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x005D),
+        revision: 1,
+        attributes: [
+        ],
+        commands: [
+        ]
+    )
+}

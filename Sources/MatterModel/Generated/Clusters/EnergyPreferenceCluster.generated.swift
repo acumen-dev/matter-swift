@@ -43,3 +43,22 @@ public enum EnergyPreferenceCluster {
         case waterConsumption = 3
     }
 }
+
+// MARK: - Spec Metadata
+
+extension EnergyPreferenceCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x009B),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "EnergyBalances", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentEnergyBalance", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "EnergyPriorities", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "LowPowerModeSensitivities", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "CurrentLowPowerModeSensitivity", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+        ]
+    )
+}

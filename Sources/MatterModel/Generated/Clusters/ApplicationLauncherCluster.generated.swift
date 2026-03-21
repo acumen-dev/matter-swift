@@ -48,3 +48,22 @@ public enum ApplicationLauncherCluster {
         case installing = 5
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ApplicationLauncherCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x050C),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CatalogList", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentApp", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "LaunchApp", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "StopApp", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "HideApp", conformance: .mandatory),
+        ]
+    )
+}

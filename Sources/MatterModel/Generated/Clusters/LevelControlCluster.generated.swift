@@ -96,3 +96,40 @@ public enum LevelControlCluster {
         public static let coupleColorTempToLevel = OptionsBitmap(rawValue: 1 << 1)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension LevelControlCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0008),
+        revision: 6,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "CurrentLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "RemainingTime", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MinLevel", conformance: .optionalIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "MaxLevel", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "CurrentFrequency", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "MinFrequency", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "MaxFrequency", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000F), name: "Options", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "OnOffTransitionTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "OnLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "OnTransitionTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0013), name: "OffTransitionTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0014), name: "DefaultMoveRate", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x4000), name: "StartUpCurrentLevel", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "MoveToLevel", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Move", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Step", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Stop", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "MoveToLevelWithOnOff", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "MoveWithOnOff", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "StepWithOnOff", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "StopWithOnOff", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "MoveToClosestFrequency", conformance: .mandatoryIf(.feature(1 << 2))),
+        ]
+    )
+}

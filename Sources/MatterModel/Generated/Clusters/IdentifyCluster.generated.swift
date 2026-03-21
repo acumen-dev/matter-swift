@@ -50,3 +50,21 @@ public enum IdentifyCluster {
         case actuator = 5
     }
 }
+
+// MARK: - Spec Metadata
+
+extension IdentifyCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0003),
+        revision: 5,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "IdentifyTime", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "IdentifyType", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Identify", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0040), name: "TriggerEffect", conformance: .optional),
+        ]
+    )
+}

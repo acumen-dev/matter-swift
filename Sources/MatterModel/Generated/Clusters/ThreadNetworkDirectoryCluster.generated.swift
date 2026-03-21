@@ -32,3 +32,23 @@ public enum ThreadNetworkDirectoryCluster {
         public static let getOperationalDataset = CommandID(rawValue: 0x0002)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ThreadNetworkDirectoryCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0453),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PreferredExtendedPanID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ThreadNetworks", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadNetworkTableSize", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddNetwork", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "RemoveNetwork", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetOperationalDataset", conformance: .mandatory),
+        ]
+    )
+}

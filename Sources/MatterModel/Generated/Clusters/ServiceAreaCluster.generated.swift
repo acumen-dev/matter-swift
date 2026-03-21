@@ -56,3 +56,25 @@ public enum ServiceAreaCluster {
         case completed = 3
     }
 }
+
+// MARK: - Spec Metadata
+
+extension ServiceAreaCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0150),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SupportedAreas", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedMaps", conformance: .mandatoryIf(.feature(1 << 2))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SelectedAreas", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "CurrentArea", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "EstimatedEndTime", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "Progress", conformance: .mandatoryIf(.feature(1 << 1))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectAreas", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "SkipArea", conformance: .optional),
+        ]
+    )
+}

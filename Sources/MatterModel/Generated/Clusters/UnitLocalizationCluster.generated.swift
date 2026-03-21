@@ -32,3 +32,18 @@ public enum UnitLocalizationCluster {
         case kelvin = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension UnitLocalizationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x002D),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "TemperatureUnit", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+        ]
+    )
+}

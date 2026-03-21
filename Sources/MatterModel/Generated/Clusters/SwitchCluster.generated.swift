@@ -59,3 +59,20 @@ public enum SwitchCluster {
         public static let multiPressComplete = EventID(rawValue: 0x0006)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension SwitchCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x003B),
+        revision: 2,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NumberOfPositions", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentPosition", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "MultiPressMax", conformance: .mandatoryIf(.feature(1 << 4))),
+        ],
+        commands: [
+        ]
+    )
+}

@@ -82,3 +82,28 @@ public enum OnOffCluster {
         public static let acceptOnlyWhenOn = OnOffControlBitmap(rawValue: 1 << 0)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension OnOffCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0006),
+        revision: 6,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OnOff", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x4000), name: "GlobalSceneControl", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x4001), name: "OnTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x4002), name: "OffWaitTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x4003), name: "StartUpOnOff", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Off", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "On", conformance: .mandatoryIf(.not(.feature(1 << 2)))),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Toggle", conformance: .mandatoryIf(.not(.feature(1 << 2)))),
+            CommandSpec(id: CommandID(rawValue: 0x0040), name: "OffWithEffect", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0041), name: "OnWithRecallGlobalScene", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0042), name: "OnWithTimedOff", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

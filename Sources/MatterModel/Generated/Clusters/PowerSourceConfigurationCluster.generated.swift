@@ -17,3 +17,18 @@ public enum PowerSourceConfigurationCluster {
         public static let sources = AttributeID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension PowerSourceConfigurationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x002E),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "Sources", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

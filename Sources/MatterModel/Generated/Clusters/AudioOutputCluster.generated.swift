@@ -46,3 +46,21 @@ public enum AudioOutputCluster {
         case other = 5
     }
 }
+
+// MARK: - Spec Metadata
+
+extension AudioOutputCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x050B),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "OutputList", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentOutput", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectOutput", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "RenameOutput", conformance: .mandatoryIf(.feature(1 << 0))),
+        ]
+    )
+}

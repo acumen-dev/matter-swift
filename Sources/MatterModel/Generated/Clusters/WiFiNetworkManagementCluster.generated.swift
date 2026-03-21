@@ -26,3 +26,20 @@ public enum WiFiNetworkManagementCluster {
         public static let networkPassphraseRequest = CommandID(rawValue: 0x0000)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension WiFiNetworkManagementCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0451),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "SSID", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "PassphraseSurrogate", conformance: .mandatory),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "NetworkPassphraseRequest", conformance: .mandatory),
+        ]
+    )
+}

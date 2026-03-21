@@ -19,3 +19,19 @@ public enum LocalizationConfigurationCluster {
         public static let supportedLocales = AttributeID(rawValue: 0x0001)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension LocalizationConfigurationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x002B),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ActiveLocale", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SupportedLocales", conformance: .mandatory),
+        ],
+        commands: [
+        ]
+    )
+}

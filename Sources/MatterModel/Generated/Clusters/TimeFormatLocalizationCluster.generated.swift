@@ -52,3 +52,20 @@ public enum TimeFormatLocalizationCluster {
         case useActiveLocale = 255
     }
 }
+
+// MARK: - Spec Metadata
+
+extension TimeFormatLocalizationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x002C),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "HourFormat", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveCalendarType", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "SupportedCalendarTypes", conformance: .mandatoryIf(.feature(1 << 0))),
+        ],
+        commands: [
+        ]
+    )
+}

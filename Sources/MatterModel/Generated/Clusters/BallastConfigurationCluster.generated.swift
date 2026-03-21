@@ -60,3 +60,33 @@ public enum BallastConfigurationCluster {
         public static let lampBurnHours = LampAlarmModeBitmap(rawValue: 1 << 0)
     }
 }
+
+// MARK: - Spec Metadata
+
+extension BallastConfigurationCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x0301),
+        revision: 4,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "PhysicalMinLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "PhysicalMaxLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "BallastStatus", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0010), name: "MinLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0011), name: "MaxLevel", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0012), name: "PowerOnLevel", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0013), name: "PowerOnFadeTime", conformance: .deprecated),
+            AttributeSpec(id: AttributeID(rawValue: 0x0014), name: "IntrinsicBallastFactor", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0015), name: "BallastFactorAdjustment", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0020), name: "LampQuantity", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0030), name: "LampType", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0031), name: "LampManufacturer", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0032), name: "LampRatedHours", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0033), name: "LampBurnHours", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0034), name: "LampAlarmMode", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0035), name: "LampBurnHoursTripPoint", conformance: .optional),
+        ],
+        commands: [
+        ]
+    )
+}

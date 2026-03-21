@@ -127,3 +127,31 @@ public enum SmokeCOAlarmCluster {
         case low = 2
     }
 }
+
+// MARK: - Spec Metadata
+
+extension SmokeCOAlarmCluster {
+
+    public static let spec = ClusterSpec(
+        clusterID: ClusterID(rawValue: 0x005C),
+        revision: 1,
+        attributes: [
+            AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ExpressedState", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "SmokeState", conformance: .mandatoryIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "COState", conformance: .mandatoryIf(.feature(1 << 1))),
+            AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "BatteryAlert", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0004), name: "DeviceMuted", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "TestInProgress", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "HardwareFaultAlert", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "EndOfServiceAlert", conformance: .mandatory),
+            AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "InterconnectSmokeAlarm", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "InterconnectCOAlarm", conformance: .optional),
+            AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "ContaminationState", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "SmokeSensitivityLevel", conformance: .optionalIf(.feature(1 << 0))),
+            AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "ExpiryDate", conformance: .optional),
+        ],
+        commands: [
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelfTestRequest", conformance: .optional),
+        ]
+    )
+}
