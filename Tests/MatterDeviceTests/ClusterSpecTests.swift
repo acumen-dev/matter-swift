@@ -163,6 +163,47 @@ struct ClusterSpecTests {
         #expect(onTime?.isNullable == false)
     }
 
+    // MARK: - CommandSpec Field Metadata Tests
+
+    @Test("CommandSpec fields are populated for OffWithEffect")
+    func offWithEffectFields() {
+        let spec = OnOffCluster.spec
+        let cmd = spec.commands.first { $0.id == CommandID(rawValue: 0x0040) }
+        #expect(cmd != nil)
+        #expect(cmd?.name == "OffWithEffect")
+        #expect(cmd?.fields.count == 2)
+
+        let effectId = cmd?.fields.first { $0.name == "EffectIdentifier" }
+        #expect(effectId != nil)
+        #expect(effectId?.id == 0)
+        #expect(effectId?.type == .uint8)
+        #expect(effectId?.isOptional == false)
+        #expect(effectId?.isNullable == false)
+
+        let effectVariant = cmd?.fields.first { $0.name == "EffectVariant" }
+        #expect(effectVariant != nil)
+        #expect(effectVariant?.id == 1)
+        #expect(effectVariant?.type == .uint8)
+    }
+
+    @Test("CommandSpec without fields has empty fields array")
+    func offCommandNoFields() {
+        let spec = OnOffCluster.spec
+        let cmd = spec.commands.first { $0.id == CommandID(rawValue: 0x0000) }
+        #expect(cmd != nil)
+        #expect(cmd?.name == "Off")
+        #expect(cmd?.fields.isEmpty == true)
+    }
+
+    @Test("CommandSpec backward compatibility — defaults")
+    func commandSpecDefaults() {
+        let cmd = CommandSpec(id: CommandID(rawValue: 0x00), name: "Test", conformance: .mandatory)
+        #expect(cmd.fields.isEmpty)
+        #expect(cmd.responseID == nil)
+        #expect(cmd.isFabricScoped == false)
+        #expect(cmd.isTimedInvoke == false)
+    }
+
     @Test("Generated BasicInformation spec is available via registry")
     func basicInfoViaRegistry() {
         let spec = ClusterSpecRegistry.spec(for: .basicInformation)

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Content Control Cluster (0x050F), revision 1
@@ -97,6 +98,13 @@ public enum ContentControlCluster {
         public static let removeBlockContentTimeWindow = CommandID(rawValue: 0x0010)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// ResetPINResponse
+        public static let resetPINResponse = CommandID(rawValue: 0x0002)
+    }
+
     // MARK: - Events
 
     public enum Event {
@@ -117,6 +125,659 @@ public enum ContentControlCluster {
         public static let thursday = DayOfWeekBitmapType(rawValue: 1 << 4)
         public static let friday = DayOfWeekBitmapType(rawValue: 1 << 5)
         public static let saturday = DayOfWeekBitmapType(rawValue: 1 << 6)
+    }
+
+    // MARK: - AppInfoStruct
+
+    public struct AppInfoStruct: TLVCodable, Equatable {
+        public var catalogVendorID: UInt16
+        public var applicationID: String
+
+        public init(
+            catalogVendorID: UInt16,
+            applicationID: String
+        ) {
+            self.catalogVendorID = catalogVendorID
+            self.applicationID = applicationID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(catalogVendorID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(applicationID)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AppInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_catalogVendorID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CatalogVendorID", tag: UInt8(0))
+            }
+            let catalogVendorID = UInt16(raw_catalogVendorID.uintValue ?? 0)
+            guard let raw_applicationID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ApplicationID", tag: UInt8(1))
+            }
+            let applicationID = raw_applicationID.stringValue ?? ""
+            return AppInfoStruct(catalogVendorID: catalogVendorID, applicationID: applicationID)
+        }
+    }
+
+    // MARK: - BlockChannelStruct
+
+    public struct BlockChannelStruct: TLVCodable, Equatable {
+        public var blockChannelIndex: UInt16?
+        public var majorNumber: UInt16
+        public var minorNumber: UInt16
+        public var identifier: String?
+
+        public init(
+            blockChannelIndex: UInt16? = nil,
+            majorNumber: UInt16,
+            minorNumber: UInt16,
+            identifier: String? = nil
+        ) {
+            self.blockChannelIndex = blockChannelIndex
+            self.majorNumber = majorNumber
+            self.minorNumber = minorNumber
+            self.identifier = identifier
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = blockChannelIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(majorNumber))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(minorNumber))))
+            if let val = identifier {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> BlockChannelStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_blockChannelIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "BlockChannelIndex", tag: UInt8(0))
+            }
+            let blockChannelIndex: UInt16?
+            if raw_blockChannelIndex.isNull {
+                blockChannelIndex = nil
+            } else {
+                blockChannelIndex = UInt16(raw_blockChannelIndex.uintValue ?? 0)
+            }
+            guard let raw_majorNumber = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "MajorNumber", tag: UInt8(1))
+            }
+            let majorNumber = UInt16(raw_majorNumber.uintValue ?? 0)
+            guard let raw_minorNumber = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "MinorNumber", tag: UInt8(2))
+            }
+            let minorNumber = UInt16(raw_minorNumber.uintValue ?? 0)
+            let identifier: String?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                identifier = fieldValue.stringValue ?? ""
+            } else {
+                identifier = nil
+            }
+            return BlockChannelStruct(blockChannelIndex: blockChannelIndex, majorNumber: majorNumber, minorNumber: minorNumber, identifier: identifier)
+        }
+    }
+
+    // MARK: - RatingNameStruct
+
+    public struct RatingNameStruct: TLVCodable, Equatable {
+        public var ratingName: String
+        public var ratingNameDesc: String?
+
+        public init(
+            ratingName: String,
+            ratingNameDesc: String? = nil
+        ) {
+            self.ratingName = ratingName
+            self.ratingNameDesc = ratingNameDesc
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(ratingName)))
+            if let val = ratingNameDesc {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RatingNameStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_ratingName = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "RatingName", tag: UInt8(0))
+            }
+            let ratingName = raw_ratingName.stringValue ?? ""
+            let ratingNameDesc: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                ratingNameDesc = fieldValue.stringValue ?? ""
+            } else {
+                ratingNameDesc = nil
+            }
+            return RatingNameStruct(ratingName: ratingName, ratingNameDesc: ratingNameDesc)
+        }
+    }
+
+    // MARK: - TimePeriodStructType
+
+    public struct TimePeriodStructType: TLVCodable, Equatable {
+        public var startHour: UInt8
+        public var startMinute: UInt8
+        public var endHour: UInt8
+        public var endMinute: UInt8
+
+        public init(
+            startHour: UInt8,
+            startMinute: UInt8,
+            endHour: UInt8,
+            endMinute: UInt8
+        ) {
+            self.startHour = startHour
+            self.startMinute = startMinute
+            self.endHour = endHour
+            self.endMinute = endMinute
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(startHour))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(startMinute))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(endHour))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(endMinute))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TimePeriodStructType {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_startHour = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StartHour", tag: UInt8(0))
+            }
+            let startHour = UInt8(raw_startHour.uintValue ?? 0)
+            guard let raw_startMinute = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StartMinute", tag: UInt8(1))
+            }
+            let startMinute = UInt8(raw_startMinute.uintValue ?? 0)
+            guard let raw_endHour = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "EndHour", tag: UInt8(2))
+            }
+            let endHour = UInt8(raw_endHour.uintValue ?? 0)
+            guard let raw_endMinute = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "EndMinute", tag: UInt8(3))
+            }
+            let endMinute = UInt8(raw_endMinute.uintValue ?? 0)
+            return TimePeriodStructType(startHour: startHour, startMinute: startMinute, endHour: endHour, endMinute: endMinute)
+        }
+    }
+
+    // MARK: - TimeWindowStruct
+
+    public struct TimeWindowStruct: TLVCodable, Equatable {
+        public var timeWindowIndex: UInt16?
+        public var dayOfWeek: UInt8
+        public var timePeriod: [TimePeriodStructType]
+
+        public init(
+            timeWindowIndex: UInt16? = nil,
+            dayOfWeek: UInt8,
+            timePeriod: [TimePeriodStructType]
+        ) {
+            self.timeWindowIndex = timeWindowIndex
+            self.dayOfWeek = dayOfWeek
+            self.timePeriod = timePeriod
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = timeWindowIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(dayOfWeek))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .array(timePeriod.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TimeWindowStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeWindowIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TimeWindowIndex", tag: UInt8(0))
+            }
+            let timeWindowIndex: UInt16?
+            if raw_timeWindowIndex.isNull {
+                timeWindowIndex = nil
+            } else {
+                timeWindowIndex = UInt16(raw_timeWindowIndex.uintValue ?? 0)
+            }
+            guard let raw_dayOfWeek = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "DayOfWeek", tag: UInt8(1))
+            }
+            let dayOfWeek = UInt8(raw_dayOfWeek.uintValue ?? 0)
+            guard let raw_timePeriod = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TimePeriod", tag: UInt8(2))
+            }
+            let timePeriod = (raw_timePeriod.arrayElements ?? []).compactMap { try? TimePeriodStructType.fromTLVElement($0) }
+            return TimeWindowStruct(timeWindowIndex: timeWindowIndex, dayOfWeek: dayOfWeek, timePeriod: timePeriod)
+        }
+    }
+
+    // MARK: - UpdatePINRequest
+
+    public struct UpdatePINRequest: TLVCodable, Equatable {
+        public var oldPIN: String
+        public var newPIN: String
+
+        public init(
+            oldPIN: String,
+            newPIN: String
+        ) {
+            self.oldPIN = oldPIN
+            self.newPIN = newPIN
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(oldPIN)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(newPIN)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdatePINRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_oldPIN = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OldPIN", tag: UInt8(0))
+            }
+            let oldPIN = raw_oldPIN.stringValue ?? ""
+            guard let raw_newPIN = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NewPIN", tag: UInt8(1))
+            }
+            let newPIN = raw_newPIN.stringValue ?? ""
+            return UpdatePINRequest(oldPIN: oldPIN, newPIN: newPIN)
+        }
+    }
+
+    // MARK: - ResetPINResponse
+
+    public struct ResetPINResponse: TLVCodable, Equatable {
+        public var pinCode: String
+
+        public init(
+            pinCode: String
+        ) {
+            self.pinCode = pinCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(pinCode)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ResetPINResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_pinCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PINCode", tag: UInt8(0))
+            }
+            let pinCode = raw_pinCode.stringValue ?? ""
+            return ResetPINResponse(pinCode: pinCode)
+        }
+    }
+
+    // MARK: - AddBonusTimeRequest
+
+    public struct AddBonusTimeRequest: TLVCodable, Equatable {
+        public var pinCode: String?
+        public var bonusTime: TLVElement
+
+        public init(
+            pinCode: String? = nil,
+            bonusTime: TLVElement
+        ) {
+            self.pinCode = pinCode
+            self.bonusTime = bonusTime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = pinCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: bonusTime))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddBonusTimeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let pinCode: String?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                pinCode = fieldValue.stringValue ?? ""
+            } else {
+                pinCode = nil
+            }
+            guard let raw_bonusTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "BonusTime", tag: UInt8(1))
+            }
+            let bonusTime = raw_bonusTime
+            return AddBonusTimeRequest(pinCode: pinCode, bonusTime: bonusTime)
+        }
+    }
+
+    // MARK: - SetScreenDailyTimeRequest
+
+    public struct SetScreenDailyTimeRequest: TLVCodable, Equatable {
+        public var screenTime: TLVElement
+
+        public init(
+            screenTime: TLVElement
+        ) {
+            self.screenTime = screenTime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: screenTime))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetScreenDailyTimeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_screenTime = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ScreenTime", tag: UInt8(0))
+            }
+            let screenTime = raw_screenTime
+            return SetScreenDailyTimeRequest(screenTime: screenTime)
+        }
+    }
+
+    // MARK: - SetOnDemandRatingThresholdRequest
+
+    public struct SetOnDemandRatingThresholdRequest: TLVCodable, Equatable {
+        public var rating: String
+
+        public init(
+            rating: String
+        ) {
+            self.rating = rating
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(rating)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetOnDemandRatingThresholdRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rating = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Rating", tag: UInt8(0))
+            }
+            let rating = raw_rating.stringValue ?? ""
+            return SetOnDemandRatingThresholdRequest(rating: rating)
+        }
+    }
+
+    // MARK: - SetScheduledContentRatingThresholdRequest
+
+    public struct SetScheduledContentRatingThresholdRequest: TLVCodable, Equatable {
+        public var rating: String
+
+        public init(
+            rating: String
+        ) {
+            self.rating = rating
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(rating)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetScheduledContentRatingThresholdRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rating = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Rating", tag: UInt8(0))
+            }
+            let rating = raw_rating.stringValue ?? ""
+            return SetScheduledContentRatingThresholdRequest(rating: rating)
+        }
+    }
+
+    // MARK: - AddBlockChannelsRequest
+
+    public struct AddBlockChannelsRequest: TLVCodable, Equatable {
+        public var channels: [BlockChannelStruct]
+
+        public init(
+            channels: [BlockChannelStruct]
+        ) {
+            self.channels = channels
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(channels.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddBlockChannelsRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_channels = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Channels", tag: UInt8(0))
+            }
+            let channels = (raw_channels.arrayElements ?? []).compactMap { try? BlockChannelStruct.fromTLVElement($0) }
+            return AddBlockChannelsRequest(channels: channels)
+        }
+    }
+
+    // MARK: - RemoveBlockChannelsRequest
+
+    public struct RemoveBlockChannelsRequest: TLVCodable, Equatable {
+        public var channelIndexes: [UInt16]
+
+        public init(
+            channelIndexes: [UInt16]
+        ) {
+            self.channelIndexes = channelIndexes
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(channelIndexes.map { .unsignedInt(UInt64($0)) })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveBlockChannelsRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_channelIndexes = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ChannelIndexes", tag: UInt8(0))
+            }
+            let channelIndexes = (raw_channelIndexes.arrayElements ?? []).map { UInt16($0.uintValue ?? 0) }
+            return RemoveBlockChannelsRequest(channelIndexes: channelIndexes)
+        }
+    }
+
+    // MARK: - AddBlockApplicationsRequest
+
+    public struct AddBlockApplicationsRequest: TLVCodable, Equatable {
+        public var applications: [AppInfoStruct]
+
+        public init(
+            applications: [AppInfoStruct]
+        ) {
+            self.applications = applications
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(applications.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddBlockApplicationsRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_applications = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Applications", tag: UInt8(0))
+            }
+            let applications = (raw_applications.arrayElements ?? []).compactMap { try? AppInfoStruct.fromTLVElement($0) }
+            return AddBlockApplicationsRequest(applications: applications)
+        }
+    }
+
+    // MARK: - RemoveBlockApplicationsRequest
+
+    public struct RemoveBlockApplicationsRequest: TLVCodable, Equatable {
+        public var applications: [AppInfoStruct]
+
+        public init(
+            applications: [AppInfoStruct]
+        ) {
+            self.applications = applications
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(applications.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveBlockApplicationsRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_applications = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Applications", tag: UInt8(0))
+            }
+            let applications = (raw_applications.arrayElements ?? []).compactMap { try? AppInfoStruct.fromTLVElement($0) }
+            return RemoveBlockApplicationsRequest(applications: applications)
+        }
+    }
+
+    // MARK: - SetBlockContentTimeWindowRequest
+
+    public struct SetBlockContentTimeWindowRequest: TLVCodable, Equatable {
+        public var timeWindow: TimeWindowStruct
+
+        public init(
+            timeWindow: TimeWindowStruct
+        ) {
+            self.timeWindow = timeWindow
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: timeWindow.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetBlockContentTimeWindowRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeWindow = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TimeWindow", tag: UInt8(0))
+            }
+            let timeWindow = try TimeWindowStruct.fromTLVElement(raw_timeWindow)
+            return SetBlockContentTimeWindowRequest(timeWindow: timeWindow)
+        }
+    }
+
+    // MARK: - RemoveBlockContentTimeWindowRequest
+
+    public struct RemoveBlockContentTimeWindowRequest: TLVCodable, Equatable {
+        public var timeWindowIndexes: [UInt16]
+
+        public init(
+            timeWindowIndexes: [UInt16]
+        ) {
+            self.timeWindowIndexes = timeWindowIndexes
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(timeWindowIndexes.map { .unsignedInt(UInt64($0)) })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveBlockContentTimeWindowRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeWindowIndexes = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TimeWindowIndexes", tag: UInt8(0))
+            }
+            let timeWindowIndexes = (raw_timeWindowIndexes.arrayElements ?? []).map { UInt16($0.uintValue ?? 0) }
+            return RemoveBlockContentTimeWindowRequest(timeWindowIndexes: timeWindowIndexes)
+        }
     }
 }
 
@@ -141,22 +802,22 @@ extension ContentControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "BlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7)), type: .list, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "UpdatePIN", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ResetPIN", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "UpdatePIN", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "OldPIN", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "NewPIN", type: .string, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ResetPIN", conformance: .mandatoryIf(.feature(1 << 1)), responseID: CommandID(rawValue: 0x0002)),
             CommandSpec(id: CommandID(rawValue: 0x0003), name: "Enable", conformance: .mandatory),
             CommandSpec(id: CommandID(rawValue: 0x0004), name: "Disable", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "AddBonusTime", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetScreenDailyTime", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "AddBonusTime", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "PINCode", type: .string, isOptional: true, isNullable: false), FieldSpec(id: 1, name: "BonusTime", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetScreenDailyTime", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "ScreenTime", type: .unknown, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0007), name: "BlockUnratedContent", conformance: .mandatoryIf(.feature(1 << 2))),
             CommandSpec(id: CommandID(rawValue: 0x0008), name: "UnblockUnratedContent", conformance: .mandatoryIf(.feature(1 << 2))),
-            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SetOnDemandRatingThreshold", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x000A), name: "SetScheduledContentRatingThreshold", conformance: .mandatoryIf(.feature(1 << 4))),
-            CommandSpec(id: CommandID(rawValue: 0x000B), name: "AddBlockChannels", conformance: .mandatoryIf(.feature(1 << 5))),
-            CommandSpec(id: CommandID(rawValue: 0x000C), name: "RemoveBlockChannels", conformance: .mandatoryIf(.feature(1 << 5))),
-            CommandSpec(id: CommandID(rawValue: 0x000D), name: "AddBlockApplications", conformance: .mandatoryIf(.feature(1 << 6))),
-            CommandSpec(id: CommandID(rawValue: 0x000E), name: "RemoveBlockApplications", conformance: .mandatoryIf(.feature(1 << 6))),
-            CommandSpec(id: CommandID(rawValue: 0x000F), name: "SetBlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7))),
-            CommandSpec(id: CommandID(rawValue: 0x0010), name: "RemoveBlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7))),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SetOnDemandRatingThreshold", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "Rating", type: .string, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "SetScheduledContentRatingThreshold", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "Rating", type: .string, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "AddBlockChannels", conformance: .mandatoryIf(.feature(1 << 5)), fields: [FieldSpec(id: 0, name: "Channels", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "RemoveBlockChannels", conformance: .mandatoryIf(.feature(1 << 5)), fields: [FieldSpec(id: 0, name: "ChannelIndexes", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "AddBlockApplications", conformance: .mandatoryIf(.feature(1 << 6)), fields: [FieldSpec(id: 0, name: "Applications", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000E), name: "RemoveBlockApplications", conformance: .mandatoryIf(.feature(1 << 6)), fields: [FieldSpec(id: 0, name: "Applications", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000F), name: "SetBlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7)), fields: [FieldSpec(id: 0, name: "TimeWindow", type: .structure, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0010), name: "RemoveBlockContentTimeWindow", conformance: .mandatoryIf(.feature(1 << 7)), fields: [FieldSpec(id: 0, name: "TimeWindowIndexes", type: .list, isOptional: false, isNullable: false)]),
         ]
     )
 }

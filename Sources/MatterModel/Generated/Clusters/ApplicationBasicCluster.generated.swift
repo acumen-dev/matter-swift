@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Application Basic Cluster (0x050D), revision 1
@@ -36,6 +37,45 @@ public enum ApplicationBasicCluster {
         case activeVisibleFocus = 1
         case activeHidden = 2
         case activeVisibleNotFocus = 3
+    }
+
+    // MARK: - ApplicationStruct
+
+    public struct ApplicationStruct: TLVCodable, Equatable {
+        public var catalogVendorID: UInt16
+        public var applicationID: String
+
+        public init(
+            catalogVendorID: UInt16,
+            applicationID: String
+        ) {
+            self.catalogVendorID = catalogVendorID
+            self.applicationID = applicationID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(catalogVendorID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(applicationID)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ApplicationStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_catalogVendorID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CatalogVendorID", tag: UInt8(0))
+            }
+            let catalogVendorID = UInt16(raw_catalogVendorID.uintValue ?? 0)
+            guard let raw_applicationID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ApplicationID", tag: UInt8(1))
+            }
+            let applicationID = raw_applicationID.stringValue ?? ""
+            return ApplicationStruct(catalogVendorID: catalogVendorID, applicationID: applicationID)
+        }
     }
 }
 

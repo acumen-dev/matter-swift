@@ -28,6 +28,10 @@ public final class EndpointManager: @unchecked Sendable {
     /// Set this after initialisation to enable event recording when commands are handled.
     public var eventStore: EventStore?
 
+    /// When `true`, command field validation returns error statuses for missing required fields.
+    /// When `false` (default), validation only logs warnings.
+    public var strictCommandValidation: Bool = false
+
     public init(store: AttributeStore) {
         self.store = store
     }
@@ -323,6 +327,30 @@ public final class EndpointManager: @unchecked Sendable {
 
         guard let handler = config.clusterHandlers.first(where: { $0.clusterID == path.clusterID }) else {
             return (nil, [])
+        }
+
+        // Validate command fields against spec metadata
+        if let spec = ClusterSpecRegistry.spec(for: path.clusterID),
+           let cmdSpec = spec.commands.first(where: { $0.id == path.commandID }),
+           !cmdSpec.fields.isEmpty {
+            for fieldSpec in cmdSpec.fields where !fieldSpec.isOptional {
+                let fieldPresent: Bool
+                if let fieldData = fields {
+                    fieldPresent = fieldData[contextTag: fieldSpec.id] != nil
+                } else {
+                    fieldPresent = false
+                }
+                if !fieldPresent {
+                    if strictCommandValidation {
+                        logger.warning("Command 0x\(String(format: "%04X", path.commandID.rawValue)) missing required field '\(fieldSpec.name)' (tag \(fieldSpec.id))")
+                        return (.structure([
+                            TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(0x85)) // INVALID_COMMAND
+                        ]), [])
+                    } else {
+                        logger.debug("Command 0x\(String(format: "%04X", path.commandID.rawValue)) missing required field '\(fieldSpec.name)' (tag \(fieldSpec.id))")
+                    }
+                }
+            }
         }
 
         let response = try handler.handleCommand(

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Water Heater Management Cluster (0x0094), revision 2
@@ -70,6 +71,120 @@ public enum WaterHeaterManagementCluster {
         public static let boiler = WaterHeaterHeatSourceBitmap(rawValue: 1 << 3)
         public static let other = WaterHeaterHeatSourceBitmap(rawValue: 1 << 4)
     }
+
+    // MARK: - WaterHeaterBoostInfoStruct
+
+    public struct WaterHeaterBoostInfoStruct: TLVCodable, Equatable {
+        public var duration: TLVElement
+        public var oneShot: Bool
+        public var emergencyBoost: Bool?
+        public var temporarySetpoint: Int16?
+        public var targetPercentage: UInt8?
+        public var targetReheat: UInt8
+
+        public init(
+            duration: TLVElement,
+            oneShot: Bool,
+            emergencyBoost: Bool? = nil,
+            temporarySetpoint: Int16? = nil,
+            targetPercentage: UInt8? = nil,
+            targetReheat: UInt8
+        ) {
+            self.duration = duration
+            self.oneShot = oneShot
+            self.emergencyBoost = emergencyBoost
+            self.temporarySetpoint = temporarySetpoint
+            self.targetPercentage = targetPercentage
+            self.targetReheat = targetReheat
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: duration))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(oneShot)))
+            if let val = emergencyBoost {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .bool(val)))
+            }
+            if let val = temporarySetpoint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .signedInt(Int64(val))))
+            }
+            if let val = targetPercentage {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(targetReheat))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> WaterHeaterBoostInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_duration = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Duration", tag: UInt8(0))
+            }
+            let duration = raw_duration
+            guard let raw_oneShot = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "OneShot", tag: UInt8(1))
+            }
+            let oneShot = raw_oneShot.boolValue ?? false
+            let emergencyBoost: Bool?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                emergencyBoost = fieldValue.boolValue ?? false
+            } else {
+                emergencyBoost = nil
+            }
+            let temporarySetpoint: Int16?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                temporarySetpoint = Int16(fieldValue.intValue ?? 0)
+            } else {
+                temporarySetpoint = nil
+            }
+            let targetPercentage: UInt8?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                targetPercentage = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                targetPercentage = nil
+            }
+            guard let raw_targetReheat = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "TargetReheat", tag: UInt8(5))
+            }
+            let targetReheat = UInt8(raw_targetReheat.uintValue ?? 0)
+            return WaterHeaterBoostInfoStruct(duration: duration, oneShot: oneShot, emergencyBoost: emergencyBoost, temporarySetpoint: temporarySetpoint, targetPercentage: targetPercentage, targetReheat: targetReheat)
+        }
+    }
+
+    // MARK: - BoostRequest
+
+    public struct BoostRequest: TLVCodable, Equatable {
+        public var boostInfo: WaterHeaterBoostInfoStruct
+
+        public init(
+            boostInfo: WaterHeaterBoostInfoStruct
+        ) {
+            self.boostInfo = boostInfo
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: boostInfo.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> BoostRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_boostInfo = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "BoostInfo", tag: UInt8(0))
+            }
+            let boostInfo = try WaterHeaterBoostInfoStruct.fromTLVElement(raw_boostInfo)
+            return BoostRequest(boostInfo: boostInfo)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -88,7 +203,7 @@ extension WaterHeaterManagementCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "BoostState", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Boost", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Boost", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "BoostInfo", type: .structure, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0001), name: "CancelBoost", conformance: .mandatory),
         ]
     )

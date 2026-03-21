@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Keypad Input Cluster (0x0509), revision 1
@@ -28,6 +29,13 @@ public enum KeypadInputCluster {
     public enum Command {
         /// SendKey, mandatory
         public static let sendKey = CommandID(rawValue: 0x0000)
+    }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// SendKeyResponse
+        public static let sendKeyResponse = CommandID(rawValue: 0x0001)
     }
 
     public enum CecKeyCodeEnum: UInt8, Sendable, Equatable {
@@ -124,6 +132,68 @@ public enum KeypadInputCluster {
         case unsupportedKey = 1
         case invalidKeyInCurrentState = 2
     }
+
+    // MARK: - SendKeyRequest
+
+    public struct SendKeyRequest: TLVCodable, Equatable {
+        public var keyCode: UInt8
+
+        public init(
+            keyCode: UInt8
+        ) {
+            self.keyCode = keyCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(keyCode))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SendKeyRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_keyCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "KeyCode", tag: UInt8(0))
+            }
+            let keyCode = UInt8(raw_keyCode.uintValue ?? 0)
+            return SendKeyRequest(keyCode: keyCode)
+        }
+    }
+
+    // MARK: - SendKeyResponse
+
+    public struct SendKeyResponse: TLVCodable, Equatable {
+        public var status: UInt8
+
+        public init(
+            status: UInt8
+        ) {
+            self.status = status
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SendKeyResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            return SendKeyResponse(status: status)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -136,7 +206,7 @@ extension KeypadInputCluster {
         attributes: [
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SendKey", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SendKey", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "KeyCode", type: .uint8, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

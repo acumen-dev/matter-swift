@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Ballast Configuration Cluster (0x0301), revision 4

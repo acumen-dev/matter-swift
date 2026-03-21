@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Electrical Energy Measurement Cluster (0x0091), revision 1
@@ -49,6 +50,156 @@ public enum ElectricalEnergyMeasurementCluster {
         public static let cumulativeEnergyMeasured = EventID(rawValue: 0x0000)
         /// PeriodicEnergyMeasured — priority: info, mandatory when PERE
         public static let periodicEnergyMeasured = EventID(rawValue: 0x0001)
+    }
+
+    // MARK: - CumulativeEnergyResetStruct
+
+    public struct CumulativeEnergyResetStruct: TLVCodable, Equatable {
+        public var importedResetTimestamp: TLVElement?
+        public var exportedResetTimestamp: TLVElement?
+        public var importedResetSystime: TLVElement?
+        public var exportedResetSystime: TLVElement?
+
+        public init(
+            importedResetTimestamp: TLVElement? = nil,
+            exportedResetTimestamp: TLVElement? = nil,
+            importedResetSystime: TLVElement? = nil,
+            exportedResetSystime: TLVElement? = nil
+        ) {
+            self.importedResetTimestamp = importedResetTimestamp
+            self.exportedResetTimestamp = exportedResetTimestamp
+            self.importedResetSystime = importedResetSystime
+            self.exportedResetSystime = exportedResetSystime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = importedResetTimestamp {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val))
+            }
+            if let val = exportedResetTimestamp {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: val))
+            }
+            if let val = importedResetSystime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            }
+            if let val = exportedResetSystime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CumulativeEnergyResetStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let importedResetTimestamp: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                if fieldValue.isNull {
+                    importedResetTimestamp = nil
+                } else {
+                    importedResetTimestamp = fieldValue
+                }
+            } else {
+                importedResetTimestamp = nil
+            }
+            let exportedResetTimestamp: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                if fieldValue.isNull {
+                    exportedResetTimestamp = nil
+                } else {
+                    exportedResetTimestamp = fieldValue
+                }
+            } else {
+                exportedResetTimestamp = nil
+            }
+            let importedResetSystime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                if fieldValue.isNull {
+                    importedResetSystime = nil
+                } else {
+                    importedResetSystime = fieldValue
+                }
+            } else {
+                importedResetSystime = nil
+            }
+            let exportedResetSystime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                if fieldValue.isNull {
+                    exportedResetSystime = nil
+                } else {
+                    exportedResetSystime = fieldValue
+                }
+            } else {
+                exportedResetSystime = nil
+            }
+            return CumulativeEnergyResetStruct(importedResetTimestamp: importedResetTimestamp, exportedResetTimestamp: exportedResetTimestamp, importedResetSystime: importedResetSystime, exportedResetSystime: exportedResetSystime)
+        }
+    }
+
+    // MARK: - EnergyMeasurementStruct
+
+    public struct EnergyMeasurementStruct: TLVCodable, Equatable {
+        public var energy: TLVElement
+        public var startTimestamp: TLVElement
+        public var endTimestamp: TLVElement
+        public var startSystime: TLVElement
+        public var endSystime: TLVElement
+
+        public init(
+            energy: TLVElement,
+            startTimestamp: TLVElement,
+            endTimestamp: TLVElement,
+            startSystime: TLVElement,
+            endSystime: TLVElement
+        ) {
+            self.energy = energy
+            self.startTimestamp = startTimestamp
+            self.endTimestamp = endTimestamp
+            self.startSystime = startSystime
+            self.endSystime = endSystime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: energy))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: startTimestamp))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: endTimestamp))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: startSystime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: endSystime))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnergyMeasurementStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_energy = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Energy", tag: UInt8(0))
+            }
+            let energy = raw_energy
+            guard let raw_startTimestamp = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StartTimestamp", tag: UInt8(1))
+            }
+            let startTimestamp = raw_startTimestamp
+            guard let raw_endTimestamp = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "EndTimestamp", tag: UInt8(2))
+            }
+            let endTimestamp = raw_endTimestamp
+            guard let raw_startSystime = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "StartSystime", tag: UInt8(3))
+            }
+            let startSystime = raw_startSystime
+            guard let raw_endSystime = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "EndSystime", tag: UInt8(4))
+            }
+            let endSystime = raw_endSystime
+            return EnergyMeasurementStruct(energy: energy, startTimestamp: startTimestamp, endTimestamp: endTimestamp, startSystime: startSystime, endSystime: endSystime)
+        }
     }
 }
 

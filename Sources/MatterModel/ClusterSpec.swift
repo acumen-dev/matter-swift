@@ -157,10 +157,70 @@ public struct CommandSpec: Sendable {
     /// The conformance rule for this command.
     public let conformance: SpecConformance
 
-    public init(id: CommandID, name: String, conformance: SpecConformance) {
+    /// The fields (parameters) for this command. Empty if the command takes no parameters.
+    public let fields: [FieldSpec]
+
+    /// The command ID of the response command, if this command has a named response.
+    /// `nil` for commands that return the default status response.
+    public let responseID: CommandID?
+
+    /// Whether this command is fabric-scoped.
+    public let isFabricScoped: Bool
+
+    /// Whether this command requires a timed invoke flow.
+    public let isTimedInvoke: Bool
+
+    public init(
+        id: CommandID,
+        name: String,
+        conformance: SpecConformance,
+        fields: [FieldSpec] = [],
+        responseID: CommandID? = nil,
+        isFabricScoped: Bool = false,
+        isTimedInvoke: Bool = false
+    ) {
         self.id = id
         self.name = name
         self.conformance = conformance
+        self.fields = fields
+        self.responseID = responseID
+        self.isFabricScoped = isFabricScoped
+        self.isTimedInvoke = isTimedInvoke
+    }
+}
+
+// MARK: - Field Specification
+
+/// Spec metadata for a single field within a command or struct.
+public struct FieldSpec: Sendable {
+
+    /// The context tag ID for this field in TLV encoding.
+    public let id: UInt8
+
+    /// Human-readable field name from the spec.
+    public let name: String
+
+    /// The TLV-compatible type of this field's value.
+    public let type: MatterAttributeType
+
+    /// Whether this field is optional (may be omitted from the TLV).
+    public let isOptional: Bool
+
+    /// Whether this field accepts a null value.
+    public let isNullable: Bool
+
+    public init(
+        id: UInt8,
+        name: String,
+        type: MatterAttributeType,
+        isOptional: Bool = false,
+        isNullable: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.isOptional = isOptional
+        self.isNullable = isNullable
     }
 }
 

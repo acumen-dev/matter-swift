@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Window Covering Cluster (0x0102), revision 5
@@ -192,6 +193,130 @@ public enum WindowCoveringCluster {
         public static let manualOperation = SafetyStatusBitmap(rawValue: 1 << 10)
         public static let protection = SafetyStatusBitmap(rawValue: 1 << 11)
     }
+
+    // MARK: - GoToLiftValueRequest
+
+    public struct GoToLiftValueRequest: TLVCodable, Equatable {
+        public var liftValue: UInt16
+
+        public init(
+            liftValue: UInt16
+        ) {
+            self.liftValue = liftValue
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(liftValue))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GoToLiftValueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_liftValue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "LiftValue", tag: UInt8(0))
+            }
+            let liftValue = UInt16(raw_liftValue.uintValue ?? 0)
+            return GoToLiftValueRequest(liftValue: liftValue)
+        }
+    }
+
+    // MARK: - GoToLiftPercentageRequest
+
+    public struct GoToLiftPercentageRequest: TLVCodable, Equatable {
+        public var liftPercent100thsValue: UInt16
+
+        public init(
+            liftPercent100thsValue: UInt16
+        ) {
+            self.liftPercent100thsValue = liftPercent100thsValue
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(liftPercent100thsValue))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GoToLiftPercentageRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_liftPercent100thsValue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "LiftPercent100thsValue", tag: UInt8(0))
+            }
+            let liftPercent100thsValue = UInt16(raw_liftPercent100thsValue.uintValue ?? 0)
+            return GoToLiftPercentageRequest(liftPercent100thsValue: liftPercent100thsValue)
+        }
+    }
+
+    // MARK: - GoToTiltValueRequest
+
+    public struct GoToTiltValueRequest: TLVCodable, Equatable {
+        public var tiltValue: UInt16
+
+        public init(
+            tiltValue: UInt16
+        ) {
+            self.tiltValue = tiltValue
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(tiltValue))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GoToTiltValueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_tiltValue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TiltValue", tag: UInt8(0))
+            }
+            let tiltValue = UInt16(raw_tiltValue.uintValue ?? 0)
+            return GoToTiltValueRequest(tiltValue: tiltValue)
+        }
+    }
+
+    // MARK: - GoToTiltPercentageRequest
+
+    public struct GoToTiltPercentageRequest: TLVCodable, Equatable {
+        public var tiltPercent100thsValue: UInt16
+
+        public init(
+            tiltPercent100thsValue: UInt16
+        ) {
+            self.tiltPercent100thsValue = tiltPercent100thsValue
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(tiltPercent100thsValue))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GoToTiltPercentageRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_tiltPercent100thsValue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TiltPercent100thsValue", tag: UInt8(0))
+            }
+            let tiltPercent100thsValue = UInt16(raw_tiltPercent100thsValue.uintValue ?? 0)
+            return GoToTiltPercentageRequest(tiltPercent100thsValue: tiltPercent100thsValue)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -234,10 +359,10 @@ extension WindowCoveringCluster {
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "UpOrOpen", conformance: .mandatory),
             CommandSpec(id: CommandID(rawValue: 0x0001), name: "DownOrClose", conformance: .mandatory),
             CommandSpec(id: CommandID(rawValue: 0x0002), name: "StopMotion", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GoToLiftValue", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 3)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "GoToLiftPercentage", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 2)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "GoToTiltValue", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 3)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0008), name: "GoToTiltPercentage", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 4)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GoToLiftValue", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 3)])), fields: [FieldSpec(id: 0, name: "LiftValue", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "GoToLiftPercentage", conformance: .optionalIf(.and([.feature(1 << 0), .feature(1 << 2)])), fields: [FieldSpec(id: 0, name: "LiftPercent100thsValue", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "GoToTiltValue", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 3)])), fields: [FieldSpec(id: 0, name: "TiltValue", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "GoToTiltPercentage", conformance: .optionalIf(.and([.feature(1 << 1), .feature(1 << 4)])), fields: [FieldSpec(id: 0, name: "TiltPercent100thsValue", type: .uint16, isOptional: false, isNullable: false)]),
         ]
     )
 }

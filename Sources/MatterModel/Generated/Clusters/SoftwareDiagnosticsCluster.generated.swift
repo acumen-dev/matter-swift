@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Software Diagnostics Cluster (0x0034), revision 1
@@ -44,6 +45,85 @@ public enum SoftwareDiagnosticsCluster {
     public enum Event {
         /// SoftwareFault — priority: info, optional
         public static let softwareFault = EventID(rawValue: 0x0000)
+    }
+
+    // MARK: - ThreadMetricsStruct
+
+    public struct ThreadMetricsStruct: TLVCodable, Equatable {
+        public var id: UInt64
+        public var name: String?
+        public var stackFreeCurrent: UInt32?
+        public var stackFreeMinimum: UInt32?
+        public var stackSize: UInt32?
+
+        public init(
+            id: UInt64,
+            name: String? = nil,
+            stackFreeCurrent: UInt32? = nil,
+            stackFreeMinimum: UInt32? = nil,
+            stackSize: UInt32? = nil
+        ) {
+            self.id = id
+            self.name = name
+            self.stackFreeCurrent = stackFreeCurrent
+            self.stackFreeMinimum = stackFreeMinimum
+            self.stackSize = stackSize
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(id))))
+            if let val = name {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            if let val = stackFreeCurrent {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = stackFreeMinimum {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = stackSize {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ThreadMetricsStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_id = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ID", tag: UInt8(0))
+            }
+            let id = UInt64(raw_id.uintValue ?? 0)
+            let name: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                name = fieldValue.stringValue ?? ""
+            } else {
+                name = nil
+            }
+            let stackFreeCurrent: UInt32?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                stackFreeCurrent = UInt32(fieldValue.uintValue ?? 0)
+            } else {
+                stackFreeCurrent = nil
+            }
+            let stackFreeMinimum: UInt32?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                stackFreeMinimum = UInt32(fieldValue.uintValue ?? 0)
+            } else {
+                stackFreeMinimum = nil
+            }
+            let stackSize: UInt32?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                stackSize = UInt32(fieldValue.uintValue ?? 0)
+            } else {
+                stackSize = nil
+            }
+            return ThreadMetricsStruct(id: id, name: name, stackFreeCurrent: stackFreeCurrent, stackFreeMinimum: stackFreeMinimum, stackSize: stackSize)
+        }
     }
 }
 

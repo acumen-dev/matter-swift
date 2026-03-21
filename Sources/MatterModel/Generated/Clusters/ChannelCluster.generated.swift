@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Channel Cluster (0x0504), revision 2
@@ -53,6 +54,15 @@ public enum ChannelCluster {
         public static let cancelRecordProgram = CommandID(rawValue: 0x0007)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// ChangeChannelResponse
+        public static let changeChannelResponse = CommandID(rawValue: 0x0001)
+        /// ProgramGuideResponse
+        public static let programGuideResponse = CommandID(rawValue: 0x0005)
+    }
+
     public enum ChannelTypeEnum: UInt8, Sendable, Equatable {
         case satellite = 0
         case cable = 1
@@ -77,6 +87,1050 @@ public enum ChannelCluster {
         public static let recordSeries = RecordingFlagBitmap(rawValue: 1 << 1)
         public static let recorded = RecordingFlagBitmap(rawValue: 1 << 2)
     }
+
+    // MARK: - ChannelInfoStruct
+
+    public struct ChannelInfoStruct: TLVCodable, Equatable {
+        public var majorNumber: UInt16
+        public var minorNumber: UInt16
+        public var name: String?
+        public var callSign: String?
+        public var affiliateCallSign: String?
+        public var identifier: String?
+        public var type: UInt8?
+
+        public init(
+            majorNumber: UInt16,
+            minorNumber: UInt16,
+            name: String? = nil,
+            callSign: String? = nil,
+            affiliateCallSign: String? = nil,
+            identifier: String? = nil,
+            type: UInt8? = nil
+        ) {
+            self.majorNumber = majorNumber
+            self.minorNumber = minorNumber
+            self.name = name
+            self.callSign = callSign
+            self.affiliateCallSign = affiliateCallSign
+            self.identifier = identifier
+            self.type = type
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(majorNumber))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(minorNumber))))
+            if let val = name {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            if let val = callSign {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .utf8String(val)))
+            }
+            if let val = affiliateCallSign {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .utf8String(val)))
+            }
+            if let val = identifier {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .utf8String(val)))
+            }
+            if let val = type {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChannelInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_majorNumber = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MajorNumber", tag: UInt8(0))
+            }
+            let majorNumber = UInt16(raw_majorNumber.uintValue ?? 0)
+            guard let raw_minorNumber = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "MinorNumber", tag: UInt8(1))
+            }
+            let minorNumber = UInt16(raw_minorNumber.uintValue ?? 0)
+            let name: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                name = fieldValue.stringValue ?? ""
+            } else {
+                name = nil
+            }
+            let callSign: String?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                callSign = fieldValue.stringValue ?? ""
+            } else {
+                callSign = nil
+            }
+            let affiliateCallSign: String?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                affiliateCallSign = fieldValue.stringValue ?? ""
+            } else {
+                affiliateCallSign = nil
+            }
+            let identifier: String?
+            if let fieldValue = element[contextTag: UInt8(5)] {
+                identifier = fieldValue.stringValue ?? ""
+            } else {
+                identifier = nil
+            }
+            let type: UInt8?
+            if let fieldValue = element[contextTag: UInt8(6)] {
+                type = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                type = nil
+            }
+            return ChannelInfoStruct(majorNumber: majorNumber, minorNumber: minorNumber, name: name, callSign: callSign, affiliateCallSign: affiliateCallSign, identifier: identifier, type: type)
+        }
+    }
+
+    // MARK: - ChannelPagingStruct
+
+    public struct ChannelPagingStruct: TLVCodable, Equatable {
+        public var previousToken: PageTokenStruct?
+        public var nextToken: PageTokenStruct?
+
+        public init(
+            previousToken: PageTokenStruct? = nil,
+            nextToken: PageTokenStruct? = nil
+        ) {
+            self.previousToken = previousToken
+            self.nextToken = nextToken
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = previousToken {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val.toTLVElement()))
+            }
+            if let val = nextToken {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: val.toTLVElement()))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChannelPagingStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let previousToken: PageTokenStruct?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                if fieldValue.isNull {
+                    previousToken = nil
+                } else {
+                    previousToken = try PageTokenStruct.fromTLVElement(fieldValue)
+                }
+            } else {
+                previousToken = nil
+            }
+            let nextToken: PageTokenStruct?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                if fieldValue.isNull {
+                    nextToken = nil
+                } else {
+                    nextToken = try PageTokenStruct.fromTLVElement(fieldValue)
+                }
+            } else {
+                nextToken = nil
+            }
+            return ChannelPagingStruct(previousToken: previousToken, nextToken: nextToken)
+        }
+    }
+
+    // MARK: - LineupInfoStruct
+
+    public struct LineupInfoStruct: TLVCodable, Equatable {
+        public var operatorName: String
+        public var lineupName: String?
+        public var postalCode: String?
+        public var lineupInfoType: UInt8
+
+        public init(
+            operatorName: String,
+            lineupName: String? = nil,
+            postalCode: String? = nil,
+            lineupInfoType: UInt8
+        ) {
+            self.operatorName = operatorName
+            self.lineupName = lineupName
+            self.postalCode = postalCode
+            self.lineupInfoType = lineupInfoType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(operatorName)))
+            if let val = lineupName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            if let val = postalCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(lineupInfoType))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> LineupInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_operatorName = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OperatorName", tag: UInt8(0))
+            }
+            let operatorName = raw_operatorName.stringValue ?? ""
+            let lineupName: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                lineupName = fieldValue.stringValue ?? ""
+            } else {
+                lineupName = nil
+            }
+            let postalCode: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                postalCode = fieldValue.stringValue ?? ""
+            } else {
+                postalCode = nil
+            }
+            guard let raw_lineupInfoType = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "LineupInfoType", tag: UInt8(3))
+            }
+            let lineupInfoType = UInt8(raw_lineupInfoType.uintValue ?? 0)
+            return LineupInfoStruct(operatorName: operatorName, lineupName: lineupName, postalCode: postalCode, lineupInfoType: lineupInfoType)
+        }
+    }
+
+    // MARK: - PageTokenStruct
+
+    public struct PageTokenStruct: TLVCodable, Equatable {
+        public var limit: UInt16?
+        public var after: String?
+        public var before: String?
+
+        public init(
+            limit: UInt16? = nil,
+            after: String? = nil,
+            before: String? = nil
+        ) {
+            self.limit = limit
+            self.after = after
+            self.before = before
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = limit {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = after {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            if let val = before {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PageTokenStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let limit: UInt16?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                limit = UInt16(fieldValue.uintValue ?? 0)
+            } else {
+                limit = nil
+            }
+            let after: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                after = fieldValue.stringValue ?? ""
+            } else {
+                after = nil
+            }
+            let before: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                before = fieldValue.stringValue ?? ""
+            } else {
+                before = nil
+            }
+            return PageTokenStruct(limit: limit, after: after, before: before)
+        }
+    }
+
+    // MARK: - ProgramCastStruct
+
+    public struct ProgramCastStruct: TLVCodable, Equatable {
+        public var name: String
+        public var role: String
+
+        public init(
+            name: String,
+            role: String
+        ) {
+            self.name = name
+            self.role = role
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(name)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(role)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ProgramCastStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_name = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Name", tag: UInt8(0))
+            }
+            let name = raw_name.stringValue ?? ""
+            guard let raw_role = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Role", tag: UInt8(1))
+            }
+            let role = raw_role.stringValue ?? ""
+            return ProgramCastStruct(name: name, role: role)
+        }
+    }
+
+    // MARK: - ProgramCategoryStruct
+
+    public struct ProgramCategoryStruct: TLVCodable, Equatable {
+        public var category: String
+        public var subCategory: String?
+
+        public init(
+            category: String,
+            subCategory: String? = nil
+        ) {
+            self.category = category
+            self.subCategory = subCategory
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(category)))
+            if let val = subCategory {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ProgramCategoryStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_category = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Category", tag: UInt8(0))
+            }
+            let category = raw_category.stringValue ?? ""
+            let subCategory: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                subCategory = fieldValue.stringValue ?? ""
+            } else {
+                subCategory = nil
+            }
+            return ProgramCategoryStruct(category: category, subCategory: subCategory)
+        }
+    }
+
+    // MARK: - ProgramStruct
+
+    public struct ProgramStruct: TLVCodable, Equatable {
+        public var identifier: String
+        public var channel: ChannelInfoStruct
+        public var startTime: TLVElement
+        public var endTime: TLVElement
+        public var title: String
+        public var subtitle: String?
+        public var description: String?
+        public var audioLanguages: [String]?
+        public var ratings: [String]?
+        public var thumbnailUrl: String?
+        public var posterArtUrl: String?
+        public var dvbiUrl: String?
+        public var releaseDate: String?
+        public var parentalGuidanceText: String?
+        public var recordingFlag: UInt8
+        public var seriesInfo: SeriesInfoStruct?
+        public var categoryList: [ProgramCategoryStruct]?
+        public var castList: [ProgramCastStruct]?
+        public var externalIDList: [TLVElement]?
+
+        public init(
+            identifier: String,
+            channel: ChannelInfoStruct,
+            startTime: TLVElement,
+            endTime: TLVElement,
+            title: String,
+            subtitle: String? = nil,
+            description: String? = nil,
+            audioLanguages: [String]? = nil,
+            ratings: [String]? = nil,
+            thumbnailUrl: String? = nil,
+            posterArtUrl: String? = nil,
+            dvbiUrl: String? = nil,
+            releaseDate: String? = nil,
+            parentalGuidanceText: String? = nil,
+            recordingFlag: UInt8,
+            seriesInfo: SeriesInfoStruct? = nil,
+            categoryList: [ProgramCategoryStruct]? = nil,
+            castList: [ProgramCastStruct]? = nil,
+            externalIDList: [TLVElement]? = nil
+        ) {
+            self.identifier = identifier
+            self.channel = channel
+            self.startTime = startTime
+            self.endTime = endTime
+            self.title = title
+            self.subtitle = subtitle
+            self.description = description
+            self.audioLanguages = audioLanguages
+            self.ratings = ratings
+            self.thumbnailUrl = thumbnailUrl
+            self.posterArtUrl = posterArtUrl
+            self.dvbiUrl = dvbiUrl
+            self.releaseDate = releaseDate
+            self.parentalGuidanceText = parentalGuidanceText
+            self.recordingFlag = recordingFlag
+            self.seriesInfo = seriesInfo
+            self.categoryList = categoryList
+            self.castList = castList
+            self.externalIDList = externalIDList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(identifier)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: channel.toTLVElement()))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: startTime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: endTime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .utf8String(title)))
+            if let val = subtitle {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .utf8String(val)))
+            }
+            if let val = description {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .utf8String(val)))
+            }
+            if let val = audioLanguages {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .array(val.map { .utf8String($0) })))
+            }
+            if let val = ratings {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: .array(val.map { .utf8String($0) })))
+            }
+            if let val = thumbnailUrl {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: .utf8String(val)))
+            }
+            if let val = posterArtUrl {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(10), value: .utf8String(val)))
+            }
+            if let val = dvbiUrl {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(11), value: .utf8String(val)))
+            }
+            if let val = releaseDate {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(12), value: .utf8String(val)))
+            }
+            if let val = parentalGuidanceText {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(13), value: .utf8String(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(14), value: .unsignedInt(UInt64(recordingFlag))))
+            if let val = seriesInfo {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(15), value: val.toTLVElement()))
+            }
+            if let val = categoryList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(16), value: .array(val.map { $0.toTLVElement() })))
+            }
+            if let val = castList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(17), value: .array(val.map { $0.toTLVElement() })))
+            }
+            if let val = externalIDList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(18), value: .array(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ProgramStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_identifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Identifier", tag: UInt8(0))
+            }
+            let identifier = raw_identifier.stringValue ?? ""
+            guard let raw_channel = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Channel", tag: UInt8(1))
+            }
+            let channel = try ChannelInfoStruct.fromTLVElement(raw_channel)
+            guard let raw_startTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "StartTime", tag: UInt8(2))
+            }
+            let startTime = raw_startTime
+            guard let raw_endTime = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "EndTime", tag: UInt8(3))
+            }
+            let endTime = raw_endTime
+            guard let raw_title = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "Title", tag: UInt8(4))
+            }
+            let title = raw_title.stringValue ?? ""
+            let subtitle: String?
+            if let fieldValue = element[contextTag: UInt8(5)] {
+                subtitle = fieldValue.stringValue ?? ""
+            } else {
+                subtitle = nil
+            }
+            let description: String?
+            if let fieldValue = element[contextTag: UInt8(6)] {
+                description = fieldValue.stringValue ?? ""
+            } else {
+                description = nil
+            }
+            let audioLanguages: [String]?
+            if let fieldValue = element[contextTag: UInt8(7)] {
+                audioLanguages = (fieldValue.arrayElements ?? []).map { $0.stringValue ?? "" }
+            } else {
+                audioLanguages = nil
+            }
+            let ratings: [String]?
+            if let fieldValue = element[contextTag: UInt8(8)] {
+                ratings = (fieldValue.arrayElements ?? []).map { $0.stringValue ?? "" }
+            } else {
+                ratings = nil
+            }
+            let thumbnailUrl: String?
+            if let fieldValue = element[contextTag: UInt8(9)] {
+                thumbnailUrl = fieldValue.stringValue ?? ""
+            } else {
+                thumbnailUrl = nil
+            }
+            let posterArtUrl: String?
+            if let fieldValue = element[contextTag: UInt8(10)] {
+                posterArtUrl = fieldValue.stringValue ?? ""
+            } else {
+                posterArtUrl = nil
+            }
+            let dvbiUrl: String?
+            if let fieldValue = element[contextTag: UInt8(11)] {
+                dvbiUrl = fieldValue.stringValue ?? ""
+            } else {
+                dvbiUrl = nil
+            }
+            let releaseDate: String?
+            if let fieldValue = element[contextTag: UInt8(12)] {
+                releaseDate = fieldValue.stringValue ?? ""
+            } else {
+                releaseDate = nil
+            }
+            let parentalGuidanceText: String?
+            if let fieldValue = element[contextTag: UInt8(13)] {
+                parentalGuidanceText = fieldValue.stringValue ?? ""
+            } else {
+                parentalGuidanceText = nil
+            }
+            guard let raw_recordingFlag = element[contextTag: UInt8(14)] else {
+                throw TLVDecodingError.missingField(name: "RecordingFlag", tag: UInt8(14))
+            }
+            let recordingFlag = UInt8(raw_recordingFlag.uintValue ?? 0)
+            let seriesInfo: SeriesInfoStruct?
+            if let fieldValue = element[contextTag: UInt8(15)] {
+                if fieldValue.isNull {
+                    seriesInfo = nil
+                } else {
+                    seriesInfo = try SeriesInfoStruct.fromTLVElement(fieldValue)
+                }
+            } else {
+                seriesInfo = nil
+            }
+            let categoryList: [ProgramCategoryStruct]?
+            if let fieldValue = element[contextTag: UInt8(16)] {
+                categoryList = (fieldValue.arrayElements ?? []).compactMap { try? ProgramCategoryStruct.fromTLVElement($0) }
+            } else {
+                categoryList = nil
+            }
+            let castList: [ProgramCastStruct]?
+            if let fieldValue = element[contextTag: UInt8(17)] {
+                castList = (fieldValue.arrayElements ?? []).compactMap { try? ProgramCastStruct.fromTLVElement($0) }
+            } else {
+                castList = nil
+            }
+            let externalIDList: [TLVElement]?
+            if let fieldValue = element[contextTag: UInt8(18)] {
+                externalIDList = (fieldValue.arrayElements ?? []).map { $0 }
+            } else {
+                externalIDList = nil
+            }
+            return ProgramStruct(identifier: identifier, channel: channel, startTime: startTime, endTime: endTime, title: title, subtitle: subtitle, description: description, audioLanguages: audioLanguages, ratings: ratings, thumbnailUrl: thumbnailUrl, posterArtUrl: posterArtUrl, dvbiUrl: dvbiUrl, releaseDate: releaseDate, parentalGuidanceText: parentalGuidanceText, recordingFlag: recordingFlag, seriesInfo: seriesInfo, categoryList: categoryList, castList: castList, externalIDList: externalIDList)
+        }
+    }
+
+    // MARK: - SeriesInfoStruct
+
+    public struct SeriesInfoStruct: TLVCodable, Equatable {
+        public var season: String
+        public var episode: String
+
+        public init(
+            season: String,
+            episode: String
+        ) {
+            self.season = season
+            self.episode = episode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(season)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(episode)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SeriesInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_season = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Season", tag: UInt8(0))
+            }
+            let season = raw_season.stringValue ?? ""
+            guard let raw_episode = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Episode", tag: UInt8(1))
+            }
+            let episode = raw_episode.stringValue ?? ""
+            return SeriesInfoStruct(season: season, episode: episode)
+        }
+    }
+
+    // MARK: - ChangeChannelRequest
+
+    public struct ChangeChannelRequest: TLVCodable, Equatable {
+        public var match: String
+
+        public init(
+            match: String
+        ) {
+            self.match = match
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(match)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChangeChannelRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_match = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Match", tag: UInt8(0))
+            }
+            let match = raw_match.stringValue ?? ""
+            return ChangeChannelRequest(match: match)
+        }
+    }
+
+    // MARK: - ChangeChannelResponse
+
+    public struct ChangeChannelResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var data: String?
+
+        public init(
+            status: UInt8,
+            data: String? = nil
+        ) {
+            self.status = status
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChangeChannelResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let data: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.stringValue ?? ""
+            } else {
+                data = nil
+            }
+            return ChangeChannelResponse(status: status, data: data)
+        }
+    }
+
+    // MARK: - ChangeChannelByNumberRequest
+
+    public struct ChangeChannelByNumberRequest: TLVCodable, Equatable {
+        public var majorNumber: UInt16
+        public var minorNumber: UInt16
+
+        public init(
+            majorNumber: UInt16,
+            minorNumber: UInt16
+        ) {
+            self.majorNumber = majorNumber
+            self.minorNumber = minorNumber
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(majorNumber))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(minorNumber))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChangeChannelByNumberRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_majorNumber = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MajorNumber", tag: UInt8(0))
+            }
+            let majorNumber = UInt16(raw_majorNumber.uintValue ?? 0)
+            guard let raw_minorNumber = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "MinorNumber", tag: UInt8(1))
+            }
+            let minorNumber = UInt16(raw_minorNumber.uintValue ?? 0)
+            return ChangeChannelByNumberRequest(majorNumber: majorNumber, minorNumber: minorNumber)
+        }
+    }
+
+    // MARK: - SkipChannelRequest
+
+    public struct SkipChannelRequest: TLVCodable, Equatable {
+        public var count: Int16
+
+        public init(
+            count: Int16
+        ) {
+            self.count = count
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .signedInt(Int64(count))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SkipChannelRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_count = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Count", tag: UInt8(0))
+            }
+            let count = Int16(raw_count.intValue ?? 0)
+            return SkipChannelRequest(count: count)
+        }
+    }
+
+    // MARK: - GetProgramGuideRequest
+
+    public struct GetProgramGuideRequest: TLVCodable, Equatable {
+        public var startTime: TLVElement
+        public var endTime: TLVElement
+        public var channelList: [ChannelInfoStruct]?
+        public var pageToken: PageTokenStruct?
+        public var recordingFlag: UInt8?
+        public var externalIDList: [TLVElement]?
+        public var data: Data?
+
+        public init(
+            startTime: TLVElement,
+            endTime: TLVElement,
+            channelList: [ChannelInfoStruct]? = nil,
+            pageToken: PageTokenStruct? = nil,
+            recordingFlag: UInt8? = nil,
+            externalIDList: [TLVElement]? = nil,
+            data: Data? = nil
+        ) {
+            self.startTime = startTime
+            self.endTime = endTime
+            self.channelList = channelList
+            self.pageToken = pageToken
+            self.recordingFlag = recordingFlag
+            self.externalIDList = externalIDList
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: startTime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: endTime))
+            if let val = channelList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .array(val.map { $0.toTLVElement() })))
+            }
+            if let val = pageToken {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val.toTLVElement()))
+            }
+            if let val = recordingFlag {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = externalIDList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .array(val)))
+            }
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetProgramGuideRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_startTime = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StartTime", tag: UInt8(0))
+            }
+            let startTime = raw_startTime
+            guard let raw_endTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EndTime", tag: UInt8(1))
+            }
+            let endTime = raw_endTime
+            let channelList: [ChannelInfoStruct]?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                channelList = (fieldValue.arrayElements ?? []).compactMap { try? ChannelInfoStruct.fromTLVElement($0) }
+            } else {
+                channelList = nil
+            }
+            let pageToken: PageTokenStruct?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                if fieldValue.isNull {
+                    pageToken = nil
+                } else {
+                    pageToken = try PageTokenStruct.fromTLVElement(fieldValue)
+                }
+            } else {
+                pageToken = nil
+            }
+            let recordingFlag: UInt8?
+            if let fieldValue = element[contextTag: UInt8(5)] {
+                if fieldValue.isNull {
+                    recordingFlag = nil
+                } else {
+                    recordingFlag = UInt8(fieldValue.uintValue ?? 0)
+                }
+            } else {
+                recordingFlag = nil
+            }
+            let externalIDList: [TLVElement]?
+            if let fieldValue = element[contextTag: UInt8(6)] {
+                externalIDList = (fieldValue.arrayElements ?? []).map { $0 }
+            } else {
+                externalIDList = nil
+            }
+            let data: Data?
+            if let fieldValue = element[contextTag: UInt8(7)] {
+                data = fieldValue.dataValue ?? Data()
+            } else {
+                data = nil
+            }
+            return GetProgramGuideRequest(startTime: startTime, endTime: endTime, channelList: channelList, pageToken: pageToken, recordingFlag: recordingFlag, externalIDList: externalIDList, data: data)
+        }
+    }
+
+    // MARK: - ProgramGuideResponse
+
+    public struct ProgramGuideResponse: TLVCodable, Equatable {
+        public var paging: ChannelPagingStruct
+        public var programList: [ProgramStruct]
+
+        public init(
+            paging: ChannelPagingStruct,
+            programList: [ProgramStruct]
+        ) {
+            self.paging = paging
+            self.programList = programList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: paging.toTLVElement()))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .array(programList.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ProgramGuideResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_paging = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Paging", tag: UInt8(0))
+            }
+            let paging = try ChannelPagingStruct.fromTLVElement(raw_paging)
+            guard let raw_programList = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ProgramList", tag: UInt8(1))
+            }
+            let programList = (raw_programList.arrayElements ?? []).compactMap { try? ProgramStruct.fromTLVElement($0) }
+            return ProgramGuideResponse(paging: paging, programList: programList)
+        }
+    }
+
+    // MARK: - RecordProgramRequest
+
+    public struct RecordProgramRequest: TLVCodable, Equatable {
+        public var programIdentifier: String
+        public var shouldRecordSeries: Bool
+        public var externalIDList: [TLVElement]?
+        public var data: Data?
+
+        public init(
+            programIdentifier: String,
+            shouldRecordSeries: Bool,
+            externalIDList: [TLVElement]? = nil,
+            data: Data? = nil
+        ) {
+            self.programIdentifier = programIdentifier
+            self.shouldRecordSeries = shouldRecordSeries
+            self.externalIDList = externalIDList
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(programIdentifier)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(shouldRecordSeries)))
+            if let val = externalIDList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .array(val)))
+            }
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RecordProgramRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_programIdentifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ProgramIdentifier", tag: UInt8(0))
+            }
+            let programIdentifier = raw_programIdentifier.stringValue ?? ""
+            guard let raw_shouldRecordSeries = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ShouldRecordSeries", tag: UInt8(1))
+            }
+            let shouldRecordSeries = raw_shouldRecordSeries.boolValue ?? false
+            let externalIDList: [TLVElement]?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                externalIDList = (fieldValue.arrayElements ?? []).map { $0 }
+            } else {
+                externalIDList = nil
+            }
+            let data: Data?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                data = fieldValue.dataValue ?? Data()
+            } else {
+                data = nil
+            }
+            return RecordProgramRequest(programIdentifier: programIdentifier, shouldRecordSeries: shouldRecordSeries, externalIDList: externalIDList, data: data)
+        }
+    }
+
+    // MARK: - CancelRecordProgramRequest
+
+    public struct CancelRecordProgramRequest: TLVCodable, Equatable {
+        public var programIdentifier: String
+        public var shouldRecordSeries: Bool
+        public var externalIDList: [TLVElement]?
+        public var data: Data?
+
+        public init(
+            programIdentifier: String,
+            shouldRecordSeries: Bool,
+            externalIDList: [TLVElement]? = nil,
+            data: Data? = nil
+        ) {
+            self.programIdentifier = programIdentifier
+            self.shouldRecordSeries = shouldRecordSeries
+            self.externalIDList = externalIDList
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(programIdentifier)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(shouldRecordSeries)))
+            if let val = externalIDList {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .array(val)))
+            }
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CancelRecordProgramRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_programIdentifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ProgramIdentifier", tag: UInt8(0))
+            }
+            let programIdentifier = raw_programIdentifier.stringValue ?? ""
+            guard let raw_shouldRecordSeries = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ShouldRecordSeries", tag: UInt8(1))
+            }
+            let shouldRecordSeries = raw_shouldRecordSeries.boolValue ?? false
+            let externalIDList: [TLVElement]?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                externalIDList = (fieldValue.arrayElements ?? []).map { $0 }
+            } else {
+                externalIDList = nil
+            }
+            let data: Data?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                data = fieldValue.dataValue ?? Data()
+            } else {
+                data = nil
+            }
+            return CancelRecordProgramRequest(programIdentifier: programIdentifier, shouldRecordSeries: shouldRecordSeries, externalIDList: externalIDList, data: data)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -92,12 +1146,12 @@ extension ChannelCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "CurrentChannel", conformance: .optional, type: .structure, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeChannel", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "ChangeChannelByNumber", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "SkipChannel", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GetProgramGuide", conformance: .mandatoryIf(.feature(1 << 2))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "RecordProgram", conformance: .mandatoryIf(.and([.feature(1 << 3), .feature(1 << 2)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "CancelRecordProgram", conformance: .mandatoryIf(.and([.feature(1 << 3), .feature(1 << 2)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeChannel", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "Match", type: .string, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "ChangeChannelByNumber", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "MajorNumber", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "MinorNumber", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "SkipChannel", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Count", type: .int16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GetProgramGuide", conformance: .mandatoryIf(.feature(1 << 2)), fields: [FieldSpec(id: 0, name: "StartTime", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EndTime", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "ChannelList", type: .list, isOptional: true, isNullable: false), FieldSpec(id: 3, name: "PageToken", type: .structure, isOptional: true, isNullable: true), FieldSpec(id: 5, name: "RecordingFlag", type: .uint8, isOptional: true, isNullable: true), FieldSpec(id: 6, name: "ExternalIDList", type: .list, isOptional: true, isNullable: false), FieldSpec(id: 7, name: "Data", type: .octstr, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0005)),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "RecordProgram", conformance: .mandatoryIf(.and([.feature(1 << 3), .feature(1 << 2)])), fields: [FieldSpec(id: 0, name: "ProgramIdentifier", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ShouldRecordSeries", type: .bool, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "ExternalIDList", type: .list, isOptional: true, isNullable: false), FieldSpec(id: 3, name: "Data", type: .octstr, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "CancelRecordProgram", conformance: .mandatoryIf(.and([.feature(1 << 3), .feature(1 << 2)])), fields: [FieldSpec(id: 0, name: "ProgramIdentifier", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ShouldRecordSeries", type: .bool, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "ExternalIDList", type: .list, isOptional: true, isNullable: false), FieldSpec(id: 3, name: "Data", type: .octstr, isOptional: true, isNullable: false)]),
         ]
     )
 }

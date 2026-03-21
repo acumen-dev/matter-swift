@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Color Control Cluster (0x0300), revision 7
@@ -253,6 +254,1171 @@ public enum ColorControlCluster {
         public static let updateTime = UpdateFlagsBitmap(rawValue: 1 << 2)
         public static let updateStartHue = UpdateFlagsBitmap(rawValue: 1 << 3)
     }
+
+    // MARK: - MoveToHueRequest
+
+    public struct MoveToHueRequest: TLVCodable, Equatable {
+        public var hue: UInt8
+        public var direction: UInt8
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            hue: UInt8,
+            direction: UInt8,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.hue = hue
+            self.direction = direction
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(hue))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(direction))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveToHueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_hue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Hue", tag: UInt8(0))
+            }
+            let hue = UInt8(raw_hue.uintValue ?? 0)
+            guard let raw_direction = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Direction", tag: UInt8(1))
+            }
+            let direction = UInt8(raw_direction.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveToHueRequest(hue: hue, direction: direction, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveHueRequest
+
+    public struct MoveHueRequest: TLVCodable, Equatable {
+        public var moveMode: UInt8
+        public var rate: UInt8
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            moveMode: UInt8,
+            rate: UInt8,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.moveMode = moveMode
+            self.rate = rate
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(moveMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(rate))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveHueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_moveMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MoveMode", tag: UInt8(0))
+            }
+            let moveMode = UInt8(raw_moveMode.uintValue ?? 0)
+            guard let raw_rate = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Rate", tag: UInt8(1))
+            }
+            let rate = UInt8(raw_rate.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(2))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(3))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveHueRequest(moveMode: moveMode, rate: rate, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - StepHueRequest
+
+    public struct StepHueRequest: TLVCodable, Equatable {
+        public var stepMode: UInt8
+        public var stepSize: UInt8
+        public var transitionTime: UInt8
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            stepMode: UInt8,
+            stepSize: UInt8,
+            transitionTime: UInt8,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.stepMode = stepMode
+            self.stepSize = stepSize
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(stepMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(stepSize))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StepHueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_stepMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StepMode", tag: UInt8(0))
+            }
+            let stepMode = UInt8(raw_stepMode.uintValue ?? 0)
+            guard let raw_stepSize = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StepSize", tag: UInt8(1))
+            }
+            let stepSize = UInt8(raw_stepSize.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt8(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return StepHueRequest(stepMode: stepMode, stepSize: stepSize, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveToSaturationRequest
+
+    public struct MoveToSaturationRequest: TLVCodable, Equatable {
+        public var saturation: UInt8
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            saturation: UInt8,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.saturation = saturation
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(saturation))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveToSaturationRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_saturation = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Saturation", tag: UInt8(0))
+            }
+            let saturation = UInt8(raw_saturation.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(1))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(2))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(3))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveToSaturationRequest(saturation: saturation, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveSaturationRequest
+
+    public struct MoveSaturationRequest: TLVCodable, Equatable {
+        public var moveMode: UInt8
+        public var rate: UInt8
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            moveMode: UInt8,
+            rate: UInt8,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.moveMode = moveMode
+            self.rate = rate
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(moveMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(rate))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveSaturationRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_moveMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MoveMode", tag: UInt8(0))
+            }
+            let moveMode = UInt8(raw_moveMode.uintValue ?? 0)
+            guard let raw_rate = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Rate", tag: UInt8(1))
+            }
+            let rate = UInt8(raw_rate.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(2))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(3))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveSaturationRequest(moveMode: moveMode, rate: rate, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - StepSaturationRequest
+
+    public struct StepSaturationRequest: TLVCodable, Equatable {
+        public var stepMode: UInt8
+        public var stepSize: UInt8
+        public var transitionTime: UInt8
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            stepMode: UInt8,
+            stepSize: UInt8,
+            transitionTime: UInt8,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.stepMode = stepMode
+            self.stepSize = stepSize
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(stepMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(stepSize))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StepSaturationRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_stepMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StepMode", tag: UInt8(0))
+            }
+            let stepMode = UInt8(raw_stepMode.uintValue ?? 0)
+            guard let raw_stepSize = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StepSize", tag: UInt8(1))
+            }
+            let stepSize = UInt8(raw_stepSize.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt8(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return StepSaturationRequest(stepMode: stepMode, stepSize: stepSize, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveToHueAndSaturationRequest
+
+    public struct MoveToHueAndSaturationRequest: TLVCodable, Equatable {
+        public var hue: UInt8
+        public var saturation: UInt8
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            hue: UInt8,
+            saturation: UInt8,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.hue = hue
+            self.saturation = saturation
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(hue))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(saturation))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveToHueAndSaturationRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_hue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Hue", tag: UInt8(0))
+            }
+            let hue = UInt8(raw_hue.uintValue ?? 0)
+            guard let raw_saturation = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Saturation", tag: UInt8(1))
+            }
+            let saturation = UInt8(raw_saturation.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveToHueAndSaturationRequest(hue: hue, saturation: saturation, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveToColorRequest
+
+    public struct MoveToColorRequest: TLVCodable, Equatable {
+        public var colorX: UInt16
+        public var colorY: UInt16
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            colorX: UInt16,
+            colorY: UInt16,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.colorX = colorX
+            self.colorY = colorY
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(colorX))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(colorY))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveToColorRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_colorX = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ColorX", tag: UInt8(0))
+            }
+            let colorX = UInt16(raw_colorX.uintValue ?? 0)
+            guard let raw_colorY = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ColorY", tag: UInt8(1))
+            }
+            let colorY = UInt16(raw_colorY.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveToColorRequest(colorX: colorX, colorY: colorY, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveColorRequest
+
+    public struct MoveColorRequest: TLVCodable, Equatable {
+        public var rateX: Int16
+        public var rateY: Int16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            rateX: Int16,
+            rateY: Int16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.rateX = rateX
+            self.rateY = rateY
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .signedInt(Int64(rateX))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .signedInt(Int64(rateY))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveColorRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rateX = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "RateX", tag: UInt8(0))
+            }
+            let rateX = Int16(raw_rateX.intValue ?? 0)
+            guard let raw_rateY = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "RateY", tag: UInt8(1))
+            }
+            let rateY = Int16(raw_rateY.intValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(2))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(3))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveColorRequest(rateX: rateX, rateY: rateY, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - StepColorRequest
+
+    public struct StepColorRequest: TLVCodable, Equatable {
+        public var stepX: Int16
+        public var stepY: Int16
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            stepX: Int16,
+            stepY: Int16,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.stepX = stepX
+            self.stepY = stepY
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .signedInt(Int64(stepX))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .signedInt(Int64(stepY))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StepColorRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_stepX = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StepX", tag: UInt8(0))
+            }
+            let stepX = Int16(raw_stepX.intValue ?? 0)
+            guard let raw_stepY = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StepY", tag: UInt8(1))
+            }
+            let stepY = Int16(raw_stepY.intValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return StepColorRequest(stepX: stepX, stepY: stepY, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveToColorTemperatureRequest
+
+    public struct MoveToColorTemperatureRequest: TLVCodable, Equatable {
+        public var colorTemperatureMireds: UInt16
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            colorTemperatureMireds: UInt16,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.colorTemperatureMireds = colorTemperatureMireds
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(colorTemperatureMireds))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveToColorTemperatureRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_colorTemperatureMireds = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ColorTemperatureMireds", tag: UInt8(0))
+            }
+            let colorTemperatureMireds = UInt16(raw_colorTemperatureMireds.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(1))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(2))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(3))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveToColorTemperatureRequest(colorTemperatureMireds: colorTemperatureMireds, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - EnhancedMoveToHueRequest
+
+    public struct EnhancedMoveToHueRequest: TLVCodable, Equatable {
+        public var enhancedHue: UInt16
+        public var direction: UInt8
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            enhancedHue: UInt16,
+            direction: UInt8,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.enhancedHue = enhancedHue
+            self.direction = direction
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(enhancedHue))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(direction))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnhancedMoveToHueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_enhancedHue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EnhancedHue", tag: UInt8(0))
+            }
+            let enhancedHue = UInt16(raw_enhancedHue.uintValue ?? 0)
+            guard let raw_direction = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Direction", tag: UInt8(1))
+            }
+            let direction = UInt8(raw_direction.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return EnhancedMoveToHueRequest(enhancedHue: enhancedHue, direction: direction, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - EnhancedMoveHueRequest
+
+    public struct EnhancedMoveHueRequest: TLVCodable, Equatable {
+        public var moveMode: UInt8
+        public var rate: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            moveMode: UInt8,
+            rate: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.moveMode = moveMode
+            self.rate = rate
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(moveMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(rate))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnhancedMoveHueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_moveMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MoveMode", tag: UInt8(0))
+            }
+            let moveMode = UInt8(raw_moveMode.uintValue ?? 0)
+            guard let raw_rate = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Rate", tag: UInt8(1))
+            }
+            let rate = UInt16(raw_rate.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(2))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(3))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return EnhancedMoveHueRequest(moveMode: moveMode, rate: rate, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - EnhancedStepHueRequest
+
+    public struct EnhancedStepHueRequest: TLVCodable, Equatable {
+        public var stepMode: UInt8
+        public var stepSize: UInt16
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            stepMode: UInt8,
+            stepSize: UInt16,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.stepMode = stepMode
+            self.stepSize = stepSize
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(stepMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(stepSize))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnhancedStepHueRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_stepMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StepMode", tag: UInt8(0))
+            }
+            let stepMode = UInt8(raw_stepMode.uintValue ?? 0)
+            guard let raw_stepSize = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StepSize", tag: UInt8(1))
+            }
+            let stepSize = UInt16(raw_stepSize.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return EnhancedStepHueRequest(stepMode: stepMode, stepSize: stepSize, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - EnhancedMoveToHueAndSaturationRequest
+
+    public struct EnhancedMoveToHueAndSaturationRequest: TLVCodable, Equatable {
+        public var enhancedHue: UInt16
+        public var saturation: UInt8
+        public var transitionTime: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            enhancedHue: UInt16,
+            saturation: UInt8,
+            transitionTime: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.enhancedHue = enhancedHue
+            self.saturation = saturation
+            self.transitionTime = transitionTime
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(enhancedHue))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(saturation))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnhancedMoveToHueAndSaturationRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_enhancedHue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EnhancedHue", tag: UInt8(0))
+            }
+            let enhancedHue = UInt16(raw_enhancedHue.uintValue ?? 0)
+            guard let raw_saturation = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Saturation", tag: UInt8(1))
+            }
+            let saturation = UInt8(raw_saturation.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(3))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(4))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return EnhancedMoveToHueAndSaturationRequest(enhancedHue: enhancedHue, saturation: saturation, transitionTime: transitionTime, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - ColorLoopSetRequest
+
+    public struct ColorLoopSetRequest: TLVCodable, Equatable {
+        public var updateFlags: UInt8
+        public var action: UInt8
+        public var direction: UInt8
+        public var time: UInt16
+        public var startHue: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            updateFlags: UInt8,
+            action: UInt8,
+            direction: UInt8,
+            time: UInt16,
+            startHue: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.updateFlags = updateFlags
+            self.action = action
+            self.direction = direction
+            self.time = time
+            self.startHue = startHue
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(updateFlags))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(action))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(direction))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(time))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(startHue))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ColorLoopSetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_updateFlags = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UpdateFlags", tag: UInt8(0))
+            }
+            let updateFlags = UInt8(raw_updateFlags.uintValue ?? 0)
+            guard let raw_action = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Action", tag: UInt8(1))
+            }
+            let action = UInt8(raw_action.uintValue ?? 0)
+            guard let raw_direction = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Direction", tag: UInt8(2))
+            }
+            let direction = UInt8(raw_direction.uintValue ?? 0)
+            guard let raw_time = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "Time", tag: UInt8(3))
+            }
+            let time = UInt16(raw_time.uintValue ?? 0)
+            guard let raw_startHue = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "StartHue", tag: UInt8(4))
+            }
+            let startHue = UInt16(raw_startHue.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(5))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(6))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return ColorLoopSetRequest(updateFlags: updateFlags, action: action, direction: direction, time: time, startHue: startHue, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - StopMoveStepRequest
+
+    public struct StopMoveStepRequest: TLVCodable, Equatable {
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StopMoveStepRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_optionsMask = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(0))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(1))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return StopMoveStepRequest(optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - MoveColorTemperatureRequest
+
+    public struct MoveColorTemperatureRequest: TLVCodable, Equatable {
+        public var moveMode: UInt8
+        public var rate: UInt16
+        public var colorTemperatureMinimumMireds: UInt16
+        public var colorTemperatureMaximumMireds: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            moveMode: UInt8,
+            rate: UInt16,
+            colorTemperatureMinimumMireds: UInt16,
+            colorTemperatureMaximumMireds: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.moveMode = moveMode
+            self.rate = rate
+            self.colorTemperatureMinimumMireds = colorTemperatureMinimumMireds
+            self.colorTemperatureMaximumMireds = colorTemperatureMaximumMireds
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(moveMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(rate))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(colorTemperatureMinimumMireds))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(colorTemperatureMaximumMireds))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MoveColorTemperatureRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_moveMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MoveMode", tag: UInt8(0))
+            }
+            let moveMode = UInt8(raw_moveMode.uintValue ?? 0)
+            guard let raw_rate = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Rate", tag: UInt8(1))
+            }
+            let rate = UInt16(raw_rate.uintValue ?? 0)
+            guard let raw_colorTemperatureMinimumMireds = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ColorTemperatureMinimumMireds", tag: UInt8(2))
+            }
+            let colorTemperatureMinimumMireds = UInt16(raw_colorTemperatureMinimumMireds.uintValue ?? 0)
+            guard let raw_colorTemperatureMaximumMireds = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "ColorTemperatureMaximumMireds", tag: UInt8(3))
+            }
+            let colorTemperatureMaximumMireds = UInt16(raw_colorTemperatureMaximumMireds.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(4))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(5))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return MoveColorTemperatureRequest(moveMode: moveMode, rate: rate, colorTemperatureMinimumMireds: colorTemperatureMinimumMireds, colorTemperatureMaximumMireds: colorTemperatureMaximumMireds, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
+
+    // MARK: - StepColorTemperatureRequest
+
+    public struct StepColorTemperatureRequest: TLVCodable, Equatable {
+        public var stepMode: UInt8
+        public var stepSize: UInt16
+        public var transitionTime: UInt16
+        public var colorTemperatureMinimumMireds: UInt16
+        public var colorTemperatureMaximumMireds: UInt16
+        public var optionsMask: UInt8
+        public var optionsOverride: UInt8
+
+        public init(
+            stepMode: UInt8,
+            stepSize: UInt16,
+            transitionTime: UInt16,
+            colorTemperatureMinimumMireds: UInt16,
+            colorTemperatureMaximumMireds: UInt16,
+            optionsMask: UInt8,
+            optionsOverride: UInt8
+        ) {
+            self.stepMode = stepMode
+            self.stepSize = stepSize
+            self.transitionTime = transitionTime
+            self.colorTemperatureMinimumMireds = colorTemperatureMinimumMireds
+            self.colorTemperatureMaximumMireds = colorTemperatureMaximumMireds
+            self.optionsMask = optionsMask
+            self.optionsOverride = optionsOverride
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(stepMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(stepSize))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(transitionTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(colorTemperatureMinimumMireds))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(colorTemperatureMaximumMireds))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(optionsMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(optionsOverride))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StepColorTemperatureRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_stepMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StepMode", tag: UInt8(0))
+            }
+            let stepMode = UInt8(raw_stepMode.uintValue ?? 0)
+            guard let raw_stepSize = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StepSize", tag: UInt8(1))
+            }
+            let stepSize = UInt16(raw_stepSize.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(2))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_colorTemperatureMinimumMireds = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "ColorTemperatureMinimumMireds", tag: UInt8(3))
+            }
+            let colorTemperatureMinimumMireds = UInt16(raw_colorTemperatureMinimumMireds.uintValue ?? 0)
+            guard let raw_colorTemperatureMaximumMireds = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "ColorTemperatureMaximumMireds", tag: UInt8(4))
+            }
+            let colorTemperatureMaximumMireds = UInt16(raw_colorTemperatureMaximumMireds.uintValue ?? 0)
+            guard let raw_optionsMask = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "OptionsMask", tag: UInt8(5))
+            }
+            let optionsMask = UInt8(raw_optionsMask.uintValue ?? 0)
+            guard let raw_optionsOverride = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "OptionsOverride", tag: UInt8(6))
+            }
+            let optionsOverride = UInt8(raw_optionsOverride.uintValue ?? 0)
+            return StepColorTemperatureRequest(stepMode: stepMode, stepSize: stepSize, transitionTime: transitionTime, colorTemperatureMinimumMireds: colorTemperatureMinimumMireds, colorTemperatureMaximumMireds: colorTemperatureMaximumMireds, optionsMask: optionsMask, optionsOverride: optionsOverride)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -317,25 +1483,25 @@ extension ColorControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x4010), name: "StartUpColorTemperatureMireds", conformance: .mandatoryIf(.feature(1 << 4)), type: .uint16, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "MoveToHue", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "MoveHue", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "StepHue", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "MoveToSaturation", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "MoveSaturation", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "StepSaturation", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "MoveToHueAndSaturation", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "MoveToColor", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x0008), name: "MoveColor", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x0009), name: "StepColor", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x000A), name: "MoveToColorTemperature", conformance: .mandatoryIf(.feature(1 << 4))),
-            CommandSpec(id: CommandID(rawValue: 0x0040), name: "EnhancedMoveToHue", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0041), name: "EnhancedMoveHue", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0042), name: "EnhancedStepHue", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0043), name: "EnhancedMoveToHueAndSaturation", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0044), name: "ColorLoopSet", conformance: .mandatoryIf(.feature(1 << 2))),
-            CommandSpec(id: CommandID(rawValue: 0x0047), name: "StopMoveStep", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 3), .feature(1 << 4)]))),
-            CommandSpec(id: CommandID(rawValue: 0x004B), name: "MoveColorTemperature", conformance: .mandatoryIf(.feature(1 << 4))),
-            CommandSpec(id: CommandID(rawValue: 0x004C), name: "StepColorTemperature", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "MoveToHue", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "Hue", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Direction", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "MoveHue", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "MoveMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Rate", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "StepHue", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "StepMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "StepSize", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "MoveToSaturation", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "Saturation", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "MoveSaturation", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "MoveMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Rate", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "StepSaturation", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "StepMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "StepSize", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "MoveToHueAndSaturation", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "Hue", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Saturation", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "MoveToColor", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "ColorX", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ColorY", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "MoveColor", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "RateX", type: .int16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "RateY", type: .int16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "StepColor", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "StepX", type: .int16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "StepY", type: .int16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "MoveToColorTemperature", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "ColorTemperatureMireds", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0040), name: "EnhancedMoveToHue", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "EnhancedHue", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Direction", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0041), name: "EnhancedMoveHue", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "MoveMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Rate", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0042), name: "EnhancedStepHue", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "StepMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "StepSize", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0043), name: "EnhancedMoveToHueAndSaturation", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "EnhancedHue", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Saturation", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0044), name: "ColorLoopSet", conformance: .mandatoryIf(.feature(1 << 2)), fields: [FieldSpec(id: 0, name: "UpdateFlags", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Action", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Direction", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "Time", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "StartHue", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 5, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 6, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0047), name: "StopMoveStep", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 3), .feature(1 << 4)])), fields: [FieldSpec(id: 0, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x004B), name: "MoveColorTemperature", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "MoveMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Rate", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "ColorTemperatureMinimumMireds", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "ColorTemperatureMaximumMireds", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 5, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x004C), name: "StepColorTemperature", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "StepMode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "StepSize", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransitionTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "ColorTemperatureMinimumMireds", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "ColorTemperatureMaximumMireds", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 5, name: "OptionsMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 6, name: "OptionsOverride", type: .uint8, isOptional: false, isNullable: false)]),
         ]
     )
 }

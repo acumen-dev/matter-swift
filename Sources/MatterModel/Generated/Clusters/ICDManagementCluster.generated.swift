@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// ICD Management Cluster (0x0046), revision 3
@@ -61,6 +62,15 @@ public enum ICDManagementCluster {
         public static let stayActiveRequest = CommandID(rawValue: 0x0003)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// RegisterClientResponse
+        public static let registerClientResponse = CommandID(rawValue: 0x0001)
+        /// StayActiveResponse
+        public static let stayActiveResponse = CommandID(rawValue: 0x0004)
+    }
+
     public enum OperatingModeEnum: UInt8, Sendable, Equatable {
         case sit = 0
         case lit = 1
@@ -87,6 +97,256 @@ public enum ICDManagementCluster {
         public static let setupButtonTimes = UserActiveModeTriggerBitmap(rawValue: 1 << 15)
         public static let appDefinedButton = UserActiveModeTriggerBitmap(rawValue: 1 << 16)
     }
+
+    // MARK: - MonitoringRegistrationStruct
+
+    public struct MonitoringRegistrationStruct: TLVCodable, Equatable {
+        public var checkInNodeID: TLVElement
+        public var monitoredSubject: TLVElement
+        public var clientType: TLVElement
+
+        public init(
+            checkInNodeID: TLVElement,
+            monitoredSubject: TLVElement,
+            clientType: TLVElement
+        ) {
+            self.checkInNodeID = checkInNodeID
+            self.monitoredSubject = monitoredSubject
+            self.clientType = clientType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: checkInNodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: monitoredSubject))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: clientType))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MonitoringRegistrationStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_checkInNodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "CheckInNodeID", tag: UInt8(1))
+            }
+            let checkInNodeID = raw_checkInNodeID
+            guard let raw_monitoredSubject = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "MonitoredSubject", tag: UInt8(2))
+            }
+            let monitoredSubject = raw_monitoredSubject
+            guard let raw_clientType = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "ClientType", tag: UInt8(4))
+            }
+            let clientType = raw_clientType
+            return MonitoringRegistrationStruct(checkInNodeID: checkInNodeID, monitoredSubject: monitoredSubject, clientType: clientType)
+        }
+    }
+
+    // MARK: - RegisterClientRequest
+
+    public struct RegisterClientRequest: TLVCodable, Equatable {
+        public var checkInNodeID: TLVElement
+        public var monitoredSubject: TLVElement
+        public var key: Data
+        public var verificationKey: Data?
+        public var clientType: TLVElement
+
+        public init(
+            checkInNodeID: TLVElement,
+            monitoredSubject: TLVElement,
+            key: Data,
+            verificationKey: Data? = nil,
+            clientType: TLVElement
+        ) {
+            self.checkInNodeID = checkInNodeID
+            self.monitoredSubject = monitoredSubject
+            self.key = key
+            self.verificationKey = verificationKey
+            self.clientType = clientType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: checkInNodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: monitoredSubject))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(key)))
+            if let val = verificationKey {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: clientType))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RegisterClientRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_checkInNodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CheckInNodeID", tag: UInt8(0))
+            }
+            let checkInNodeID = raw_checkInNodeID
+            guard let raw_monitoredSubject = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "MonitoredSubject", tag: UInt8(1))
+            }
+            let monitoredSubject = raw_monitoredSubject
+            guard let raw_key = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Key", tag: UInt8(2))
+            }
+            let key = raw_key.dataValue ?? Data()
+            let verificationKey: Data?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                verificationKey = fieldValue.dataValue ?? Data()
+            } else {
+                verificationKey = nil
+            }
+            guard let raw_clientType = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "ClientType", tag: UInt8(4))
+            }
+            let clientType = raw_clientType
+            return RegisterClientRequest(checkInNodeID: checkInNodeID, monitoredSubject: monitoredSubject, key: key, verificationKey: verificationKey, clientType: clientType)
+        }
+    }
+
+    // MARK: - RegisterClientResponse
+
+    public struct RegisterClientResponse: TLVCodable, Equatable {
+        public var icdCounter: UInt32
+
+        public init(
+            icdCounter: UInt32
+        ) {
+            self.icdCounter = icdCounter
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(icdCounter))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RegisterClientResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_icdCounter = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ICDCounter", tag: UInt8(0))
+            }
+            let icdCounter = UInt32(raw_icdCounter.uintValue ?? 0)
+            return RegisterClientResponse(icdCounter: icdCounter)
+        }
+    }
+
+    // MARK: - UnregisterClientRequest
+
+    public struct UnregisterClientRequest: TLVCodable, Equatable {
+        public var checkInNodeID: TLVElement
+        public var verificationKey: Data?
+
+        public init(
+            checkInNodeID: TLVElement,
+            verificationKey: Data? = nil
+        ) {
+            self.checkInNodeID = checkInNodeID
+            self.verificationKey = verificationKey
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: checkInNodeID))
+            if let val = verificationKey {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UnregisterClientRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_checkInNodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CheckInNodeID", tag: UInt8(0))
+            }
+            let checkInNodeID = raw_checkInNodeID
+            let verificationKey: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                verificationKey = fieldValue.dataValue ?? Data()
+            } else {
+                verificationKey = nil
+            }
+            return UnregisterClientRequest(checkInNodeID: checkInNodeID, verificationKey: verificationKey)
+        }
+    }
+
+    // MARK: - StayActiveRequest
+
+    public struct StayActiveRequest: TLVCodable, Equatable {
+        public var stayActiveDuration: UInt32
+
+        public init(
+            stayActiveDuration: UInt32
+        ) {
+            self.stayActiveDuration = stayActiveDuration
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(stayActiveDuration))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StayActiveRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_stayActiveDuration = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StayActiveDuration", tag: UInt8(0))
+            }
+            let stayActiveDuration = UInt32(raw_stayActiveDuration.uintValue ?? 0)
+            return StayActiveRequest(stayActiveDuration: stayActiveDuration)
+        }
+    }
+
+    // MARK: - StayActiveResponse
+
+    public struct StayActiveResponse: TLVCodable, Equatable {
+        public var promisedActiveDuration: UInt32
+
+        public init(
+            promisedActiveDuration: UInt32
+        ) {
+            self.promisedActiveDuration = promisedActiveDuration
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(promisedActiveDuration))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StayActiveResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_promisedActiveDuration = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PromisedActiveDuration", tag: UInt8(0))
+            }
+            let promisedActiveDuration = UInt32(raw_promisedActiveDuration.uintValue ?? 0)
+            return StayActiveResponse(promisedActiveDuration: promisedActiveDuration)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -109,9 +369,9 @@ extension ICDManagementCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "MaximumCheckInBackoff", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint32, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "RegisterClient", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "UnregisterClient", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StayActiveRequest", conformance: .optionalIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "RegisterClient", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "CheckInNodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "MonitoredSubject", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Key", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "VerificationKey", type: .octstr, isOptional: true, isNullable: false), FieldSpec(id: 4, name: "ClientType", type: .unknown, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "UnregisterClient", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "CheckInNodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "VerificationKey", type: .octstr, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StayActiveRequest", conformance: .optionalIf(.feature(1 << 2)), fields: [FieldSpec(id: 0, name: "StayActiveDuration", type: .uint32, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0004)),
         ]
     )
 }

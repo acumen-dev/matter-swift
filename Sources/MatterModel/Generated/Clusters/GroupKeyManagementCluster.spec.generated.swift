@@ -19,10 +19,10 @@ extension GroupKeyManagementCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "MaxGroupKeysPerFabric", conformance: .mandatory, type: .uint16, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "KeySetWrite Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "KeySetRead Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "KeySetRemove Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "KeySetReadAllIndices Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "KeySetWrite Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupKeySet", type: .structure, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "KeySetRead Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupKeySetID", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0002)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "KeySetRemove Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupKeySetID", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "KeySetReadAllIndices Command", conformance: .mandatory, responseID: CommandID(rawValue: 0x0005)),
         ]
     )
 }

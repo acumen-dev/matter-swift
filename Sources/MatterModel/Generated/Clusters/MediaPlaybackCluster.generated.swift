@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Media Playback Cluster (0x0506), revision 2
@@ -87,6 +88,13 @@ public enum MediaPlaybackCluster {
         public static let deactivateTextTrack = CommandID(rawValue: 0x000E)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// PlaybackResponse
+        public static let playbackResponse = CommandID(rawValue: 0x000A)
+    }
+
     // MARK: - Events
 
     public enum Event {
@@ -130,6 +138,433 @@ public enum MediaPlaybackCluster {
         case speedOutOfRange = 4
         case seekOutOfRange = 5
     }
+
+    // MARK: - PlaybackPositionStruct
+
+    public struct PlaybackPositionStruct: TLVCodable, Equatable {
+        public var updatedAt: TLVElement
+        public var position: UInt64?
+
+        public init(
+            updatedAt: TLVElement,
+            position: UInt64? = nil
+        ) {
+            self.updatedAt = updatedAt
+            self.position = position
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: updatedAt))
+            if let val = position {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PlaybackPositionStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_updatedAt = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UpdatedAt", tag: UInt8(0))
+            }
+            let updatedAt = raw_updatedAt
+            guard let raw_position = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Position", tag: UInt8(1))
+            }
+            let position: UInt64?
+            if raw_position.isNull {
+                position = nil
+            } else {
+                position = UInt64(raw_position.uintValue ?? 0)
+            }
+            return PlaybackPositionStruct(updatedAt: updatedAt, position: position)
+        }
+    }
+
+    // MARK: - TrackAttributesStruct
+
+    public struct TrackAttributesStruct: TLVCodable, Equatable {
+        public var languageCode: String
+        public var characteristics: [UInt8]?
+        public var displayName: String?
+
+        public init(
+            languageCode: String,
+            characteristics: [UInt8]? = nil,
+            displayName: String? = nil
+        ) {
+            self.languageCode = languageCode
+            self.characteristics = characteristics
+            self.displayName = displayName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(languageCode)))
+            if let val = characteristics {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .array(val.map { .unsignedInt(UInt64($0)) })))
+            }
+            if let val = displayName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TrackAttributesStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_languageCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "LanguageCode", tag: UInt8(0))
+            }
+            let languageCode = raw_languageCode.stringValue ?? ""
+            let characteristics: [UInt8]?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                if fieldValue.isNull {
+                    characteristics = nil
+                } else {
+                    characteristics = (fieldValue.arrayElements ?? []).map { UInt8($0.uintValue ?? 0) }
+                }
+            } else {
+                characteristics = nil
+            }
+            let displayName: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                if fieldValue.isNull {
+                    displayName = nil
+                } else {
+                    displayName = fieldValue.stringValue ?? ""
+                }
+            } else {
+                displayName = nil
+            }
+            return TrackAttributesStruct(languageCode: languageCode, characteristics: characteristics, displayName: displayName)
+        }
+    }
+
+    // MARK: - TrackStruct
+
+    public struct TrackStruct: TLVCodable, Equatable {
+        public var id: String
+        public var trackAttributes: TrackAttributesStruct
+
+        public init(
+            id: String,
+            trackAttributes: TrackAttributesStruct
+        ) {
+            self.id = id
+            self.trackAttributes = trackAttributes
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(id)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: trackAttributes.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TrackStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_id = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ID", tag: UInt8(0))
+            }
+            let id = raw_id.stringValue ?? ""
+            guard let raw_trackAttributes = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "TrackAttributes", tag: UInt8(1))
+            }
+            let trackAttributes = try TrackAttributesStruct.fromTLVElement(raw_trackAttributes)
+            return TrackStruct(id: id, trackAttributes: trackAttributes)
+        }
+    }
+
+    // MARK: - RewindRequest
+
+    public struct RewindRequest: TLVCodable, Equatable {
+        public var audioAdvanceUnmuted: Bool
+
+        public init(
+            audioAdvanceUnmuted: Bool
+        ) {
+            self.audioAdvanceUnmuted = audioAdvanceUnmuted
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .bool(audioAdvanceUnmuted)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RewindRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_audioAdvanceUnmuted = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AudioAdvanceUnmuted", tag: UInt8(0))
+            }
+            let audioAdvanceUnmuted = raw_audioAdvanceUnmuted.boolValue ?? false
+            return RewindRequest(audioAdvanceUnmuted: audioAdvanceUnmuted)
+        }
+    }
+
+    // MARK: - FastForwardRequest
+
+    public struct FastForwardRequest: TLVCodable, Equatable {
+        public var audioAdvanceUnmuted: Bool
+
+        public init(
+            audioAdvanceUnmuted: Bool
+        ) {
+            self.audioAdvanceUnmuted = audioAdvanceUnmuted
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .bool(audioAdvanceUnmuted)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> FastForwardRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_audioAdvanceUnmuted = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AudioAdvanceUnmuted", tag: UInt8(0))
+            }
+            let audioAdvanceUnmuted = raw_audioAdvanceUnmuted.boolValue ?? false
+            return FastForwardRequest(audioAdvanceUnmuted: audioAdvanceUnmuted)
+        }
+    }
+
+    // MARK: - SkipForwardRequest
+
+    public struct SkipForwardRequest: TLVCodable, Equatable {
+        public var deltaPositionMilliseconds: UInt64
+
+        public init(
+            deltaPositionMilliseconds: UInt64
+        ) {
+            self.deltaPositionMilliseconds = deltaPositionMilliseconds
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(deltaPositionMilliseconds))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SkipForwardRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_deltaPositionMilliseconds = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DeltaPositionMilliseconds", tag: UInt8(0))
+            }
+            let deltaPositionMilliseconds = UInt64(raw_deltaPositionMilliseconds.uintValue ?? 0)
+            return SkipForwardRequest(deltaPositionMilliseconds: deltaPositionMilliseconds)
+        }
+    }
+
+    // MARK: - SkipBackwardRequest
+
+    public struct SkipBackwardRequest: TLVCodable, Equatable {
+        public var deltaPositionMilliseconds: UInt64
+
+        public init(
+            deltaPositionMilliseconds: UInt64
+        ) {
+            self.deltaPositionMilliseconds = deltaPositionMilliseconds
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(deltaPositionMilliseconds))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SkipBackwardRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_deltaPositionMilliseconds = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DeltaPositionMilliseconds", tag: UInt8(0))
+            }
+            let deltaPositionMilliseconds = UInt64(raw_deltaPositionMilliseconds.uintValue ?? 0)
+            return SkipBackwardRequest(deltaPositionMilliseconds: deltaPositionMilliseconds)
+        }
+    }
+
+    // MARK: - PlaybackResponse
+
+    public struct PlaybackResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var data: String?
+
+        public init(
+            status: UInt8,
+            data: String? = nil
+        ) {
+            self.status = status
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PlaybackResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let data: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.stringValue ?? ""
+            } else {
+                data = nil
+            }
+            return PlaybackResponse(status: status, data: data)
+        }
+    }
+
+    // MARK: - SeekRequest
+
+    public struct SeekRequest: TLVCodable, Equatable {
+        public var position: UInt64
+
+        public init(
+            position: UInt64
+        ) {
+            self.position = position
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(position))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SeekRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_position = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Position", tag: UInt8(0))
+            }
+            let position = UInt64(raw_position.uintValue ?? 0)
+            return SeekRequest(position: position)
+        }
+    }
+
+    // MARK: - ActivateAudioTrackRequest
+
+    public struct ActivateAudioTrackRequest: TLVCodable, Equatable {
+        public var trackID: String
+        public var audioOutputIndex: UInt8?
+
+        public init(
+            trackID: String,
+            audioOutputIndex: UInt8? = nil
+        ) {
+            self.trackID = trackID
+            self.audioOutputIndex = audioOutputIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(trackID)))
+            if let val = audioOutputIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ActivateAudioTrackRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_trackID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TrackID", tag: UInt8(0))
+            }
+            let trackID = raw_trackID.stringValue ?? ""
+            guard let raw_audioOutputIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "AudioOutputIndex", tag: UInt8(1))
+            }
+            let audioOutputIndex: UInt8?
+            if raw_audioOutputIndex.isNull {
+                audioOutputIndex = nil
+            } else {
+                audioOutputIndex = UInt8(raw_audioOutputIndex.uintValue ?? 0)
+            }
+            return ActivateAudioTrackRequest(trackID: trackID, audioOutputIndex: audioOutputIndex)
+        }
+    }
+
+    // MARK: - ActivateTextTrackRequest
+
+    public struct ActivateTextTrackRequest: TLVCodable, Equatable {
+        public var trackID: String
+
+        public init(
+            trackID: String
+        ) {
+            self.trackID = trackID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(trackID)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ActivateTextTrackRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_trackID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TrackID", tag: UInt8(0))
+            }
+            let trackID = raw_trackID.stringValue ?? ""
+            return ActivateTextTrackRequest(trackID: trackID)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -153,19 +588,19 @@ extension MediaPlaybackCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "AvailableTextTracks", conformance: .mandatoryIf(.feature(1 << 2)), type: .list, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Play", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Pause", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Stop", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StartOver", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "Previous", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "Next", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "Rewind", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "FastForward", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0008), name: "SkipForward", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SkipBackward", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x000B), name: "Seek", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x000C), name: "ActivateAudioTrack", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x000D), name: "ActivateTextTrack", conformance: .mandatoryIf(.feature(1 << 2))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Play", conformance: .mandatory, responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Pause", conformance: .mandatory, responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Stop", conformance: .mandatory, responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "StartOver", conformance: .optional, responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "Previous", conformance: .optional, responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "Next", conformance: .optional, responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "Rewind", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "AudioAdvanceUnmuted", type: .bool, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "FastForward", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "AudioAdvanceUnmuted", type: .bool, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "SkipForward", conformance: .optional, fields: [FieldSpec(id: 0, name: "DeltaPositionMilliseconds", type: .uint64, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SkipBackward", conformance: .optional, fields: [FieldSpec(id: 0, name: "DeltaPositionMilliseconds", type: .uint64, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "Seek", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "Position", type: .uint64, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "ActivateAudioTrack", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "TrackID", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "AudioOutputIndex", type: .uint8, isOptional: false, isNullable: true)]),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "ActivateTextTrack", conformance: .mandatoryIf(.feature(1 << 2)), fields: [FieldSpec(id: 0, name: "TrackID", type: .string, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x000E), name: "DeactivateTextTrack", conformance: .mandatoryIf(.feature(1 << 2))),
         ]
     )

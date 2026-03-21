@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// RVC Operational State Cluster (0x0061), revision 2
@@ -60,7 +61,7 @@ extension RVCOperationalStateCluster {
             CommandSpec(id: CommandID(rawValue: 0x0002), name: "Start", conformance: .disallowed),
             CommandSpec(id: CommandID(rawValue: 0x0003), name: "Resume", conformance: .optional),
             CommandSpec(id: CommandID(rawValue: 0x0004), name: "OperationalCommandResponse", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0080), name: "GoHome", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0080), name: "GoHome", conformance: .optional, responseID: CommandID(rawValue: 0x0004)),
         ]
     )
 }

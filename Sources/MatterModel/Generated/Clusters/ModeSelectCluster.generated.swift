@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Mode Select Cluster (0x0050), revision 2
@@ -42,6 +43,123 @@ public enum ModeSelectCluster {
         /// ChangeToMode, mandatory
         public static let changeToMode = CommandID(rawValue: 0x0000)
     }
+
+    // MARK: - ModeOptionStruct
+
+    public struct ModeOptionStruct: TLVCodable, Equatable {
+        public var label: String
+        public var mode: UInt8
+        public var semanticTags: [SemanticTagStruct]
+
+        public init(
+            label: String,
+            mode: UInt8,
+            semanticTags: [SemanticTagStruct]
+        ) {
+            self.label = label
+            self.mode = mode
+            self.semanticTags = semanticTags
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(label)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(mode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .array(semanticTags.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ModeOptionStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_label = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Label", tag: UInt8(0))
+            }
+            let label = raw_label.stringValue ?? ""
+            guard let raw_mode = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Mode", tag: UInt8(1))
+            }
+            let mode = UInt8(raw_mode.uintValue ?? 0)
+            guard let raw_semanticTags = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "SemanticTags", tag: UInt8(2))
+            }
+            let semanticTags = (raw_semanticTags.arrayElements ?? []).compactMap { try? SemanticTagStruct.fromTLVElement($0) }
+            return ModeOptionStruct(label: label, mode: mode, semanticTags: semanticTags)
+        }
+    }
+
+    // MARK: - SemanticTagStruct
+
+    public struct SemanticTagStruct: TLVCodable, Equatable {
+        public var mfgCode: TLVElement
+        public var value: UInt16
+
+        public init(
+            mfgCode: TLVElement,
+            value: UInt16
+        ) {
+            self.mfgCode = mfgCode
+            self.value = value
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: mfgCode))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(value))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SemanticTagStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_mfgCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MfgCode", tag: UInt8(0))
+            }
+            let mfgCode = raw_mfgCode
+            guard let raw_value = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Value", tag: UInt8(1))
+            }
+            let value = UInt16(raw_value.uintValue ?? 0)
+            return SemanticTagStruct(mfgCode: mfgCode, value: value)
+        }
+    }
+
+    // MARK: - ChangeToModeRequest
+
+    public struct ChangeToModeRequest: TLVCodable, Equatable {
+        public var newMode: UInt8
+
+        public init(
+            newMode: UInt8
+        ) {
+            self.newMode = newMode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(newMode))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChangeToModeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_newMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NewMode", tag: UInt8(0))
+            }
+            let newMode = UInt8(raw_newMode.uintValue ?? 0)
+            return ChangeToModeRequest(newMode: newMode)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -60,7 +178,7 @@ extension ModeSelectCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OnMode", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint8, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeToMode", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ChangeToMode", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NewMode", type: .uint8, isOptional: false, isNullable: false)]),
         ]
     )
 }

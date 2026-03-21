@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Energy EVSE Cluster (0x0099), revision 3
@@ -97,6 +98,13 @@ public enum EnergyEVSECluster {
         public static let clearTargets = CommandID(rawValue: 0x0007)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// GetTargetsResponse
+        public static let getTargetsResponse = CommandID(rawValue: 0x0000)
+    }
+
     // MARK: - Events
 
     public enum Event {
@@ -170,6 +178,266 @@ public enum EnergyEVSECluster {
         public static let friday = TargetDayOfWeekBitmap(rawValue: 1 << 5)
         public static let saturday = TargetDayOfWeekBitmap(rawValue: 1 << 6)
     }
+
+    // MARK: - ChargingTargetScheduleStruct
+
+    public struct ChargingTargetScheduleStruct: TLVCodable, Equatable {
+        public var dayOfWeekForSequence: UInt8
+        public var chargingTargets: [ChargingTargetStruct]
+
+        public init(
+            dayOfWeekForSequence: UInt8,
+            chargingTargets: [ChargingTargetStruct]
+        ) {
+            self.dayOfWeekForSequence = dayOfWeekForSequence
+            self.chargingTargets = chargingTargets
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(dayOfWeekForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .array(chargingTargets.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChargingTargetScheduleStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_dayOfWeekForSequence = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DayOfWeekForSequence", tag: UInt8(0))
+            }
+            let dayOfWeekForSequence = UInt8(raw_dayOfWeekForSequence.uintValue ?? 0)
+            guard let raw_chargingTargets = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ChargingTargets", tag: UInt8(1))
+            }
+            let chargingTargets = (raw_chargingTargets.arrayElements ?? []).compactMap { try? ChargingTargetStruct.fromTLVElement($0) }
+            return ChargingTargetScheduleStruct(dayOfWeekForSequence: dayOfWeekForSequence, chargingTargets: chargingTargets)
+        }
+    }
+
+    // MARK: - ChargingTargetStruct
+
+    public struct ChargingTargetStruct: TLVCodable, Equatable {
+        public var targetTimeMinutesPastMidnight: UInt16
+        public var targetSoC: UInt8?
+        public var addedEnergy: TLVElement?
+
+        public init(
+            targetTimeMinutesPastMidnight: UInt16,
+            targetSoC: UInt8? = nil,
+            addedEnergy: TLVElement? = nil
+        ) {
+            self.targetTimeMinutesPastMidnight = targetTimeMinutesPastMidnight
+            self.targetSoC = targetSoC
+            self.addedEnergy = addedEnergy
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(targetTimeMinutesPastMidnight))))
+            if let val = targetSoC {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = addedEnergy {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ChargingTargetStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_targetTimeMinutesPastMidnight = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TargetTimeMinutesPastMidnight", tag: UInt8(0))
+            }
+            let targetTimeMinutesPastMidnight = UInt16(raw_targetTimeMinutesPastMidnight.uintValue ?? 0)
+            let targetSoC: UInt8?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                targetSoC = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                targetSoC = nil
+            }
+            let addedEnergy: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                addedEnergy = fieldValue
+            } else {
+                addedEnergy = nil
+            }
+            return ChargingTargetStruct(targetTimeMinutesPastMidnight: targetTimeMinutesPastMidnight, targetSoC: targetSoC, addedEnergy: addedEnergy)
+        }
+    }
+
+    // MARK: - GetTargetsResponse
+
+    public struct GetTargetsResponse: TLVCodable, Equatable {
+        public var chargingTargetSchedules: [ChargingTargetScheduleStruct]
+
+        public init(
+            chargingTargetSchedules: [ChargingTargetScheduleStruct]
+        ) {
+            self.chargingTargetSchedules = chargingTargetSchedules
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(chargingTargetSchedules.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetTargetsResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_chargingTargetSchedules = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ChargingTargetSchedules", tag: UInt8(0))
+            }
+            let chargingTargetSchedules = (raw_chargingTargetSchedules.arrayElements ?? []).compactMap { try? ChargingTargetScheduleStruct.fromTLVElement($0) }
+            return GetTargetsResponse(chargingTargetSchedules: chargingTargetSchedules)
+        }
+    }
+
+    // MARK: - EnableChargingRequest
+
+    public struct EnableChargingRequest: TLVCodable, Equatable {
+        public var chargingEnabledUntil: TLVElement?
+        public var minimumChargeCurrent: TLVElement
+        public var maximumChargeCurrent: TLVElement
+
+        public init(
+            chargingEnabledUntil: TLVElement? = nil,
+            minimumChargeCurrent: TLVElement,
+            maximumChargeCurrent: TLVElement
+        ) {
+            self.chargingEnabledUntil = chargingEnabledUntil
+            self.minimumChargeCurrent = minimumChargeCurrent
+            self.maximumChargeCurrent = maximumChargeCurrent
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = chargingEnabledUntil {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: minimumChargeCurrent))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: maximumChargeCurrent))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnableChargingRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_chargingEnabledUntil = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ChargingEnabledUntil", tag: UInt8(0))
+            }
+            let chargingEnabledUntil: TLVElement?
+            if raw_chargingEnabledUntil.isNull {
+                chargingEnabledUntil = nil
+            } else {
+                chargingEnabledUntil = raw_chargingEnabledUntil
+            }
+            guard let raw_minimumChargeCurrent = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "MinimumChargeCurrent", tag: UInt8(1))
+            }
+            let minimumChargeCurrent = raw_minimumChargeCurrent
+            guard let raw_maximumChargeCurrent = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "MaximumChargeCurrent", tag: UInt8(2))
+            }
+            let maximumChargeCurrent = raw_maximumChargeCurrent
+            return EnableChargingRequest(chargingEnabledUntil: chargingEnabledUntil, minimumChargeCurrent: minimumChargeCurrent, maximumChargeCurrent: maximumChargeCurrent)
+        }
+    }
+
+    // MARK: - EnableDischargingRequest
+
+    public struct EnableDischargingRequest: TLVCodable, Equatable {
+        public var dischargingEnabledUntil: TLVElement?
+        public var maximumDischargeCurrent: TLVElement
+
+        public init(
+            dischargingEnabledUntil: TLVElement? = nil,
+            maximumDischargeCurrent: TLVElement
+        ) {
+            self.dischargingEnabledUntil = dischargingEnabledUntil
+            self.maximumDischargeCurrent = maximumDischargeCurrent
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = dischargingEnabledUntil {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: maximumDischargeCurrent))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnableDischargingRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_dischargingEnabledUntil = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DischargingEnabledUntil", tag: UInt8(0))
+            }
+            let dischargingEnabledUntil: TLVElement?
+            if raw_dischargingEnabledUntil.isNull {
+                dischargingEnabledUntil = nil
+            } else {
+                dischargingEnabledUntil = raw_dischargingEnabledUntil
+            }
+            guard let raw_maximumDischargeCurrent = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "MaximumDischargeCurrent", tag: UInt8(1))
+            }
+            let maximumDischargeCurrent = raw_maximumDischargeCurrent
+            return EnableDischargingRequest(dischargingEnabledUntil: dischargingEnabledUntil, maximumDischargeCurrent: maximumDischargeCurrent)
+        }
+    }
+
+    // MARK: - SetTargetsRequest
+
+    public struct SetTargetsRequest: TLVCodable, Equatable {
+        public var chargingTargetSchedules: [ChargingTargetScheduleStruct]
+
+        public init(
+            chargingTargetSchedules: [ChargingTargetScheduleStruct]
+        ) {
+            self.chargingTargetSchedules = chargingTargetSchedules
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(chargingTargetSchedules.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetTargetsRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_chargingTargetSchedules = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ChargingTargetSchedules", tag: UInt8(0))
+            }
+            let chargingTargetSchedules = (raw_chargingTargetSchedules.arrayElements ?? []).compactMap { try? ChargingTargetScheduleStruct.fromTLVElement($0) }
+            return SetTargetsRequest(chargingTargetSchedules: chargingTargetSchedules)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -206,11 +474,11 @@ extension EnergyEVSECluster {
         ],
         commands: [
             CommandSpec(id: CommandID(rawValue: 0x0001), name: "Disable", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "EnableCharging", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "EnableDischarging", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "EnableCharging", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ChargingEnabledUntil", type: .unknown, isOptional: false, isNullable: true), FieldSpec(id: 1, name: "MinimumChargeCurrent", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "MaximumChargeCurrent", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "EnableDischarging", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "DischargingEnabledUntil", type: .unknown, isOptional: false, isNullable: true), FieldSpec(id: 1, name: "MaximumDischargeCurrent", type: .unknown, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0004), name: "StartDiagnostics", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetTargets", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "GetTargets", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetTargets", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "ChargingTargetSchedules", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "GetTargets", conformance: .mandatoryIf(.feature(1 << 0)), responseID: CommandID(rawValue: 0x0000)),
             CommandSpec(id: CommandID(rawValue: 0x0007), name: "ClearTargets", conformance: .mandatoryIf(.feature(1 << 0))),
         ]
     )

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Joint Fabric PKI Cluster (0x0753), revision 1
@@ -21,6 +22,15 @@ public enum JointFabricPKICluster {
         public static let transferAnchorCompleteCommand = CommandID(rawValue: 0x0004)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// ICACSRResponse Command
+        public static let icacsrResponseCommand = CommandID(rawValue: 0x0001)
+        /// Transfer Anchor Response Command
+        public static let transferAnchorResponseCommand = CommandID(rawValue: 0x0003)
+    }
+
     public enum ICACSigningRequestStatusEnum: UInt8, Sendable, Equatable {
         case ref_IcacsrRequestStatusOK = 0
         case ref_InvalidIcaCsrFormat = 1
@@ -37,6 +47,111 @@ public enum JointFabricPKICluster {
         case ref_TransferAnchorStatusDatastoreBusy = 1
         case ref_TransferAnchorStatusNoUserConsent = 2
     }
+
+    // MARK: - ICACSRRequestCommandRequest
+
+    public struct ICACSRRequestCommandRequest: TLVCodable, Equatable {
+        public var ref_Icacsr: Data
+
+        public init(
+            ref_Icacsr: Data
+        ) {
+            self.ref_Icacsr = ref_Icacsr
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(ref_Icacsr)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ICACSRRequestCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_ref_Icacsr = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ref_Icacsr", tag: UInt8(0))
+            }
+            let ref_Icacsr = raw_ref_Icacsr.dataValue ?? Data()
+            return ICACSRRequestCommandRequest(ref_Icacsr: ref_Icacsr)
+        }
+    }
+
+    // MARK: - ICACSRResponseCommandResponse
+
+    public struct ICACSRResponseCommandResponse: TLVCodable, Equatable {
+        public var ref_IcaCsrResponseStatusCode: UInt8
+        public var ref_IcaCsrResponseICAC: Data?
+
+        public init(
+            ref_IcaCsrResponseStatusCode: UInt8,
+            ref_IcaCsrResponseICAC: Data? = nil
+        ) {
+            self.ref_IcaCsrResponseStatusCode = ref_IcaCsrResponseStatusCode
+            self.ref_IcaCsrResponseICAC = ref_IcaCsrResponseICAC
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(ref_IcaCsrResponseStatusCode))))
+            if let val = ref_IcaCsrResponseICAC {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ICACSRResponseCommandResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_ref_IcaCsrResponseStatusCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ref_IcaCsrResponseStatusCode", tag: UInt8(0))
+            }
+            let ref_IcaCsrResponseStatusCode = UInt8(raw_ref_IcaCsrResponseStatusCode.uintValue ?? 0)
+            let ref_IcaCsrResponseICAC: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                ref_IcaCsrResponseICAC = fieldValue.dataValue ?? Data()
+            } else {
+                ref_IcaCsrResponseICAC = nil
+            }
+            return ICACSRResponseCommandResponse(ref_IcaCsrResponseStatusCode: ref_IcaCsrResponseStatusCode, ref_IcaCsrResponseICAC: ref_IcaCsrResponseICAC)
+        }
+    }
+
+    // MARK: - TransferAnchorResponseCommandResponse
+
+    public struct TransferAnchorResponseCommandResponse: TLVCodable, Equatable {
+        public var ref_TransferAnchorResponseStatusCode: UInt8
+
+        public init(
+            ref_TransferAnchorResponseStatusCode: UInt8
+        ) {
+            self.ref_TransferAnchorResponseStatusCode = ref_TransferAnchorResponseStatusCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(ref_TransferAnchorResponseStatusCode))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TransferAnchorResponseCommandResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_ref_TransferAnchorResponseStatusCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ref_TransferAnchorResponseStatusCode", tag: UInt8(0))
+            }
+            let ref_TransferAnchorResponseStatusCode = UInt8(raw_ref_TransferAnchorResponseStatusCode.uintValue ?? 0)
+            return TransferAnchorResponseCommandResponse(ref_TransferAnchorResponseStatusCode: ref_TransferAnchorResponseStatusCode)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -49,8 +164,8 @@ extension JointFabricPKICluster {
         attributes: [
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ICACSRRequest Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Transfer Anchor Request Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ICACSRRequest Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ref_Icacsr", type: .octstr, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Transfer Anchor Request Command", conformance: .mandatory, responseID: CommandID(rawValue: 0x0003)),
             CommandSpec(id: CommandID(rawValue: 0x0004), name: "Transfer Anchor Complete Command", conformance: .mandatory),
         ]
     )

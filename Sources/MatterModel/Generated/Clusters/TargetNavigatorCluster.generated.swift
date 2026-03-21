@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Target Navigator Cluster (0x0505), revision 2
@@ -26,6 +27,13 @@ public enum TargetNavigatorCluster {
         public static let navigateTarget = CommandID(rawValue: 0x0000)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// NavigateTargetResponse
+        public static let navigateTargetResponse = CommandID(rawValue: 0x0001)
+    }
+
     // MARK: - Events
 
     public enum Event {
@@ -37,6 +45,131 @@ public enum TargetNavigatorCluster {
         case success = 0
         case targetNotFound = 1
         case notAllowed = 2
+    }
+
+    // MARK: - TargetInfoStruct
+
+    public struct TargetInfoStruct: TLVCodable, Equatable {
+        public var identifier: UInt8
+        public var name: String
+
+        public init(
+            identifier: UInt8,
+            name: String
+        ) {
+            self.identifier = identifier
+            self.name = name
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(identifier))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(name)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TargetInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_identifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Identifier", tag: UInt8(0))
+            }
+            let identifier = UInt8(raw_identifier.uintValue ?? 0)
+            guard let raw_name = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Name", tag: UInt8(1))
+            }
+            let name = raw_name.stringValue ?? ""
+            return TargetInfoStruct(identifier: identifier, name: name)
+        }
+    }
+
+    // MARK: - NavigateTargetRequest
+
+    public struct NavigateTargetRequest: TLVCodable, Equatable {
+        public var target: UInt8
+        public var data: String?
+
+        public init(
+            target: UInt8,
+            data: String? = nil
+        ) {
+            self.target = target
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(target))))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> NavigateTargetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_target = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Target", tag: UInt8(0))
+            }
+            let target = UInt8(raw_target.uintValue ?? 0)
+            let data: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.stringValue ?? ""
+            } else {
+                data = nil
+            }
+            return NavigateTargetRequest(target: target, data: data)
+        }
+    }
+
+    // MARK: - NavigateTargetResponse
+
+    public struct NavigateTargetResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var data: String?
+
+        public init(
+            status: UInt8,
+            data: String? = nil
+        ) {
+            self.status = status
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> NavigateTargetResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let data: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.stringValue ?? ""
+            } else {
+                data = nil
+            }
+            return NavigateTargetResponse(status: status, data: data)
+        }
     }
 }
 
@@ -52,7 +185,7 @@ extension TargetNavigatorCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentTarget", conformance: .optional, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "NavigateTarget", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "NavigateTarget", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Target", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Data", type: .string, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

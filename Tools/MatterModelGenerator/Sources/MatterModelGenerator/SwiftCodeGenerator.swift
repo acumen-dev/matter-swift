@@ -40,6 +40,14 @@ struct SwiftCodeGenerator {
         "Smoke CO Alarm": "smokeCoAlarm",
     ]
 
+    /// Struct/command type names that conflict with hand-written extensions.
+    /// Maps cluster XML name (without " Cluster" suffix) → set of type names to skip.
+    static let skipGeneratedTypes: [String: Set<String>] = [
+        "General Diagnostics": ["TestEventTriggerRequest", "NetworkInterface"],
+        "Time Synchronization": ["SetUTCTimeRequest"],
+        "Groups": ["ResponseCommand"],
+    ]
+
     /// Global attribute IDs that are already defined in MatterTypes/Identifiers.swift.
     static let globalAttributeIDs: Set<UInt32> = [
         0xFFF8, // GeneratedCommandList
@@ -151,6 +159,7 @@ struct SwiftCodeGenerator {
         lines.append("// Source: connectedhomeip \(sourceDir)")
         lines.append("// Copyright 2026 Monagle Pty Ltd")
         lines.append("")
+        lines.append("import Foundation")
         lines.append("import MatterTypes")
         lines.append("")
 
@@ -218,8 +227,14 @@ struct SwiftCodeGenerator {
         }
 
         // Server response commands
-        let serverCommands = cluster.commands.filter { $0.direction == "commandToClient" }
-        if !serverCommands.isEmpty {
+        // Determine which types to skip (hand-written conflicts) - need early for ResponseCommand
+        let xmlNameCleanEarly = cluster.name.hasSuffix(" Cluster")
+            ? String(cluster.name.dropLast(8))
+            : cluster.name
+        let skipTypesEarly = skipGeneratedTypes[cluster.name] ?? skipGeneratedTypes[xmlNameCleanEarly] ?? []
+
+        let serverCommands = cluster.commands.filter { $0.direction == "commandToClient" || $0.direction == "responseFromServer" }
+        if !serverCommands.isEmpty && !skipTypesEarly.contains("ResponseCommand") {
             lines.append("")
             lines.append("    // MARK: - Response Commands")
             lines.append("")
@@ -260,6 +275,27 @@ struct SwiftCodeGenerator {
         for bitmapDef in cluster.bitmaps {
             lines.append("")
             generateBitmap(bitmapDef, into: &lines)
+        }
+
+        // Determine which types to skip (hand-written conflicts)
+        let xmlNameClean = cluster.name.hasSuffix(" Cluster")
+            ? String(cluster.name.dropLast(8))
+            : cluster.name
+        let skipTypes = skipGeneratedTypes[cluster.name] ?? skipGeneratedTypes[xmlNameClean] ?? []
+
+        // Struct datatypes
+        for structDef in cluster.structs {
+            let typeName = sanitizeTypeName(structDef.name)
+            if skipTypes.contains(typeName) { continue }
+            lines.append("")
+            generateStructType(structDef, cluster: cluster, into: &lines)
+        }
+
+        // Command request/response structs
+        for cmd in cluster.commands {
+            let structName = NamingConventions.commandStructName(from: cmd.name, direction: cmd.direction)
+            if skipTypes.contains(structName) { continue }
+            generateCommandStruct(cmd, cluster: cluster, into: &lines)
         }
 
         lines.append("}")
@@ -439,6 +475,516 @@ struct SwiftCodeGenerator {
         return name
     }
 
+    // MARK: - Swift Type Mapping
+
+    /// Maps an XML type string to a Swift type name for struct properties.
+    ///
+    /// Returns the Swift type string, without Optional wrapping.
+    /// The caller is responsible for appending `?` when `isNullable` or `isOptional`.
+    private static func swiftFieldType(
+        _ xmlType: String?,
+        cluster: ClusterDefinition,
+        isNullable: Bool,
+        isOptional: Bool,
+        listElementType: String? = nil
+    ) -> String {
+        guard let xmlType, !xmlType.isEmpty else {
+            let base = "TLVElement"
+            return (isNullable || isOptional) ? "\(base)?" : base
+        }
+
+        let base: String
+        switch xmlType.lowercased() {
+        case "bool":
+            base = "Bool"
+        case "uint8", "enum8", "bitmap8", "percent", "action_id", "status":
+            base = "UInt8"
+        case "uint16", "enum16", "bitmap16", "percent100ths",
+             "vendor", "vendor_id", "group_id", "endpoint_no":
+            base = "UInt16"
+        case "uint32", "bitmap32", "epoch_s", "elapsed_s", "elapsed",
+             "utc", "epoch", "event_no", "data_ver",
+             "cluster_id", "devtype_id":
+            base = "UInt32"
+        case "uint64", "node_id", "node", "fabric_id", "fabric_idx",
+             "eui64", "entry_idx":
+            base = "UInt64"
+        case "int8":
+            base = "Int8"
+        case "int16", "temperature", "signedtemperature", "temperaturedifference":
+            base = "Int16"
+        case "int32":
+            base = "Int32"
+        case "int64", "amperage", "amperage_ma", "energy", "energy_mwh",
+             "voltage", "voltage_mv", "power", "power_mw":
+            base = "Int64"
+        case "string", "char_string", "long_char_string":
+            base = "String"
+        case "octstr", "octet_string", "long_octet_string",
+             "ipv6adr", "ipv6pre", "ipv4adr", "hwadr", "ipadr":
+            base = "Data"
+        case "single":
+            base = "Float"
+        case "double":
+            base = "Double"
+        case "list", "datatypelist":
+            if let elemType = listElementType {
+                let innerType = swiftFieldType(elemType, cluster: cluster, isNullable: false, isOptional: false)
+                base = "[\(innerType)]"
+            } else {
+                base = "[TLVElement]"
+            }
+        default:
+            // Named enums → raw integer type
+            if let enumDef = cluster.enums.first(where: { $0.name == xmlType }) {
+                let maxValue = enumDef.items.map(\.value).max() ?? 0
+                base = maxValue > 255 ? "UInt16" : "UInt8"
+            }
+            // Named bitmaps → raw integer type
+            else if let bitmapDef = cluster.bitmaps.first(where: { $0.name == xmlType }) {
+                let maxBit = bitmapDef.bitfields.map(\.bit).max() ?? 0
+                if maxBit >= 16 { base = "UInt32" }
+                else if maxBit >= 8 { base = "UInt16" }
+                else { base = "UInt8" }
+            }
+            // Named structs (cluster-local)
+            else if cluster.structs.contains(where: { $0.name == xmlType }) {
+                let typeName = sanitizeTypeName(xmlType)
+                base = typeName
+            }
+            // Unknown
+            else {
+                base = "TLVElement"
+            }
+        }
+
+        return (isNullable || isOptional) ? "\(base)?" : base
+    }
+
+    /// Returns the TLV element type category for a given XML type — used for
+    /// choosing the right TLV encoding expression.
+    private static func tlvCategory(_ xmlType: String?, cluster: ClusterDefinition) -> String {
+        guard let xmlType, !xmlType.isEmpty else { return "element" }
+        switch xmlType.lowercased() {
+        case "bool": return "bool"
+        case "uint8", "enum8", "bitmap8", "percent", "action_id", "status",
+             "uint16", "enum16", "bitmap16", "percent100ths",
+             "vendor", "vendor_id", "group_id", "endpoint_no",
+             "uint32", "bitmap32", "epoch_s", "elapsed_s", "elapsed",
+             "utc", "epoch", "event_no", "data_ver",
+             "cluster_id", "devtype_id",
+             "uint64", "node_id", "node", "fabric_id", "fabric_idx",
+             "eui64", "entry_idx":
+            return "uint"
+        case "int8", "int16", "int32", "int64",
+             "temperature", "signedtemperature", "temperaturedifference",
+             "amperage", "amperage_ma", "energy", "energy_mwh",
+             "voltage", "voltage_mv", "power", "power_mw":
+            return "int"
+        case "string", "char_string", "long_char_string": return "string"
+        case "octstr", "octet_string", "long_octet_string",
+             "ipv6adr", "ipv6pre", "ipv4adr", "hwadr", "ipadr": return "octstr"
+        case "single": return "float"
+        case "double": return "double"
+        case "list", "datatypelist": return "list"
+        default:
+            if cluster.enums.contains(where: { $0.name == xmlType }) { return "uint" }
+            if cluster.bitmaps.contains(where: { $0.name == xmlType }) { return "uint" }
+            if cluster.structs.contains(where: { $0.name == xmlType }) { return "struct" }
+            return "element"
+        }
+    }
+
+    /// Returns a Swift expression that encodes a property value to a TLVElement.
+    private static func tlvEncodeExpression(
+        propName: String,
+        xmlType: String?,
+        cluster: ClusterDefinition,
+        isNullable: Bool,
+        listElementType: String? = nil
+    ) -> String {
+        let cat = tlvCategory(xmlType, cluster: cluster)
+        // For nullable fields, the caller wraps the optional check
+        let name = escaped(propName)
+        switch cat {
+        case "bool":
+            return ".bool(\(name))"
+        case "uint":
+            return ".unsignedInt(UInt64(\(name)))"
+        case "int":
+            return ".signedInt(Int64(\(name)))"
+        case "string":
+            return ".utf8String(\(name))"
+        case "octstr":
+            return ".octetString(\(name))"
+        case "float":
+            return ".float(\(name))"
+        case "double":
+            return ".double(\(name))"
+        case "struct":
+            return "\(name).toTLVElement()"
+        case "list":
+            if let elemType = listElementType {
+                let elemCat = tlvCategory(elemType, cluster: cluster)
+                switch elemCat {
+                case "struct":
+                    return ".array(\(name).map { $0.toTLVElement() })"
+                case "bool":
+                    return ".array(\(name).map { .bool($0) })"
+                case "uint":
+                    return ".array(\(name).map { .unsignedInt(UInt64($0)) })"
+                case "int":
+                    return ".array(\(name).map { .signedInt(Int64($0)) })"
+                case "string":
+                    return ".array(\(name).map { .utf8String($0) })"
+                case "octstr":
+                    return ".array(\(name).map { .octetString($0) })"
+                default:
+                    return ".array(\(name))"
+                }
+            }
+            // Unknown element type — assume [TLVElement]
+            return ".array(\(name))"
+        default:
+            return name
+        }
+    }
+
+    /// Returns Swift code lines that decode a field from a TLV structure.
+    ///
+    /// The returned code expects `fields` to be a `[TLVField]` in scope.
+    private static func tlvDecodeLines(
+        fieldName: String,
+        xmlType: String?,
+        tag: UInt32,
+        cluster: ClusterDefinition,
+        isNullable: Bool,
+        isOptional: Bool,
+        listElementType: String? = nil
+    ) -> (varDecl: String, decodeCode: [String]) {
+        let propName = NamingConventions.structPropertyName(from: fieldName)
+        let swiftType = swiftFieldType(xmlType, cluster: cluster, isNullable: isNullable, isOptional: isOptional, listElementType: listElementType)
+        let cat = tlvCategory(xmlType, cluster: cluster)
+        let tagExpr = "UInt8(\(tag))"
+
+        if isOptional {
+            // Optional field — nil if absent
+            var lines: [String] = []
+            let accessor = valueAccessor(cat, xmlType: xmlType, cluster: cluster, listElementType: listElementType)
+            lines.append("            let \(escaped(propName)): \(swiftType)")
+            lines.append("            if let fieldValue = element[contextTag: \(tagExpr)] {")
+            if isNullable {
+                lines.append("                if fieldValue.isNull {")
+                lines.append("                    \(escaped(propName)) = nil")
+                lines.append("                } else {")
+                lines.append("                    \(escaped(propName)) = \(accessor("fieldValue"))")
+                lines.append("                }")
+            } else {
+                lines.append("                \(escaped(propName)) = \(accessor("fieldValue"))")
+            }
+            lines.append("            } else {")
+            lines.append("                \(escaped(propName)) = nil")
+            lines.append("            }")
+            return ("", lines)
+        } else {
+            // Required field
+            var lines: [String] = []
+            lines.append("            guard let raw_\(propName) = element[contextTag: \(tagExpr)] else {")
+            lines.append("                throw TLVDecodingError.missingField(name: \"\(fieldName)\", tag: \(tagExpr))")
+            lines.append("            }")
+            if isNullable {
+                let accessor = valueAccessor(cat, xmlType: xmlType, cluster: cluster, listElementType: listElementType)
+                lines.append("            let \(escaped(propName)): \(swiftType)")
+                lines.append("            if raw_\(propName).isNull {")
+                lines.append("                \(escaped(propName)) = nil")
+                lines.append("            } else {")
+                lines.append("                \(escaped(propName)) = \(accessor("raw_\(propName)"))")
+                lines.append("            }")
+            } else {
+                let accessor = valueAccessor(cat, xmlType: xmlType, cluster: cluster, listElementType: listElementType)
+                lines.append("            let \(escaped(propName)) = \(accessor("raw_\(propName)"))")
+            }
+            return ("", lines)
+        }
+    }
+
+    /// Returns a Swift expression that extracts a typed value from a TLVElement variable name.
+    private static func valueAccessor(
+        _ cat: String,
+        xmlType: String?,
+        cluster: ClusterDefinition,
+        listElementType: String? = nil
+    ) -> (String) -> String {
+        switch cat {
+        case "bool":
+            return { "\($0).boolValue ?? false" }
+        case "uint":
+            let swiftType = swiftFieldType(xmlType, cluster: cluster, isNullable: false, isOptional: false)
+            return { "\(swiftType)(\($0).uintValue ?? 0)" }
+        case "int":
+            let swiftType = swiftFieldType(xmlType, cluster: cluster, isNullable: false, isOptional: false)
+            return { "\(swiftType)(\($0).intValue ?? 0)" }
+        case "string":
+            return { "\($0).stringValue ?? \"\"" }
+        case "octstr":
+            return { "\($0).dataValue ?? Data()" }
+        case "float":
+            return { "({ if case .float(let v) = \($0) { return v } else { return 0 } })()" }
+        case "double":
+            return { "({ if case .double(let v) = \($0) { return v } else { return 0 } })()" }
+        case "struct":
+            let typeName = sanitizeTypeName(xmlType ?? "")
+            return { "try \(typeName).fromTLVElement(\($0))" }
+        case "list":
+            if let elemType = listElementType {
+                let innerCat = tlvCategory(elemType, cluster: cluster)
+                if innerCat == "struct" {
+                    let innerTypeName = sanitizeTypeName(elemType)
+                    return { "(\($0).arrayElements ?? []).compactMap { try? \(innerTypeName).fromTLVElement($0) }" }
+                } else {
+                    let innerAccessor = valueAccessor(innerCat, xmlType: elemType, cluster: cluster)
+                    return { "(\($0).arrayElements ?? []).map { \(innerAccessor("$0")) }" }
+                }
+            }
+            return { "\($0).arrayElements ?? []" }
+        default:
+            return { $0 }
+        }
+    }
+
+    // MARK: - Struct Type Generation
+
+    /// Generates a `TLVCodable` struct nested within the cluster enum.
+    private static func generateStructType(
+        _ structDef: StructDefinition,
+        cluster: ClusterDefinition,
+        into lines: inout [String]
+    ) {
+        let typeName = sanitizeTypeName(structDef.name)
+        let fieldsToGenerate = structDef.fields.filter { $0.type != nil }
+        if fieldsToGenerate.isEmpty { return }
+
+        lines.append("    // MARK: - \(typeName)")
+        lines.append("")
+        lines.append("    public struct \(typeName): TLVCodable, Equatable {")
+
+        // Properties
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            let swiftType = swiftFieldType(field.type, cluster: cluster, isNullable: field.isNullable, isOptional: field.isOptional, listElementType: field.listElementType)
+            lines.append("        public var \(escaped(propName)): \(swiftType)")
+        }
+
+        // FabricIndex for fabric-scoped structs
+        if structDef.isFabricScoped {
+            lines.append("        public var fabricIndex: UInt8?")
+        }
+
+        lines.append("")
+
+        // Init
+        var initParams: [String] = []
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            let swiftType = swiftFieldType(field.type, cluster: cluster, isNullable: field.isNullable, isOptional: field.isOptional, listElementType: field.listElementType)
+            let defaultVal = (field.isOptional || field.isNullable) ? " = nil" : ""
+            initParams.append("            \(escaped(propName)): \(swiftType)\(defaultVal)")
+        }
+        if structDef.isFabricScoped {
+            initParams.append("            fabricIndex: UInt8? = nil")
+        }
+        lines.append("        public init(")
+        lines.append(initParams.joined(separator: ",\n"))
+        lines.append("        ) {")
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            lines.append("            self.\(escaped(propName)) = \(escaped(propName))")
+        }
+        if structDef.isFabricScoped {
+            lines.append("            self.fabricIndex = fabricIndex")
+        }
+        lines.append("        }")
+
+        // toTLVElement
+        lines.append("")
+        lines.append("        public func toTLVElement() -> TLVElement {")
+        lines.append("            var fields: [TLVElement.TLVField] = []")
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            let tag = field.id
+            if field.isOptional || field.isNullable {
+                lines.append("            if let val = \(escaped(propName)) {")
+                let encExpr = tlvEncodeExpression(propName: "val", xmlType: field.type, cluster: cluster, isNullable: false, listElementType: field.listElementType)
+                    .replacingOccurrences(of: "`val`", with: "val")
+                lines.append("                fields.append(TLVElement.TLVField(tag: .contextSpecific(\(tag)), value: \(encExpr)))")
+                if field.isNullable && !field.isOptional {
+                    lines.append("            } else {")
+                    lines.append("                fields.append(TLVElement.TLVField(tag: .contextSpecific(\(tag)), value: .null))")
+                }
+                lines.append("            }")
+            } else {
+                let encExpr = tlvEncodeExpression(propName: propName, xmlType: field.type, cluster: cluster, isNullable: false, listElementType: field.listElementType)
+                lines.append("            fields.append(TLVElement.TLVField(tag: .contextSpecific(\(tag)), value: \(encExpr)))")
+            }
+        }
+        if structDef.isFabricScoped {
+            lines.append("            if let fi = fabricIndex {")
+            lines.append("                fields.append(TLVElement.TLVField(tag: .contextSpecific(0xFE), value: .unsignedInt(UInt64(fi))))")
+            lines.append("            }")
+        }
+        lines.append("            return .structure(fields)")
+        lines.append("        }")
+
+        // fromTLVElement
+        lines.append("")
+        lines.append("        public static func fromTLVElement(_ element: TLVElement) throws -> \(typeName) {")
+        lines.append("            // Accept both structure and list (matter.js vs CHIP SDK)")
+        lines.append("            switch element {")
+        lines.append("            case .structure, .list: break")
+        lines.append("            default: throw TLVDecodingError.invalidStructure")
+        lines.append("            }")
+
+        for field in fieldsToGenerate {
+            let (_, decodeLines) = tlvDecodeLines(
+                fieldName: field.name,
+                xmlType: field.type,
+                tag: field.id,
+                cluster: cluster,
+                isNullable: field.isNullable,
+                isOptional: field.isOptional,
+                listElementType: field.listElementType
+            )
+            for line in decodeLines {
+                lines.append(line)
+            }
+        }
+
+        // FabricIndex decode
+        var fabricIndexLine = ""
+        if structDef.isFabricScoped {
+            lines.append("            let fabricIndex: UInt8? = element[contextTag: 0xFE].flatMap { UInt8($0.uintValue ?? 0) }")
+            fabricIndexLine = ", fabricIndex: fabricIndex"
+        }
+
+        // Construct return value
+        var args: [String] = []
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            args.append("\(escaped(propName)): \(escaped(propName))")
+        }
+        let argStr = args.joined(separator: ", ")
+        lines.append("            return \(typeName)(\(argStr)\(fabricIndexLine))")
+        lines.append("        }")
+
+        lines.append("    }")
+    }
+
+    // MARK: - Command Struct Generation
+
+    /// Generates a request or response struct for a command that has fields.
+    private static func generateCommandStruct(
+        _ cmd: CommandDefinition,
+        cluster: ClusterDefinition,
+        into lines: inout [String]
+    ) {
+        let fieldsToGenerate = cmd.fields.filter { $0.type != nil }
+        if fieldsToGenerate.isEmpty { return }
+
+        let structName = NamingConventions.commandStructName(from: cmd.name, direction: cmd.direction)
+
+        lines.append("")
+        lines.append("    // MARK: - \(structName)")
+        lines.append("")
+        lines.append("    public struct \(structName): TLVCodable, Equatable {")
+
+        // Properties
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            let swiftType = swiftFieldType(field.type, cluster: cluster, isNullable: field.isNullable, isOptional: field.isOptional, listElementType: field.listElementType)
+            lines.append("        public var \(escaped(propName)): \(swiftType)")
+        }
+
+        lines.append("")
+
+        // Init
+        var initParams: [String] = []
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            let swiftType = swiftFieldType(field.type, cluster: cluster, isNullable: field.isNullable, isOptional: field.isOptional, listElementType: field.listElementType)
+            let defaultVal = (field.isOptional || field.isNullable) ? " = nil" : ""
+            initParams.append("            \(escaped(propName)): \(swiftType)\(defaultVal)")
+        }
+        lines.append("        public init(")
+        lines.append(initParams.joined(separator: ",\n"))
+        lines.append("        ) {")
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            lines.append("            self.\(escaped(propName)) = \(escaped(propName))")
+        }
+        lines.append("        }")
+
+        // toTLVElement
+        lines.append("")
+        lines.append("        public func toTLVElement() -> TLVElement {")
+        lines.append("            var fields: [TLVElement.TLVField] = []")
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            let tag = field.id
+            if field.isOptional || field.isNullable {
+                lines.append("            if let val = \(escaped(propName)) {")
+                let encExpr = tlvEncodeExpression(propName: "val", xmlType: field.type, cluster: cluster, isNullable: false, listElementType: field.listElementType)
+                    .replacingOccurrences(of: "`val`", with: "val")
+                lines.append("                fields.append(TLVElement.TLVField(tag: .contextSpecific(\(tag)), value: \(encExpr)))")
+                if field.isNullable && !field.isOptional {
+                    lines.append("            } else {")
+                    lines.append("                fields.append(TLVElement.TLVField(tag: .contextSpecific(\(tag)), value: .null))")
+                }
+                lines.append("            }")
+            } else {
+                let encExpr = tlvEncodeExpression(propName: propName, xmlType: field.type, cluster: cluster, isNullable: false, listElementType: field.listElementType)
+                lines.append("            fields.append(TLVElement.TLVField(tag: .contextSpecific(\(tag)), value: \(encExpr)))")
+            }
+        }
+        lines.append("            return .structure(fields)")
+        lines.append("        }")
+
+        // fromTLVElement
+        lines.append("")
+        lines.append("        public static func fromTLVElement(_ element: TLVElement) throws -> \(structName) {")
+        lines.append("            // Accept both structure and list (matter.js vs CHIP SDK)")
+        lines.append("            switch element {")
+        lines.append("            case .structure, .list: break")
+        lines.append("            default: throw TLVDecodingError.invalidStructure")
+        lines.append("            }")
+
+        for field in fieldsToGenerate {
+            let (_, decodeLines) = tlvDecodeLines(
+                fieldName: field.name,
+                xmlType: field.type,
+                tag: field.id,
+                cluster: cluster,
+                isNullable: field.isNullable,
+                isOptional: field.isOptional,
+                listElementType: field.listElementType
+            )
+            for line in decodeLines {
+                lines.append(line)
+            }
+        }
+
+        // Construct return value
+        var args: [String] = []
+        for field in fieldsToGenerate {
+            let propName = NamingConventions.structPropertyName(from: field.name)
+            args.append("\(escaped(propName)): \(escaped(propName))")
+        }
+        let argStr = args.joined(separator: ", ")
+        lines.append("            return \(structName)(\(argStr))")
+        lines.append("        }")
+
+        lines.append("    }")
+    }
+
     // MARK: - Cluster Spec Generation
 
     /// Maps an XML attribute type string to a `MatterAttributeType` Swift expression.
@@ -580,7 +1126,43 @@ struct SwiftCodeGenerator {
         lines.append("        commands: [")
         for cmd in clientCommands {
             let confCode = cmd.conformance.toSwiftCode(featureCodeToBit: featureMap)
-            lines.append("            CommandSpec(id: CommandID(rawValue: 0x\(hex(cmd.id))), name: \"\(cmd.name)\", conformance: \(confCode)),")
+
+            // Build field specs
+            let fieldSpecs = cmd.fields.compactMap { field -> String? in
+                guard let type = field.type else { return nil }
+                let typeCode = matterTypeToSwift(type, cluster: cluster)
+                let isOptional = field.isOptional ? "true" : "false"
+                let isNullable = field.isNullable ? "true" : "false"
+                guard field.id <= UInt32(UInt8.max) else { return nil }
+                return "FieldSpec(id: \(field.id), name: \"\(field.name)\", type: \(typeCode), isOptional: \(isOptional), isNullable: \(isNullable))"
+            }
+
+            // Build response ID
+            var responseIDCode = "nil"
+            if let responseName = cmd.response, responseName != "Y" {
+                // Look up the response command's ID
+                if let responseCmd = cluster.commands.first(where: { $0.name == responseName }) {
+                    responseIDCode = "CommandID(rawValue: 0x\(hex(responseCmd.id)))"
+                }
+            }
+
+            // Build optional parameters
+            var extras: [String] = []
+            if !fieldSpecs.isEmpty {
+                extras.append("fields: [\(fieldSpecs.joined(separator: ", "))]")
+            }
+            if responseIDCode != "nil" {
+                extras.append("responseID: \(responseIDCode)")
+            }
+            if cmd.isFabricScoped {
+                extras.append("isFabricScoped: true")
+            }
+            if cmd.isTimedInvoke {
+                extras.append("isTimedInvoke: true")
+            }
+
+            let extrasStr = extras.isEmpty ? "" : ", \(extras.joined(separator: ", "))"
+            lines.append("            CommandSpec(id: CommandID(rawValue: 0x\(hex(cmd.id))), name: \"\(cmd.name)\", conformance: \(confCode)\(extrasStr)),")
         }
         lines.append("        ]")
         lines.append("    )")

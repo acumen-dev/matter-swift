@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// General Diagnostics Cluster (0x0033), revision 2
@@ -53,6 +54,15 @@ public enum GeneralDiagnosticsCluster {
         public static let timeSnapshot = CommandID(rawValue: 0x0001)
         /// PayloadTestRequest, mandatory when DMTEST
         public static let payloadTestRequest = CommandID(rawValue: 0x0003)
+    }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// TimeSnapshotResponse
+        public static let timeSnapshotResponse = CommandID(rawValue: 0x0002)
+        /// PayloadTestResponse
+        public static let payloadTestResponse = CommandID(rawValue: 0x0004)
     }
 
     // MARK: - Events
@@ -116,6 +126,132 @@ public enum GeneralDiagnosticsCluster {
         case bleFault = 5
         case ethernetFault = 6
     }
+
+    // MARK: - TimeSnapshotResponse
+
+    public struct TimeSnapshotResponse: TLVCodable, Equatable {
+        public var systemTimeMs: TLVElement
+        public var posixTimeMs: TLVElement?
+
+        public init(
+            systemTimeMs: TLVElement,
+            posixTimeMs: TLVElement? = nil
+        ) {
+            self.systemTimeMs = systemTimeMs
+            self.posixTimeMs = posixTimeMs
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: systemTimeMs))
+            if let val = posixTimeMs {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TimeSnapshotResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_systemTimeMs = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "SystemTimeMs", tag: UInt8(0))
+            }
+            let systemTimeMs = raw_systemTimeMs
+            guard let raw_posixTimeMs = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "PosixTimeMs", tag: UInt8(1))
+            }
+            let posixTimeMs: TLVElement?
+            if raw_posixTimeMs.isNull {
+                posixTimeMs = nil
+            } else {
+                posixTimeMs = raw_posixTimeMs
+            }
+            return TimeSnapshotResponse(systemTimeMs: systemTimeMs, posixTimeMs: posixTimeMs)
+        }
+    }
+
+    // MARK: - PayloadTestRequest
+
+    public struct PayloadTestRequest: TLVCodable, Equatable {
+        public var enableKey: Data
+        public var value: UInt8
+        public var count: UInt16
+
+        public init(
+            enableKey: Data,
+            value: UInt8,
+            count: UInt16
+        ) {
+            self.enableKey = enableKey
+            self.value = value
+            self.count = count
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(enableKey)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(value))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(count))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PayloadTestRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_enableKey = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EnableKey", tag: UInt8(0))
+            }
+            let enableKey = raw_enableKey.dataValue ?? Data()
+            guard let raw_value = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Value", tag: UInt8(1))
+            }
+            let value = UInt8(raw_value.uintValue ?? 0)
+            guard let raw_count = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Count", tag: UInt8(2))
+            }
+            let count = UInt16(raw_count.uintValue ?? 0)
+            return PayloadTestRequest(enableKey: enableKey, value: value, count: count)
+        }
+    }
+
+    // MARK: - PayloadTestResponse
+
+    public struct PayloadTestResponse: TLVCodable, Equatable {
+        public var payload: Data
+
+        public init(
+            payload: Data
+        ) {
+            self.payload = payload
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(payload)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PayloadTestResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_payload = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Payload", tag: UInt8(0))
+            }
+            let payload = raw_payload.dataValue ?? Data()
+            return PayloadTestResponse(payload: payload)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -138,9 +274,9 @@ extension GeneralDiagnosticsCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "DoNotUse", conformance: .disallowed, type: .unknown, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "TestEventTrigger", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "TimeSnapshot", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "PayloadTestRequest", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "TestEventTrigger", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "EnableKey", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EventTrigger", type: .uint64, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "TimeSnapshot", conformance: .mandatory, responseID: CommandID(rawValue: 0x0002)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "PayloadTestRequest", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "EnableKey", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Value", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Count", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0004)),
         ]
     )
 }

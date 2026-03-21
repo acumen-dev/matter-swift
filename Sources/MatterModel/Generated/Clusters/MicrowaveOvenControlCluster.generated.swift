@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Microwave Oven Control Cluster (0x005F), revision 1
@@ -54,6 +55,120 @@ public enum MicrowaveOvenControlCluster {
         /// AddMoreTime, optional
         public static let addMoreTime = CommandID(rawValue: 0x0001)
     }
+
+    // MARK: - SetCookingParametersRequest
+
+    public struct SetCookingParametersRequest: TLVCodable, Equatable {
+        public var cookMode: UInt8?
+        public var cookTime: TLVElement?
+        public var powerSetting: UInt8?
+        public var wattSettingIndex: UInt8?
+        public var startAfterSetting: Bool?
+
+        public init(
+            cookMode: UInt8? = nil,
+            cookTime: TLVElement? = nil,
+            powerSetting: UInt8? = nil,
+            wattSettingIndex: UInt8? = nil,
+            startAfterSetting: Bool? = nil
+        ) {
+            self.cookMode = cookMode
+            self.cookTime = cookTime
+            self.powerSetting = powerSetting
+            self.wattSettingIndex = wattSettingIndex
+            self.startAfterSetting = startAfterSetting
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = cookMode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = cookTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: val))
+            }
+            if let val = powerSetting {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = wattSettingIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = startAfterSetting {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .bool(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetCookingParametersRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let cookMode: UInt8?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                cookMode = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                cookMode = nil
+            }
+            let cookTime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                cookTime = fieldValue
+            } else {
+                cookTime = nil
+            }
+            let powerSetting: UInt8?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                powerSetting = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                powerSetting = nil
+            }
+            let wattSettingIndex: UInt8?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                wattSettingIndex = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                wattSettingIndex = nil
+            }
+            let startAfterSetting: Bool?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                startAfterSetting = fieldValue.boolValue ?? false
+            } else {
+                startAfterSetting = nil
+            }
+            return SetCookingParametersRequest(cookMode: cookMode, cookTime: cookTime, powerSetting: powerSetting, wattSettingIndex: wattSettingIndex, startAfterSetting: startAfterSetting)
+        }
+    }
+
+    // MARK: - AddMoreTimeRequest
+
+    public struct AddMoreTimeRequest: TLVCodable, Equatable {
+        public var timeToAdd: TLVElement
+
+        public init(
+            timeToAdd: TLVElement
+        ) {
+            self.timeToAdd = timeToAdd
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: timeToAdd))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddMoreTimeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeToAdd = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TimeToAdd", tag: UInt8(0))
+            }
+            let timeToAdd = raw_timeToAdd
+            return AddMoreTimeRequest(timeToAdd: timeToAdd)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -75,8 +190,8 @@ extension MicrowaveOvenControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "WattRating", conformance: .optional, type: .uint16, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetCookingParameters", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "AddMoreTime", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetCookingParameters", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "CookMode", type: .uint8, isOptional: true, isNullable: false), FieldSpec(id: 1, name: "CookTime", type: .unknown, isOptional: true, isNullable: false), FieldSpec(id: 2, name: "PowerSetting", type: .uint8, isOptional: true, isNullable: false), FieldSpec(id: 3, name: "WattSettingIndex", type: .uint8, isOptional: true, isNullable: false), FieldSpec(id: 4, name: "StartAfterSetting", type: .bool, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "AddMoreTime", conformance: .optional, fields: [FieldSpec(id: 0, name: "TimeToAdd", type: .unknown, isOptional: false, isNullable: false)]),
         ]
     )
 }

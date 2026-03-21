@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Wi-Fi Network Management Cluster (0x0451), revision 1
@@ -25,6 +26,44 @@ public enum WiFiNetworkManagementCluster {
         /// NetworkPassphraseRequest, mandatory
         public static let networkPassphraseRequest = CommandID(rawValue: 0x0000)
     }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// NetworkPassphraseResponse
+        public static let networkPassphraseResponse = CommandID(rawValue: 0x0001)
+    }
+
+    // MARK: - NetworkPassphraseResponse
+
+    public struct NetworkPassphraseResponse: TLVCodable, Equatable {
+        public var passphrase: Data
+
+        public init(
+            passphrase: Data
+        ) {
+            self.passphrase = passphrase
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(passphrase)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> NetworkPassphraseResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_passphrase = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Passphrase", tag: UInt8(0))
+            }
+            let passphrase = raw_passphrase.dataValue ?? Data()
+            return NetworkPassphraseResponse(passphrase: passphrase)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -39,7 +78,7 @@ extension WiFiNetworkManagementCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "PassphraseSurrogate", conformance: .mandatory, type: .uint64, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "NetworkPassphraseRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "NetworkPassphraseRequest", conformance: .mandatory, responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

@@ -97,6 +97,32 @@ enum NamingConventions {
         return propertyName(from: xmlName)
     }
 
+    /// Converts a field/property name from XML to Swift camelCase property name.
+    /// e.g., "TransitionTime" → "transitionTime", "OptionsMask" → "optionsMask"
+    static func structPropertyName(from xmlName: String) -> String {
+        return propertyName(from: xmlName)
+    }
+
+    /// Generates a command struct name from a command name and direction.
+    /// e.g., ("MoveToLevel", "commandToServer") → "MoveToLevelRequest"
+    ///       ("ScanNetworksResponse", "commandToClient") → "ScanNetworksResponse"
+    static func commandStructName(from xmlName: String, direction: String) -> String {
+        // Sanitize: remove spaces, slashes, etc.
+        let sanitized = toPascalCase(xmlName)
+        if direction == "commandToClient" || direction == "responseFromServer" {
+            // Response commands — the XML name typically already ends in "Response"
+            if sanitized.hasSuffix("Response") {
+                return sanitized
+            }
+            return sanitized + "Response"
+        }
+        // Client-to-server commands → append "Request" unless already ends with "Request"
+        if sanitized.hasSuffix("Request") {
+            return sanitized
+        }
+        return sanitized + "Request"
+    }
+
     /// Generates a filename for a cluster.
     /// e.g., "OnOffCluster" → "OnOffCluster.generated.swift"
     static func clusterFileName(enumName: String) -> String {

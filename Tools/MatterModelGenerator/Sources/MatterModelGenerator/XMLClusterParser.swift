@@ -189,6 +189,12 @@ final class XMLClusterParser: NSObject, XMLParserDelegate {
                 conformanceStack.append(ConformanceBuilder())
             }
 
+        case "entry":
+            // <entry type="FooStruct"/> inside a <field type="list"> or <attribute type="list">
+            if currentField != nil {
+                currentField?.listElementType = attrs["type"]
+            }
+
         case "item":
             if currentEnum != nil {
                 let item = PartialEnumItem(
@@ -344,10 +350,18 @@ final class XMLClusterParser: NSObject, XMLParserDelegate {
         case "field":
             if let field = currentField {
                 let conf = conformanceStack.popLast()?.build() ?? .unknown
+                // Derive isOptional from conformance if not explicitly set
+                var isOptional = field.isOptional
+                switch conf {
+                case .optional, .optionalIf:
+                    isOptional = true
+                default:
+                    break
+                }
                 let def = FieldDefinition(
                     id: field.id, name: field.name, type: field.type,
-                    isNullable: field.isNullable, isOptional: field.isOptional,
-                    conformance: conf
+                    isNullable: field.isNullable, isOptional: isOptional,
+                    conformance: conf, listElementType: field.listElementType
                 )
                 if currentCommand != nil {
                     currentCommandFields.append(def)
@@ -503,6 +517,7 @@ private struct PartialField {
     let type: String?
     var isNullable = false
     var isOptional = false
+    var listElementType: String?
 }
 
 private struct PartialEnum {

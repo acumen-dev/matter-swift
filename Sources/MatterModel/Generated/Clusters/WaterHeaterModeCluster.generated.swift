@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Water Heater Mode Cluster (0x009E), revision 1
@@ -31,6 +32,7 @@ public enum WaterHeaterModeCluster {
         /// OnMode — type: unknown, disallowed
         public static let onMode = AttributeID(rawValue: 0x0003)
     }
+
 }
 
 // MARK: - Spec Metadata

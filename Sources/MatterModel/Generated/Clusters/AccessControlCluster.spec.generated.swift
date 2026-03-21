@@ -22,7 +22,7 @@ extension AccessControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0006), name: "ARL", conformance: .mandatoryIf(.feature(1 << 1)), type: .list, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ReviewFabricRestrictions", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ReviewFabricRestrictions", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "ARL", type: .list, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Thermostat Cluster (0x0201), revision 8
@@ -179,6 +180,15 @@ public enum ThermostatCluster {
         public static let setActiveScheduleRequest = CommandID(rawValue: 0x0005)
         /// SetActivePresetRequest, mandatory when PRES
         public static let setActivePresetRequest = CommandID(rawValue: 0x0006)
+    }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// GetWeeklyScheduleResponse
+        public static let getWeeklyScheduleResponse = CommandID(rawValue: 0x0000)
+        /// GetRelayStatusLogResponse
+        public static let getRelayStatusLogResponse = CommandID(rawValue: 0x0001)
     }
 
     public enum ACCapacityFormatEnum: UInt8, Sendable, Equatable {
@@ -375,6 +385,794 @@ public enum ThermostatCluster {
         public static let supportsNames = ScheduleTypeFeaturesBitmap(rawValue: 1 << 2)
         public static let supportsOff = ScheduleTypeFeaturesBitmap(rawValue: 1 << 3)
     }
+
+    // MARK: - PresetStruct
+
+    public struct PresetStruct: TLVCodable, Equatable {
+        public var presetHandle: Data?
+        public var presetScenario: UInt8
+        public var name: String?
+        public var coolingSetpoint: Int16
+        public var heatingSetpoint: Int16
+        public var builtIn: Bool?
+
+        public init(
+            presetHandle: Data? = nil,
+            presetScenario: UInt8,
+            name: String? = nil,
+            coolingSetpoint: Int16,
+            heatingSetpoint: Int16,
+            builtIn: Bool? = nil
+        ) {
+            self.presetHandle = presetHandle
+            self.presetScenario = presetScenario
+            self.name = name
+            self.coolingSetpoint = coolingSetpoint
+            self.heatingSetpoint = heatingSetpoint
+            self.builtIn = builtIn
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = presetHandle {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(presetScenario))))
+            if let val = name {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .signedInt(Int64(coolingSetpoint))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .signedInt(Int64(heatingSetpoint))))
+            if let val = builtIn {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .bool(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PresetStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_presetHandle = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PresetHandle", tag: UInt8(0))
+            }
+            let presetHandle: Data?
+            if raw_presetHandle.isNull {
+                presetHandle = nil
+            } else {
+                presetHandle = raw_presetHandle.dataValue ?? Data()
+            }
+            guard let raw_presetScenario = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "PresetScenario", tag: UInt8(1))
+            }
+            let presetScenario = UInt8(raw_presetScenario.uintValue ?? 0)
+            let name: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                if fieldValue.isNull {
+                    name = nil
+                } else {
+                    name = fieldValue.stringValue ?? ""
+                }
+            } else {
+                name = nil
+            }
+            guard let raw_coolingSetpoint = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "CoolingSetpoint", tag: UInt8(3))
+            }
+            let coolingSetpoint = Int16(raw_coolingSetpoint.intValue ?? 0)
+            guard let raw_heatingSetpoint = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "HeatingSetpoint", tag: UInt8(4))
+            }
+            let heatingSetpoint = Int16(raw_heatingSetpoint.intValue ?? 0)
+            guard let raw_builtIn = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "BuiltIn", tag: UInt8(5))
+            }
+            let builtIn: Bool?
+            if raw_builtIn.isNull {
+                builtIn = nil
+            } else {
+                builtIn = raw_builtIn.boolValue ?? false
+            }
+            return PresetStruct(presetHandle: presetHandle, presetScenario: presetScenario, name: name, coolingSetpoint: coolingSetpoint, heatingSetpoint: heatingSetpoint, builtIn: builtIn)
+        }
+    }
+
+    // MARK: - PresetTypeStruct
+
+    public struct PresetTypeStruct: TLVCodable, Equatable {
+        public var presetScenario: UInt8
+        public var numberOfPresets: UInt8
+        public var presetTypeFeatures: UInt8
+
+        public init(
+            presetScenario: UInt8,
+            numberOfPresets: UInt8,
+            presetTypeFeatures: UInt8
+        ) {
+            self.presetScenario = presetScenario
+            self.numberOfPresets = numberOfPresets
+            self.presetTypeFeatures = presetTypeFeatures
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(presetScenario))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(numberOfPresets))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(presetTypeFeatures))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PresetTypeStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_presetScenario = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PresetScenario", tag: UInt8(0))
+            }
+            let presetScenario = UInt8(raw_presetScenario.uintValue ?? 0)
+            guard let raw_numberOfPresets = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NumberOfPresets", tag: UInt8(1))
+            }
+            let numberOfPresets = UInt8(raw_numberOfPresets.uintValue ?? 0)
+            guard let raw_presetTypeFeatures = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "PresetTypeFeatures", tag: UInt8(2))
+            }
+            let presetTypeFeatures = UInt8(raw_presetTypeFeatures.uintValue ?? 0)
+            return PresetTypeStruct(presetScenario: presetScenario, numberOfPresets: numberOfPresets, presetTypeFeatures: presetTypeFeatures)
+        }
+    }
+
+    // MARK: - ScheduleStruct
+
+    public struct ScheduleStruct: TLVCodable, Equatable {
+        public var scheduleHandle: Data?
+        public var systemMode: UInt8
+        public var name: String?
+        public var presetHandle: Data?
+        public var transitions: [ScheduleTransitionStruct]
+        public var builtIn: Bool?
+
+        public init(
+            scheduleHandle: Data? = nil,
+            systemMode: UInt8,
+            name: String? = nil,
+            presetHandle: Data? = nil,
+            transitions: [ScheduleTransitionStruct],
+            builtIn: Bool? = nil
+        ) {
+            self.scheduleHandle = scheduleHandle
+            self.systemMode = systemMode
+            self.name = name
+            self.presetHandle = presetHandle
+            self.transitions = transitions
+            self.builtIn = builtIn
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = scheduleHandle {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(systemMode))))
+            if let val = name {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            if let val = presetHandle {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .array(transitions.map { $0.toTLVElement() })))
+            if let val = builtIn {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .bool(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ScheduleStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_scheduleHandle = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ScheduleHandle", tag: UInt8(0))
+            }
+            let scheduleHandle: Data?
+            if raw_scheduleHandle.isNull {
+                scheduleHandle = nil
+            } else {
+                scheduleHandle = raw_scheduleHandle.dataValue ?? Data()
+            }
+            guard let raw_systemMode = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "SystemMode", tag: UInt8(1))
+            }
+            let systemMode = UInt8(raw_systemMode.uintValue ?? 0)
+            let name: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                name = fieldValue.stringValue ?? ""
+            } else {
+                name = nil
+            }
+            let presetHandle: Data?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                presetHandle = fieldValue.dataValue ?? Data()
+            } else {
+                presetHandle = nil
+            }
+            guard let raw_transitions = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "Transitions", tag: UInt8(4))
+            }
+            let transitions = (raw_transitions.arrayElements ?? []).compactMap { try? ScheduleTransitionStruct.fromTLVElement($0) }
+            guard let raw_builtIn = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "BuiltIn", tag: UInt8(5))
+            }
+            let builtIn: Bool?
+            if raw_builtIn.isNull {
+                builtIn = nil
+            } else {
+                builtIn = raw_builtIn.boolValue ?? false
+            }
+            return ScheduleStruct(scheduleHandle: scheduleHandle, systemMode: systemMode, name: name, presetHandle: presetHandle, transitions: transitions, builtIn: builtIn)
+        }
+    }
+
+    // MARK: - ScheduleTransitionStruct
+
+    public struct ScheduleTransitionStruct: TLVCodable, Equatable {
+        public var dayOfWeek: UInt8
+        public var transitionTime: UInt16
+        public var presetHandle: Data?
+        public var systemMode: UInt8?
+        public var coolingSetpoint: Int16?
+        public var heatingSetpoint: Int16?
+
+        public init(
+            dayOfWeek: UInt8,
+            transitionTime: UInt16,
+            presetHandle: Data? = nil,
+            systemMode: UInt8? = nil,
+            coolingSetpoint: Int16? = nil,
+            heatingSetpoint: Int16? = nil
+        ) {
+            self.dayOfWeek = dayOfWeek
+            self.transitionTime = transitionTime
+            self.presetHandle = presetHandle
+            self.systemMode = systemMode
+            self.coolingSetpoint = coolingSetpoint
+            self.heatingSetpoint = heatingSetpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(dayOfWeek))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(transitionTime))))
+            if let val = presetHandle {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(val)))
+            }
+            if let val = systemMode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = coolingSetpoint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .signedInt(Int64(val))))
+            }
+            if let val = heatingSetpoint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .signedInt(Int64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ScheduleTransitionStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_dayOfWeek = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DayOfWeek", tag: UInt8(0))
+            }
+            let dayOfWeek = UInt8(raw_dayOfWeek.uintValue ?? 0)
+            guard let raw_transitionTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(1))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            let presetHandle: Data?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                presetHandle = fieldValue.dataValue ?? Data()
+            } else {
+                presetHandle = nil
+            }
+            let systemMode: UInt8?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                systemMode = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                systemMode = nil
+            }
+            let coolingSetpoint: Int16?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                coolingSetpoint = Int16(fieldValue.intValue ?? 0)
+            } else {
+                coolingSetpoint = nil
+            }
+            let heatingSetpoint: Int16?
+            if let fieldValue = element[contextTag: UInt8(5)] {
+                heatingSetpoint = Int16(fieldValue.intValue ?? 0)
+            } else {
+                heatingSetpoint = nil
+            }
+            return ScheduleTransitionStruct(dayOfWeek: dayOfWeek, transitionTime: transitionTime, presetHandle: presetHandle, systemMode: systemMode, coolingSetpoint: coolingSetpoint, heatingSetpoint: heatingSetpoint)
+        }
+    }
+
+    // MARK: - ScheduleTypeStruct
+
+    public struct ScheduleTypeStruct: TLVCodable, Equatable {
+        public var systemMode: UInt8
+        public var numberOfSchedules: UInt8
+        public var scheduleTypeFeatures: UInt8
+
+        public init(
+            systemMode: UInt8,
+            numberOfSchedules: UInt8,
+            scheduleTypeFeatures: UInt8
+        ) {
+            self.systemMode = systemMode
+            self.numberOfSchedules = numberOfSchedules
+            self.scheduleTypeFeatures = scheduleTypeFeatures
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(systemMode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(numberOfSchedules))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(scheduleTypeFeatures))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ScheduleTypeStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_systemMode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "SystemMode", tag: UInt8(0))
+            }
+            let systemMode = UInt8(raw_systemMode.uintValue ?? 0)
+            guard let raw_numberOfSchedules = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NumberOfSchedules", tag: UInt8(1))
+            }
+            let numberOfSchedules = UInt8(raw_numberOfSchedules.uintValue ?? 0)
+            guard let raw_scheduleTypeFeatures = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ScheduleTypeFeatures", tag: UInt8(2))
+            }
+            let scheduleTypeFeatures = UInt8(raw_scheduleTypeFeatures.uintValue ?? 0)
+            return ScheduleTypeStruct(systemMode: systemMode, numberOfSchedules: numberOfSchedules, scheduleTypeFeatures: scheduleTypeFeatures)
+        }
+    }
+
+    // MARK: - WeeklyScheduleTransitionStruct
+
+    public struct WeeklyScheduleTransitionStruct: TLVCodable, Equatable {
+        public var transitionTime: UInt16
+        public var heatSetpoint: Int16?
+        public var coolSetpoint: Int16?
+
+        public init(
+            transitionTime: UInt16,
+            heatSetpoint: Int16? = nil,
+            coolSetpoint: Int16? = nil
+        ) {
+            self.transitionTime = transitionTime
+            self.heatSetpoint = heatSetpoint
+            self.coolSetpoint = coolSetpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(transitionTime))))
+            if let val = heatSetpoint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .signedInt(Int64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = coolSetpoint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .signedInt(Int64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> WeeklyScheduleTransitionStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_transitionTime = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TransitionTime", tag: UInt8(0))
+            }
+            let transitionTime = UInt16(raw_transitionTime.uintValue ?? 0)
+            guard let raw_heatSetpoint = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "HeatSetpoint", tag: UInt8(1))
+            }
+            let heatSetpoint: Int16?
+            if raw_heatSetpoint.isNull {
+                heatSetpoint = nil
+            } else {
+                heatSetpoint = Int16(raw_heatSetpoint.intValue ?? 0)
+            }
+            guard let raw_coolSetpoint = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "CoolSetpoint", tag: UInt8(2))
+            }
+            let coolSetpoint: Int16?
+            if raw_coolSetpoint.isNull {
+                coolSetpoint = nil
+            } else {
+                coolSetpoint = Int16(raw_coolSetpoint.intValue ?? 0)
+            }
+            return WeeklyScheduleTransitionStruct(transitionTime: transitionTime, heatSetpoint: heatSetpoint, coolSetpoint: coolSetpoint)
+        }
+    }
+
+    // MARK: - SetpointRaiseLowerRequest
+
+    public struct SetpointRaiseLowerRequest: TLVCodable, Equatable {
+        public var mode: UInt8
+        public var amount: Int8
+
+        public init(
+            mode: UInt8,
+            amount: Int8
+        ) {
+            self.mode = mode
+            self.amount = amount
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(mode))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .signedInt(Int64(amount))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetpointRaiseLowerRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_mode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Mode", tag: UInt8(0))
+            }
+            let mode = UInt8(raw_mode.uintValue ?? 0)
+            guard let raw_amount = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Amount", tag: UInt8(1))
+            }
+            let amount = Int8(raw_amount.intValue ?? 0)
+            return SetpointRaiseLowerRequest(mode: mode, amount: amount)
+        }
+    }
+
+    // MARK: - GetWeeklyScheduleResponse
+
+    public struct GetWeeklyScheduleResponse: TLVCodable, Equatable {
+        public var numberOfTransitionsForSequence: UInt8
+        public var dayOfWeekForSequence: UInt8
+        public var modeForSequence: UInt8
+        public var transitions: [WeeklyScheduleTransitionStruct]
+
+        public init(
+            numberOfTransitionsForSequence: UInt8,
+            dayOfWeekForSequence: UInt8,
+            modeForSequence: UInt8,
+            transitions: [WeeklyScheduleTransitionStruct]
+        ) {
+            self.numberOfTransitionsForSequence = numberOfTransitionsForSequence
+            self.dayOfWeekForSequence = dayOfWeekForSequence
+            self.modeForSequence = modeForSequence
+            self.transitions = transitions
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(numberOfTransitionsForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(dayOfWeekForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(modeForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .array(transitions.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetWeeklyScheduleResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_numberOfTransitionsForSequence = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NumberOfTransitionsForSequence", tag: UInt8(0))
+            }
+            let numberOfTransitionsForSequence = UInt8(raw_numberOfTransitionsForSequence.uintValue ?? 0)
+            guard let raw_dayOfWeekForSequence = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "DayOfWeekForSequence", tag: UInt8(1))
+            }
+            let dayOfWeekForSequence = UInt8(raw_dayOfWeekForSequence.uintValue ?? 0)
+            guard let raw_modeForSequence = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ModeForSequence", tag: UInt8(2))
+            }
+            let modeForSequence = UInt8(raw_modeForSequence.uintValue ?? 0)
+            guard let raw_transitions = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "Transitions", tag: UInt8(3))
+            }
+            let transitions = (raw_transitions.arrayElements ?? []).compactMap { try? WeeklyScheduleTransitionStruct.fromTLVElement($0) }
+            return GetWeeklyScheduleResponse(numberOfTransitionsForSequence: numberOfTransitionsForSequence, dayOfWeekForSequence: dayOfWeekForSequence, modeForSequence: modeForSequence, transitions: transitions)
+        }
+    }
+
+    // MARK: - SetWeeklyScheduleRequest
+
+    public struct SetWeeklyScheduleRequest: TLVCodable, Equatable {
+        public var numberOfTransitionsForSequence: UInt8
+        public var dayOfWeekForSequence: UInt8
+        public var modeForSequence: UInt8
+        public var transitions: [WeeklyScheduleTransitionStruct]
+
+        public init(
+            numberOfTransitionsForSequence: UInt8,
+            dayOfWeekForSequence: UInt8,
+            modeForSequence: UInt8,
+            transitions: [WeeklyScheduleTransitionStruct]
+        ) {
+            self.numberOfTransitionsForSequence = numberOfTransitionsForSequence
+            self.dayOfWeekForSequence = dayOfWeekForSequence
+            self.modeForSequence = modeForSequence
+            self.transitions = transitions
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(numberOfTransitionsForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(dayOfWeekForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(modeForSequence))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .array(transitions.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetWeeklyScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_numberOfTransitionsForSequence = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NumberOfTransitionsForSequence", tag: UInt8(0))
+            }
+            let numberOfTransitionsForSequence = UInt8(raw_numberOfTransitionsForSequence.uintValue ?? 0)
+            guard let raw_dayOfWeekForSequence = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "DayOfWeekForSequence", tag: UInt8(1))
+            }
+            let dayOfWeekForSequence = UInt8(raw_dayOfWeekForSequence.uintValue ?? 0)
+            guard let raw_modeForSequence = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ModeForSequence", tag: UInt8(2))
+            }
+            let modeForSequence = UInt8(raw_modeForSequence.uintValue ?? 0)
+            guard let raw_transitions = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "Transitions", tag: UInt8(3))
+            }
+            let transitions = (raw_transitions.arrayElements ?? []).compactMap { try? WeeklyScheduleTransitionStruct.fromTLVElement($0) }
+            return SetWeeklyScheduleRequest(numberOfTransitionsForSequence: numberOfTransitionsForSequence, dayOfWeekForSequence: dayOfWeekForSequence, modeForSequence: modeForSequence, transitions: transitions)
+        }
+    }
+
+    // MARK: - GetRelayStatusLogResponse
+
+    public struct GetRelayStatusLogResponse: TLVCodable, Equatable {
+        public var timeOfDay: UInt16
+        public var relayStatus: UInt8
+        public var localTemperature: Int16?
+        public var humidityInPercentage: UInt8?
+        public var setPoint: Int16
+        public var unreadEntries: UInt16
+
+        public init(
+            timeOfDay: UInt16,
+            relayStatus: UInt8,
+            localTemperature: Int16? = nil,
+            humidityInPercentage: UInt8? = nil,
+            setPoint: Int16,
+            unreadEntries: UInt16
+        ) {
+            self.timeOfDay = timeOfDay
+            self.relayStatus = relayStatus
+            self.localTemperature = localTemperature
+            self.humidityInPercentage = humidityInPercentage
+            self.setPoint = setPoint
+            self.unreadEntries = unreadEntries
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(timeOfDay))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(relayStatus))))
+            if let val = localTemperature {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .signedInt(Int64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = humidityInPercentage {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .signedInt(Int64(setPoint))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(unreadEntries))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetRelayStatusLogResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeOfDay = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TimeOfDay", tag: UInt8(0))
+            }
+            let timeOfDay = UInt16(raw_timeOfDay.uintValue ?? 0)
+            guard let raw_relayStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "RelayStatus", tag: UInt8(1))
+            }
+            let relayStatus = UInt8(raw_relayStatus.uintValue ?? 0)
+            guard let raw_localTemperature = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "LocalTemperature", tag: UInt8(2))
+            }
+            let localTemperature: Int16?
+            if raw_localTemperature.isNull {
+                localTemperature = nil
+            } else {
+                localTemperature = Int16(raw_localTemperature.intValue ?? 0)
+            }
+            guard let raw_humidityInPercentage = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "HumidityInPercentage", tag: UInt8(3))
+            }
+            let humidityInPercentage: UInt8?
+            if raw_humidityInPercentage.isNull {
+                humidityInPercentage = nil
+            } else {
+                humidityInPercentage = UInt8(raw_humidityInPercentage.uintValue ?? 0)
+            }
+            guard let raw_setPoint = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "SetPoint", tag: UInt8(4))
+            }
+            let setPoint = Int16(raw_setPoint.intValue ?? 0)
+            guard let raw_unreadEntries = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "UnreadEntries", tag: UInt8(5))
+            }
+            let unreadEntries = UInt16(raw_unreadEntries.uintValue ?? 0)
+            return GetRelayStatusLogResponse(timeOfDay: timeOfDay, relayStatus: relayStatus, localTemperature: localTemperature, humidityInPercentage: humidityInPercentage, setPoint: setPoint, unreadEntries: unreadEntries)
+        }
+    }
+
+    // MARK: - GetWeeklyScheduleRequest
+
+    public struct GetWeeklyScheduleRequest: TLVCodable, Equatable {
+        public var daysToReturn: UInt8
+        public var modeToReturn: UInt8
+
+        public init(
+            daysToReturn: UInt8,
+            modeToReturn: UInt8
+        ) {
+            self.daysToReturn = daysToReturn
+            self.modeToReturn = modeToReturn
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(daysToReturn))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(modeToReturn))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetWeeklyScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_daysToReturn = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DaysToReturn", tag: UInt8(0))
+            }
+            let daysToReturn = UInt8(raw_daysToReturn.uintValue ?? 0)
+            guard let raw_modeToReturn = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ModeToReturn", tag: UInt8(1))
+            }
+            let modeToReturn = UInt8(raw_modeToReturn.uintValue ?? 0)
+            return GetWeeklyScheduleRequest(daysToReturn: daysToReturn, modeToReturn: modeToReturn)
+        }
+    }
+
+    // MARK: - SetActiveScheduleRequest
+
+    public struct SetActiveScheduleRequest: TLVCodable, Equatable {
+        public var scheduleHandle: Data
+
+        public init(
+            scheduleHandle: Data
+        ) {
+            self.scheduleHandle = scheduleHandle
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(scheduleHandle)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetActiveScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_scheduleHandle = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ScheduleHandle", tag: UInt8(0))
+            }
+            let scheduleHandle = raw_scheduleHandle.dataValue ?? Data()
+            return SetActiveScheduleRequest(scheduleHandle: scheduleHandle)
+        }
+    }
+
+    // MARK: - SetActivePresetRequest
+
+    public struct SetActivePresetRequest: TLVCodable, Equatable {
+        public var presetHandle: Data?
+
+        public init(
+            presetHandle: Data? = nil
+        ) {
+            self.presetHandle = presetHandle
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = presetHandle {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetActivePresetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_presetHandle = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PresetHandle", tag: UInt8(0))
+            }
+            let presetHandle: Data?
+            if raw_presetHandle.isNull {
+                presetHandle = nil
+            } else {
+                presetHandle = raw_presetHandle.dataValue ?? Data()
+            }
+            return SetActivePresetRequest(presetHandle: presetHandle)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -448,13 +1246,13 @@ extension ThermostatCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0052), name: "SetpointHoldExpiryTimestamp", conformance: .optional, type: .unknown, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetpointRaiseLower", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "SetWeeklySchedule", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetWeeklySchedule", conformance: .mandatoryIf(.feature(1 << 3))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetpointRaiseLower", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Mode", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Amount", type: .int8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "SetWeeklySchedule", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "NumberOfTransitionsForSequence", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "DayOfWeekForSequence", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "ModeForSequence", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "Transitions", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetWeeklySchedule", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "DaysToReturn", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ModeToReturn", type: .uint8, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0000)),
             CommandSpec(id: CommandID(rawValue: 0x0003), name: "ClearWeeklySchedule", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GetRelayStatusLog", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetActiveScheduleRequest", conformance: .mandatoryIf(.feature(1 << 7))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetActivePresetRequest", conformance: .mandatoryIf(.feature(1 << 8))),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "GetRelayStatusLog", conformance: .optional, responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetActiveScheduleRequest", conformance: .mandatoryIf(.feature(1 << 7)), fields: [FieldSpec(id: 0, name: "ScheduleHandle", type: .octstr, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetActivePresetRequest", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "PresetHandle", type: .octstr, isOptional: false, isNullable: true)]),
         ]
     )
 }

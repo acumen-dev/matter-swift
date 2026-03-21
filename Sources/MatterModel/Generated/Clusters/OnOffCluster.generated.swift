@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// On/Off Cluster (0x0006), revision 6
@@ -81,6 +82,92 @@ public enum OnOffCluster {
         public init(rawValue: UInt8) { self.rawValue = rawValue }
         public static let acceptOnlyWhenOn = OnOffControlBitmap(rawValue: 1 << 0)
     }
+
+    // MARK: - OffWithEffectRequest
+
+    public struct OffWithEffectRequest: TLVCodable, Equatable {
+        public var effectIdentifier: UInt8
+        public var effectVariant: UInt8
+
+        public init(
+            effectIdentifier: UInt8,
+            effectVariant: UInt8
+        ) {
+            self.effectIdentifier = effectIdentifier
+            self.effectVariant = effectVariant
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(effectIdentifier))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(effectVariant))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OffWithEffectRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_effectIdentifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EffectIdentifier", tag: UInt8(0))
+            }
+            let effectIdentifier = UInt8(raw_effectIdentifier.uintValue ?? 0)
+            guard let raw_effectVariant = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EffectVariant", tag: UInt8(1))
+            }
+            let effectVariant = UInt8(raw_effectVariant.uintValue ?? 0)
+            return OffWithEffectRequest(effectIdentifier: effectIdentifier, effectVariant: effectVariant)
+        }
+    }
+
+    // MARK: - OnWithTimedOffRequest
+
+    public struct OnWithTimedOffRequest: TLVCodable, Equatable {
+        public var onOffControl: UInt8
+        public var onTime: UInt16
+        public var offWaitTime: UInt16
+
+        public init(
+            onOffControl: UInt8,
+            onTime: UInt16,
+            offWaitTime: UInt16
+        ) {
+            self.onOffControl = onOffControl
+            self.onTime = onTime
+            self.offWaitTime = offWaitTime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(onOffControl))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(onTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(offWaitTime))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OnWithTimedOffRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_onOffControl = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OnOffControl", tag: UInt8(0))
+            }
+            let onOffControl = UInt8(raw_onOffControl.uintValue ?? 0)
+            guard let raw_onTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "OnTime", tag: UInt8(1))
+            }
+            let onTime = UInt16(raw_onTime.uintValue ?? 0)
+            guard let raw_offWaitTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "OffWaitTime", tag: UInt8(2))
+            }
+            let offWaitTime = UInt16(raw_offWaitTime.uintValue ?? 0)
+            return OnWithTimedOffRequest(onOffControl: onOffControl, onTime: onTime, offWaitTime: offWaitTime)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -101,9 +188,9 @@ extension OnOffCluster {
             CommandSpec(id: CommandID(rawValue: 0x0000), name: "Off", conformance: .mandatory),
             CommandSpec(id: CommandID(rawValue: 0x0001), name: "On", conformance: .mandatoryIf(.not(.feature(1 << 2)))),
             CommandSpec(id: CommandID(rawValue: 0x0002), name: "Toggle", conformance: .mandatoryIf(.not(.feature(1 << 2)))),
-            CommandSpec(id: CommandID(rawValue: 0x0040), name: "OffWithEffect", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0040), name: "OffWithEffect", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "EffectIdentifier", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EffectVariant", type: .uint8, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0041), name: "OnWithRecallGlobalScene", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0042), name: "OnWithTimedOff", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0042), name: "OnWithTimedOff", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "OnOffControl", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "OnTime", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "OffWaitTime", type: .uint16, isOptional: false, isNullable: false)]),
         ]
     )
 }

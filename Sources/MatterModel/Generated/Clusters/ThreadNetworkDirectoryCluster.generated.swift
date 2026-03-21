@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Thread Network Directory Cluster (0x0453), revision 1
@@ -31,6 +32,192 @@ public enum ThreadNetworkDirectoryCluster {
         /// GetOperationalDataset, mandatory
         public static let getOperationalDataset = CommandID(rawValue: 0x0002)
     }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// OperationalDatasetResponse
+        public static let operationalDatasetResponse = CommandID(rawValue: 0x0003)
+    }
+
+    // MARK: - ThreadNetworkStruct
+
+    public struct ThreadNetworkStruct: TLVCodable, Equatable {
+        public var extendedPanID: Data
+        public var networkName: String
+        public var channel: UInt16
+        public var activeTimestamp: UInt64
+
+        public init(
+            extendedPanID: Data,
+            networkName: String,
+            channel: UInt16,
+            activeTimestamp: UInt64
+        ) {
+            self.extendedPanID = extendedPanID
+            self.networkName = networkName
+            self.channel = channel
+            self.activeTimestamp = activeTimestamp
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(extendedPanID)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(networkName)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(channel))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(activeTimestamp))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ThreadNetworkStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_extendedPanID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ExtendedPanID", tag: UInt8(0))
+            }
+            let extendedPanID = raw_extendedPanID.dataValue ?? Data()
+            guard let raw_networkName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NetworkName", tag: UInt8(1))
+            }
+            let networkName = raw_networkName.stringValue ?? ""
+            guard let raw_channel = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Channel", tag: UInt8(2))
+            }
+            let channel = UInt16(raw_channel.uintValue ?? 0)
+            guard let raw_activeTimestamp = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "ActiveTimestamp", tag: UInt8(3))
+            }
+            let activeTimestamp = UInt64(raw_activeTimestamp.uintValue ?? 0)
+            return ThreadNetworkStruct(extendedPanID: extendedPanID, networkName: networkName, channel: channel, activeTimestamp: activeTimestamp)
+        }
+    }
+
+    // MARK: - AddNetworkRequest
+
+    public struct AddNetworkRequest: TLVCodable, Equatable {
+        public var operationalDataset: Data
+
+        public init(
+            operationalDataset: Data
+        ) {
+            self.operationalDataset = operationalDataset
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(operationalDataset)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddNetworkRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_operationalDataset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OperationalDataset", tag: UInt8(0))
+            }
+            let operationalDataset = raw_operationalDataset.dataValue ?? Data()
+            return AddNetworkRequest(operationalDataset: operationalDataset)
+        }
+    }
+
+    // MARK: - RemoveNetworkRequest
+
+    public struct RemoveNetworkRequest: TLVCodable, Equatable {
+        public var extendedPanID: Data
+
+        public init(
+            extendedPanID: Data
+        ) {
+            self.extendedPanID = extendedPanID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(extendedPanID)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveNetworkRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_extendedPanID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ExtendedPanID", tag: UInt8(0))
+            }
+            let extendedPanID = raw_extendedPanID.dataValue ?? Data()
+            return RemoveNetworkRequest(extendedPanID: extendedPanID)
+        }
+    }
+
+    // MARK: - GetOperationalDatasetRequest
+
+    public struct GetOperationalDatasetRequest: TLVCodable, Equatable {
+        public var extendedPanID: Data
+
+        public init(
+            extendedPanID: Data
+        ) {
+            self.extendedPanID = extendedPanID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(extendedPanID)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetOperationalDatasetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_extendedPanID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ExtendedPanID", tag: UInt8(0))
+            }
+            let extendedPanID = raw_extendedPanID.dataValue ?? Data()
+            return GetOperationalDatasetRequest(extendedPanID: extendedPanID)
+        }
+    }
+
+    // MARK: - OperationalDatasetResponse
+
+    public struct OperationalDatasetResponse: TLVCodable, Equatable {
+        public var operationalDataset: Data
+
+        public init(
+            operationalDataset: Data
+        ) {
+            self.operationalDataset = operationalDataset
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(operationalDataset)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OperationalDatasetResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_operationalDataset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OperationalDataset", tag: UInt8(0))
+            }
+            let operationalDataset = raw_operationalDataset.dataValue ?? Data()
+            return OperationalDatasetResponse(operationalDataset: operationalDataset)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -46,9 +233,9 @@ extension ThreadNetworkDirectoryCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0002), name: "ThreadNetworkTableSize", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddNetwork", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "RemoveNetwork", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetOperationalDataset", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddNetwork", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "OperationalDataset", type: .octstr, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "RemoveNetwork", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ExtendedPanID", type: .octstr, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetOperationalDataset", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ExtendedPanID", type: .octstr, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
         ]
     )
 }

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Thread Border Router Management Cluster (0x0452), revision 1
@@ -48,6 +49,118 @@ public enum ThreadBorderRouterManagementCluster {
         /// SetPendingDatasetRequest, mandatory when PC
         public static let setPendingDatasetRequest = CommandID(rawValue: 0x0004)
     }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// DatasetResponse
+        public static let datasetResponse = CommandID(rawValue: 0x0002)
+    }
+
+    // MARK: - DatasetResponse
+
+    public struct DatasetResponse: TLVCodable, Equatable {
+        public var dataset: Data
+
+        public init(
+            dataset: Data
+        ) {
+            self.dataset = dataset
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(dataset)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatasetResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_dataset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Dataset", tag: UInt8(0))
+            }
+            let dataset = raw_dataset.dataValue ?? Data()
+            return DatasetResponse(dataset: dataset)
+        }
+    }
+
+    // MARK: - SetActiveDatasetRequest
+
+    public struct SetActiveDatasetRequest: TLVCodable, Equatable {
+        public var activeDataset: Data
+        public var breadcrumb: UInt64?
+
+        public init(
+            activeDataset: Data,
+            breadcrumb: UInt64? = nil
+        ) {
+            self.activeDataset = activeDataset
+            self.breadcrumb = breadcrumb
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(activeDataset)))
+            if let val = breadcrumb {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetActiveDatasetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_activeDataset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ActiveDataset", tag: UInt8(0))
+            }
+            let activeDataset = raw_activeDataset.dataValue ?? Data()
+            let breadcrumb: UInt64?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                breadcrumb = UInt64(fieldValue.uintValue ?? 0)
+            } else {
+                breadcrumb = nil
+            }
+            return SetActiveDatasetRequest(activeDataset: activeDataset, breadcrumb: breadcrumb)
+        }
+    }
+
+    // MARK: - SetPendingDatasetRequest
+
+    public struct SetPendingDatasetRequest: TLVCodable, Equatable {
+        public var pendingDataset: Data
+
+        public init(
+            pendingDataset: Data
+        ) {
+            self.pendingDataset = pendingDataset
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(pendingDataset)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetPendingDatasetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_pendingDataset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PendingDataset", tag: UInt8(0))
+            }
+            let pendingDataset = raw_pendingDataset.dataValue ?? Data()
+            return SetPendingDatasetRequest(pendingDataset: pendingDataset)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -66,10 +179,10 @@ extension ThreadBorderRouterManagementCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "PendingDatasetTimestamp", conformance: .mandatory, type: .uint64, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetActiveDatasetRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "GetPendingDatasetRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "SetActiveDatasetRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "SetPendingDatasetRequest", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetActiveDatasetRequest", conformance: .mandatory, responseID: CommandID(rawValue: 0x0002)),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "GetPendingDatasetRequest", conformance: .mandatory, responseID: CommandID(rawValue: 0x0002)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "SetActiveDatasetRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ActiveDataset", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "SetPendingDatasetRequest", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "PendingDataset", type: .octstr, isOptional: false, isNullable: false)]),
         ]
     )
 }

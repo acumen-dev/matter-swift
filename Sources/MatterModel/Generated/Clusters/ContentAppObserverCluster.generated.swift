@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Content App Observer Cluster (0x0510), revision 1
@@ -17,9 +18,114 @@ public enum ContentAppObserverCluster {
         public static let contentAppMessage = CommandID(rawValue: 0x0000)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// ContentAppMessageResponse
+        public static let contentAppMessageResponse = CommandID(rawValue: 0x0001)
+    }
+
     public enum StatusEnum: UInt8, Sendable, Equatable {
         case success = 0
         case unexpectedData = 1
+    }
+
+    // MARK: - ContentAppMessageRequest
+
+    public struct ContentAppMessageRequest: TLVCodable, Equatable {
+        public var data: String
+        public var encodingHint: String?
+
+        public init(
+            data: String,
+            encodingHint: String? = nil
+        ) {
+            self.data = data
+            self.encodingHint = encodingHint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(data)))
+            if let val = encodingHint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ContentAppMessageRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_data = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Data", tag: UInt8(0))
+            }
+            let data = raw_data.stringValue ?? ""
+            let encodingHint: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                encodingHint = fieldValue.stringValue ?? ""
+            } else {
+                encodingHint = nil
+            }
+            return ContentAppMessageRequest(data: data, encodingHint: encodingHint)
+        }
+    }
+
+    // MARK: - ContentAppMessageResponse
+
+    public struct ContentAppMessageResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var data: String?
+        public var encodingHint: String?
+
+        public init(
+            status: UInt8,
+            data: String? = nil,
+            encodingHint: String? = nil
+        ) {
+            self.status = status
+            self.data = data
+            self.encodingHint = encodingHint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            if let val = encodingHint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ContentAppMessageResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let data: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.stringValue ?? ""
+            } else {
+                data = nil
+            }
+            let encodingHint: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                encodingHint = fieldValue.stringValue ?? ""
+            } else {
+                encodingHint = nil
+            }
+            return ContentAppMessageResponse(status: status, data: data, encodingHint: encodingHint)
+        }
     }
 }
 
@@ -33,7 +139,7 @@ extension ContentAppObserverCluster {
         attributes: [
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ContentAppMessage", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ContentAppMessage", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Data", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EncodingHint", type: .string, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

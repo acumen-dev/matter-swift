@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Account Login Cluster (0x050E), revision 2
@@ -21,11 +22,166 @@ public enum AccountLoginCluster {
         public static let logout = CommandID(rawValue: 0x0003)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// GetSetupPINResponse
+        public static let getSetupPINResponse = CommandID(rawValue: 0x0001)
+    }
+
     // MARK: - Events
 
     public enum Event {
         /// LoggedOut — priority: critical, optional
         public static let loggedOut = EventID(rawValue: 0x0000)
+    }
+
+    // MARK: - GetSetupPINRequest
+
+    public struct GetSetupPINRequest: TLVCodable, Equatable {
+        public var tempAccountIdentifier: String
+
+        public init(
+            tempAccountIdentifier: String
+        ) {
+            self.tempAccountIdentifier = tempAccountIdentifier
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(tempAccountIdentifier)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetSetupPINRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_tempAccountIdentifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TempAccountIdentifier", tag: UInt8(0))
+            }
+            let tempAccountIdentifier = raw_tempAccountIdentifier.stringValue ?? ""
+            return GetSetupPINRequest(tempAccountIdentifier: tempAccountIdentifier)
+        }
+    }
+
+    // MARK: - GetSetupPINResponse
+
+    public struct GetSetupPINResponse: TLVCodable, Equatable {
+        public var setupPIN: String
+
+        public init(
+            setupPIN: String
+        ) {
+            self.setupPIN = setupPIN
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(setupPIN)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetSetupPINResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_setupPIN = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "SetupPIN", tag: UInt8(0))
+            }
+            let setupPIN = raw_setupPIN.stringValue ?? ""
+            return GetSetupPINResponse(setupPIN: setupPIN)
+        }
+    }
+
+    // MARK: - LoginRequest
+
+    public struct LoginRequest: TLVCodable, Equatable {
+        public var tempAccountIdentifier: String
+        public var setupPIN: String
+        public var node: TLVElement?
+
+        public init(
+            tempAccountIdentifier: String,
+            setupPIN: String,
+            node: TLVElement? = nil
+        ) {
+            self.tempAccountIdentifier = tempAccountIdentifier
+            self.setupPIN = setupPIN
+            self.node = node
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(tempAccountIdentifier)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(setupPIN)))
+            if let val = node {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> LoginRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_tempAccountIdentifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TempAccountIdentifier", tag: UInt8(0))
+            }
+            let tempAccountIdentifier = raw_tempAccountIdentifier.stringValue ?? ""
+            guard let raw_setupPIN = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "SetupPIN", tag: UInt8(1))
+            }
+            let setupPIN = raw_setupPIN.stringValue ?? ""
+            let node: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                node = fieldValue
+            } else {
+                node = nil
+            }
+            return LoginRequest(tempAccountIdentifier: tempAccountIdentifier, setupPIN: setupPIN, node: node)
+        }
+    }
+
+    // MARK: - LogoutRequest
+
+    public struct LogoutRequest: TLVCodable, Equatable {
+        public var node: TLVElement?
+
+        public init(
+            node: TLVElement? = nil
+        ) {
+            self.node = node
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = node {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> LogoutRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let node: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                node = fieldValue
+            } else {
+                node = nil
+            }
+            return LogoutRequest(node: node)
+        }
     }
 }
 
@@ -39,9 +195,9 @@ extension AccountLoginCluster {
         attributes: [
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetSetupPIN", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Login", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Logout", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetSetupPIN", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "TempAccountIdentifier", type: .string, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Login", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "TempAccountIdentifier", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "SetupPIN", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Node", type: .unknown, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Logout", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Node", type: .unknown, isOptional: true, isNullable: false)]),
         ]
     )
 }

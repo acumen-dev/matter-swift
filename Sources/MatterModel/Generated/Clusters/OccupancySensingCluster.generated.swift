@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Occupancy Sensing Cluster (0x0406), revision 5
@@ -92,6 +93,53 @@ public enum OccupancySensingCluster {
         public static let pir = OccupancySensorTypeBitmap(rawValue: 1 << 0)
         public static let ultrasonic = OccupancySensorTypeBitmap(rawValue: 1 << 1)
         public static let physicalContact = OccupancySensorTypeBitmap(rawValue: 1 << 2)
+    }
+
+    // MARK: - HoldTimeLimitsStruct
+
+    public struct HoldTimeLimitsStruct: TLVCodable, Equatable {
+        public var holdTimeMin: UInt16
+        public var holdTimeMax: UInt16
+        public var holdTimeDefault: UInt16
+
+        public init(
+            holdTimeMin: UInt16,
+            holdTimeMax: UInt16,
+            holdTimeDefault: UInt16
+        ) {
+            self.holdTimeMin = holdTimeMin
+            self.holdTimeMax = holdTimeMax
+            self.holdTimeDefault = holdTimeDefault
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(holdTimeMin))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(holdTimeMax))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(holdTimeDefault))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> HoldTimeLimitsStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_holdTimeMin = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "HoldTimeMin", tag: UInt8(0))
+            }
+            let holdTimeMin = UInt16(raw_holdTimeMin.uintValue ?? 0)
+            guard let raw_holdTimeMax = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "HoldTimeMax", tag: UInt8(1))
+            }
+            let holdTimeMax = UInt16(raw_holdTimeMax.uintValue ?? 0)
+            guard let raw_holdTimeDefault = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "HoldTimeDefault", tag: UInt8(2))
+            }
+            let holdTimeDefault = UInt16(raw_holdTimeDefault.uintValue ?? 0)
+            return HoldTimeLimitsStruct(holdTimeMin: holdTimeMin, holdTimeMax: holdTimeMax, holdTimeDefault: holdTimeDefault)
+        }
     }
 }
 

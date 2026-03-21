@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Fan Control Cluster (0x0202), revision 4
@@ -108,6 +109,61 @@ public enum FanControlCluster {
         public static let sleepWind = WindBitmap(rawValue: 1 << 0)
         public static let naturalWind = WindBitmap(rawValue: 1 << 1)
     }
+
+    // MARK: - StepRequest
+
+    public struct StepRequest: TLVCodable, Equatable {
+        public var direction: UInt8
+        public var wrap: Bool?
+        public var lowestOff: Bool?
+
+        public init(
+            direction: UInt8,
+            wrap: Bool? = nil,
+            lowestOff: Bool? = nil
+        ) {
+            self.direction = direction
+            self.wrap = wrap
+            self.lowestOff = lowestOff
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(direction))))
+            if let val = wrap {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(val)))
+            }
+            if let val = lowestOff {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .bool(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StepRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_direction = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Direction", tag: UInt8(0))
+            }
+            let direction = UInt8(raw_direction.uintValue ?? 0)
+            let wrap: Bool?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                wrap = fieldValue.boolValue ?? false
+            } else {
+                wrap = nil
+            }
+            let lowestOff: Bool?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                lowestOff = fieldValue.boolValue ?? false
+            } else {
+                lowestOff = nil
+            }
+            return StepRequest(direction: direction, wrap: wrap, lowestOff: lowestOff)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -132,7 +188,7 @@ extension FanControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x000B), name: "AirflowDirection", conformance: .mandatoryIf(.feature(1 << 5)), type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Step", conformance: .mandatoryIf(.feature(1 << 4))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Step", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "Direction", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Wrap", type: .bool, isOptional: true, isNullable: false), FieldSpec(id: 2, name: "LowestOff", type: .bool, isOptional: true, isNullable: false)]),
         ]
     )
 }

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Thread Network Diagnostics Cluster (0x0035), revision 3
@@ -196,6 +197,420 @@ public enum ThreadNetworkDiagnosticsCluster {
         case reed = 4
         case router = 5
         case leader = 6
+    }
+
+    // MARK: - NeighborTableStruct
+
+    public struct NeighborTableStruct: TLVCodable, Equatable {
+        public var extAddress: UInt64
+        public var age: UInt32
+        public var rloc16: UInt16
+        public var linkFrameCounter: UInt32
+        public var mleFrameCounter: UInt32
+        public var lqi: UInt8
+        public var averageRssi: Int8?
+        public var lastRssi: Int8?
+        public var frameErrorRate: UInt8
+        public var messageErrorRate: UInt8
+        public var rxOnWhenIdle: Bool
+        public var fullThreadDevice: Bool
+        public var fullNetworkData: Bool
+        public var isChild: Bool
+
+        public init(
+            extAddress: UInt64,
+            age: UInt32,
+            rloc16: UInt16,
+            linkFrameCounter: UInt32,
+            mleFrameCounter: UInt32,
+            lqi: UInt8,
+            averageRssi: Int8? = nil,
+            lastRssi: Int8? = nil,
+            frameErrorRate: UInt8,
+            messageErrorRate: UInt8,
+            rxOnWhenIdle: Bool,
+            fullThreadDevice: Bool,
+            fullNetworkData: Bool,
+            isChild: Bool
+        ) {
+            self.extAddress = extAddress
+            self.age = age
+            self.rloc16 = rloc16
+            self.linkFrameCounter = linkFrameCounter
+            self.mleFrameCounter = mleFrameCounter
+            self.lqi = lqi
+            self.averageRssi = averageRssi
+            self.lastRssi = lastRssi
+            self.frameErrorRate = frameErrorRate
+            self.messageErrorRate = messageErrorRate
+            self.rxOnWhenIdle = rxOnWhenIdle
+            self.fullThreadDevice = fullThreadDevice
+            self.fullNetworkData = fullNetworkData
+            self.isChild = isChild
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(extAddress))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(age))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(rloc16))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(linkFrameCounter))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(mleFrameCounter))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(lqi))))
+            if let val = averageRssi {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .signedInt(Int64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .null))
+            }
+            if let val = lastRssi {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .signedInt(Int64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: .unsignedInt(UInt64(frameErrorRate))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: .unsignedInt(UInt64(messageErrorRate))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(10), value: .bool(rxOnWhenIdle)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(11), value: .bool(fullThreadDevice)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(12), value: .bool(fullNetworkData)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(13), value: .bool(isChild)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> NeighborTableStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_extAddress = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ExtAddress", tag: UInt8(0))
+            }
+            let extAddress = UInt64(raw_extAddress.uintValue ?? 0)
+            guard let raw_age = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Age", tag: UInt8(1))
+            }
+            let age = UInt32(raw_age.uintValue ?? 0)
+            guard let raw_rloc16 = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Rloc16", tag: UInt8(2))
+            }
+            let rloc16 = UInt16(raw_rloc16.uintValue ?? 0)
+            guard let raw_linkFrameCounter = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "LinkFrameCounter", tag: UInt8(3))
+            }
+            let linkFrameCounter = UInt32(raw_linkFrameCounter.uintValue ?? 0)
+            guard let raw_mleFrameCounter = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "MleFrameCounter", tag: UInt8(4))
+            }
+            let mleFrameCounter = UInt32(raw_mleFrameCounter.uintValue ?? 0)
+            guard let raw_lqi = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "LQI", tag: UInt8(5))
+            }
+            let lqi = UInt8(raw_lqi.uintValue ?? 0)
+            guard let raw_averageRssi = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "AverageRssi", tag: UInt8(6))
+            }
+            let averageRssi: Int8?
+            if raw_averageRssi.isNull {
+                averageRssi = nil
+            } else {
+                averageRssi = Int8(raw_averageRssi.intValue ?? 0)
+            }
+            guard let raw_lastRssi = element[contextTag: UInt8(7)] else {
+                throw TLVDecodingError.missingField(name: "LastRssi", tag: UInt8(7))
+            }
+            let lastRssi: Int8?
+            if raw_lastRssi.isNull {
+                lastRssi = nil
+            } else {
+                lastRssi = Int8(raw_lastRssi.intValue ?? 0)
+            }
+            guard let raw_frameErrorRate = element[contextTag: UInt8(8)] else {
+                throw TLVDecodingError.missingField(name: "FrameErrorRate", tag: UInt8(8))
+            }
+            let frameErrorRate = UInt8(raw_frameErrorRate.uintValue ?? 0)
+            guard let raw_messageErrorRate = element[contextTag: UInt8(9)] else {
+                throw TLVDecodingError.missingField(name: "MessageErrorRate", tag: UInt8(9))
+            }
+            let messageErrorRate = UInt8(raw_messageErrorRate.uintValue ?? 0)
+            guard let raw_rxOnWhenIdle = element[contextTag: UInt8(10)] else {
+                throw TLVDecodingError.missingField(name: "RxOnWhenIdle", tag: UInt8(10))
+            }
+            let rxOnWhenIdle = raw_rxOnWhenIdle.boolValue ?? false
+            guard let raw_fullThreadDevice = element[contextTag: UInt8(11)] else {
+                throw TLVDecodingError.missingField(name: "FullThreadDevice", tag: UInt8(11))
+            }
+            let fullThreadDevice = raw_fullThreadDevice.boolValue ?? false
+            guard let raw_fullNetworkData = element[contextTag: UInt8(12)] else {
+                throw TLVDecodingError.missingField(name: "FullNetworkData", tag: UInt8(12))
+            }
+            let fullNetworkData = raw_fullNetworkData.boolValue ?? false
+            guard let raw_isChild = element[contextTag: UInt8(13)] else {
+                throw TLVDecodingError.missingField(name: "IsChild", tag: UInt8(13))
+            }
+            let isChild = raw_isChild.boolValue ?? false
+            return NeighborTableStruct(extAddress: extAddress, age: age, rloc16: rloc16, linkFrameCounter: linkFrameCounter, mleFrameCounter: mleFrameCounter, lqi: lqi, averageRssi: averageRssi, lastRssi: lastRssi, frameErrorRate: frameErrorRate, messageErrorRate: messageErrorRate, rxOnWhenIdle: rxOnWhenIdle, fullThreadDevice: fullThreadDevice, fullNetworkData: fullNetworkData, isChild: isChild)
+        }
+    }
+
+    // MARK: - OperationalDatasetComponents
+
+    public struct OperationalDatasetComponents: TLVCodable, Equatable {
+        public var activeTimestampPresent: Bool
+        public var pendingTimestampPresent: Bool
+        public var masterKeyPresent: Bool
+        public var networkNamePresent: Bool
+        public var extendedPanIdPresent: Bool
+        public var meshLocalPrefixPresent: Bool
+        public var delayPresent: Bool
+        public var panIdPresent: Bool
+        public var channelPresent: Bool
+        public var pskcPresent: Bool
+        public var securityPolicyPresent: Bool
+        public var channelMaskPresent: Bool
+
+        public init(
+            activeTimestampPresent: Bool,
+            pendingTimestampPresent: Bool,
+            masterKeyPresent: Bool,
+            networkNamePresent: Bool,
+            extendedPanIdPresent: Bool,
+            meshLocalPrefixPresent: Bool,
+            delayPresent: Bool,
+            panIdPresent: Bool,
+            channelPresent: Bool,
+            pskcPresent: Bool,
+            securityPolicyPresent: Bool,
+            channelMaskPresent: Bool
+        ) {
+            self.activeTimestampPresent = activeTimestampPresent
+            self.pendingTimestampPresent = pendingTimestampPresent
+            self.masterKeyPresent = masterKeyPresent
+            self.networkNamePresent = networkNamePresent
+            self.extendedPanIdPresent = extendedPanIdPresent
+            self.meshLocalPrefixPresent = meshLocalPrefixPresent
+            self.delayPresent = delayPresent
+            self.panIdPresent = panIdPresent
+            self.channelPresent = channelPresent
+            self.pskcPresent = pskcPresent
+            self.securityPolicyPresent = securityPolicyPresent
+            self.channelMaskPresent = channelMaskPresent
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .bool(activeTimestampPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(pendingTimestampPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .bool(masterKeyPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .bool(networkNamePresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .bool(extendedPanIdPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .bool(meshLocalPrefixPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .bool(delayPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .bool(panIdPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: .bool(channelPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: .bool(pskcPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(10), value: .bool(securityPolicyPresent)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(11), value: .bool(channelMaskPresent)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OperationalDatasetComponents {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_activeTimestampPresent = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ActiveTimestampPresent", tag: UInt8(0))
+            }
+            let activeTimestampPresent = raw_activeTimestampPresent.boolValue ?? false
+            guard let raw_pendingTimestampPresent = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "PendingTimestampPresent", tag: UInt8(1))
+            }
+            let pendingTimestampPresent = raw_pendingTimestampPresent.boolValue ?? false
+            guard let raw_masterKeyPresent = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "MasterKeyPresent", tag: UInt8(2))
+            }
+            let masterKeyPresent = raw_masterKeyPresent.boolValue ?? false
+            guard let raw_networkNamePresent = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "NetworkNamePresent", tag: UInt8(3))
+            }
+            let networkNamePresent = raw_networkNamePresent.boolValue ?? false
+            guard let raw_extendedPanIdPresent = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "ExtendedPanIdPresent", tag: UInt8(4))
+            }
+            let extendedPanIdPresent = raw_extendedPanIdPresent.boolValue ?? false
+            guard let raw_meshLocalPrefixPresent = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "MeshLocalPrefixPresent", tag: UInt8(5))
+            }
+            let meshLocalPrefixPresent = raw_meshLocalPrefixPresent.boolValue ?? false
+            guard let raw_delayPresent = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "DelayPresent", tag: UInt8(6))
+            }
+            let delayPresent = raw_delayPresent.boolValue ?? false
+            guard let raw_panIdPresent = element[contextTag: UInt8(7)] else {
+                throw TLVDecodingError.missingField(name: "PanIdPresent", tag: UInt8(7))
+            }
+            let panIdPresent = raw_panIdPresent.boolValue ?? false
+            guard let raw_channelPresent = element[contextTag: UInt8(8)] else {
+                throw TLVDecodingError.missingField(name: "ChannelPresent", tag: UInt8(8))
+            }
+            let channelPresent = raw_channelPresent.boolValue ?? false
+            guard let raw_pskcPresent = element[contextTag: UInt8(9)] else {
+                throw TLVDecodingError.missingField(name: "PskcPresent", tag: UInt8(9))
+            }
+            let pskcPresent = raw_pskcPresent.boolValue ?? false
+            guard let raw_securityPolicyPresent = element[contextTag: UInt8(10)] else {
+                throw TLVDecodingError.missingField(name: "SecurityPolicyPresent", tag: UInt8(10))
+            }
+            let securityPolicyPresent = raw_securityPolicyPresent.boolValue ?? false
+            guard let raw_channelMaskPresent = element[contextTag: UInt8(11)] else {
+                throw TLVDecodingError.missingField(name: "ChannelMaskPresent", tag: UInt8(11))
+            }
+            let channelMaskPresent = raw_channelMaskPresent.boolValue ?? false
+            return OperationalDatasetComponents(activeTimestampPresent: activeTimestampPresent, pendingTimestampPresent: pendingTimestampPresent, masterKeyPresent: masterKeyPresent, networkNamePresent: networkNamePresent, extendedPanIdPresent: extendedPanIdPresent, meshLocalPrefixPresent: meshLocalPrefixPresent, delayPresent: delayPresent, panIdPresent: panIdPresent, channelPresent: channelPresent, pskcPresent: pskcPresent, securityPolicyPresent: securityPolicyPresent, channelMaskPresent: channelMaskPresent)
+        }
+    }
+
+    // MARK: - RouteTableStruct
+
+    public struct RouteTableStruct: TLVCodable, Equatable {
+        public var extAddress: UInt64
+        public var rloc16: UInt16
+        public var routerId: UInt8
+        public var nextHop: UInt8
+        public var pathCost: UInt8
+        public var lqiIn: UInt8
+        public var lqiOut: UInt8
+        public var age: UInt8
+        public var allocated: Bool
+        public var linkEstablished: Bool
+
+        public init(
+            extAddress: UInt64,
+            rloc16: UInt16,
+            routerId: UInt8,
+            nextHop: UInt8,
+            pathCost: UInt8,
+            lqiIn: UInt8,
+            lqiOut: UInt8,
+            age: UInt8,
+            allocated: Bool,
+            linkEstablished: Bool
+        ) {
+            self.extAddress = extAddress
+            self.rloc16 = rloc16
+            self.routerId = routerId
+            self.nextHop = nextHop
+            self.pathCost = pathCost
+            self.lqiIn = lqiIn
+            self.lqiOut = lqiOut
+            self.age = age
+            self.allocated = allocated
+            self.linkEstablished = linkEstablished
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(extAddress))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(rloc16))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(routerId))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(nextHop))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(pathCost))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(lqiIn))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(lqiOut))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .unsignedInt(UInt64(age))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: .bool(allocated)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: .bool(linkEstablished)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RouteTableStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_extAddress = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ExtAddress", tag: UInt8(0))
+            }
+            let extAddress = UInt64(raw_extAddress.uintValue ?? 0)
+            guard let raw_rloc16 = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Rloc16", tag: UInt8(1))
+            }
+            let rloc16 = UInt16(raw_rloc16.uintValue ?? 0)
+            guard let raw_routerId = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "RouterId", tag: UInt8(2))
+            }
+            let routerId = UInt8(raw_routerId.uintValue ?? 0)
+            guard let raw_nextHop = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "NextHop", tag: UInt8(3))
+            }
+            let nextHop = UInt8(raw_nextHop.uintValue ?? 0)
+            guard let raw_pathCost = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "PathCost", tag: UInt8(4))
+            }
+            let pathCost = UInt8(raw_pathCost.uintValue ?? 0)
+            guard let raw_lqiIn = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "LQIIn", tag: UInt8(5))
+            }
+            let lqiIn = UInt8(raw_lqiIn.uintValue ?? 0)
+            guard let raw_lqiOut = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "LQIOut", tag: UInt8(6))
+            }
+            let lqiOut = UInt8(raw_lqiOut.uintValue ?? 0)
+            guard let raw_age = element[contextTag: UInt8(7)] else {
+                throw TLVDecodingError.missingField(name: "Age", tag: UInt8(7))
+            }
+            let age = UInt8(raw_age.uintValue ?? 0)
+            guard let raw_allocated = element[contextTag: UInt8(8)] else {
+                throw TLVDecodingError.missingField(name: "Allocated", tag: UInt8(8))
+            }
+            let allocated = raw_allocated.boolValue ?? false
+            guard let raw_linkEstablished = element[contextTag: UInt8(9)] else {
+                throw TLVDecodingError.missingField(name: "LinkEstablished", tag: UInt8(9))
+            }
+            let linkEstablished = raw_linkEstablished.boolValue ?? false
+            return RouteTableStruct(extAddress: extAddress, rloc16: rloc16, routerId: routerId, nextHop: nextHop, pathCost: pathCost, lqiIn: lqiIn, lqiOut: lqiOut, age: age, allocated: allocated, linkEstablished: linkEstablished)
+        }
+    }
+
+    // MARK: - SecurityPolicy
+
+    public struct SecurityPolicy: TLVCodable, Equatable {
+        public var rotationTime: UInt16
+        public var flags: UInt16
+
+        public init(
+            rotationTime: UInt16,
+            flags: UInt16
+        ) {
+            self.rotationTime = rotationTime
+            self.flags = flags
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(rotationTime))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(flags))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SecurityPolicy {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rotationTime = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "RotationTime", tag: UInt8(0))
+            }
+            let rotationTime = UInt16(raw_rotationTime.uintValue ?? 0)
+            guard let raw_flags = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Flags", tag: UInt8(1))
+            }
+            let flags = UInt16(raw_flags.uintValue ?? 0)
+            return SecurityPolicy(rotationTime: rotationTime, flags: flags)
+        }
     }
 }
 

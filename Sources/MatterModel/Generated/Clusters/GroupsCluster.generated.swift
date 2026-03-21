@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Groups Cluster (0x0004), revision 4
@@ -48,6 +49,350 @@ public enum GroupsCluster {
         public init(rawValue: UInt8) { self.rawValue = rawValue }
         public static let groupNames = NameSupportBitmap(rawValue: 1 << 7)
     }
+
+    // MARK: - AddGroupRequest
+
+    public struct AddGroupRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+        public var groupName: String
+
+        public init(
+            groupID: TLVElement,
+            groupName: String
+        ) {
+            self.groupID = groupID
+            self.groupName = groupName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(groupName)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddGroupRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            guard let raw_groupName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "GroupName", tag: UInt8(1))
+            }
+            let groupName = raw_groupName.stringValue ?? ""
+            return AddGroupRequest(groupID: groupID, groupName: groupName)
+        }
+    }
+
+    // MARK: - AddGroupResponse
+
+    public struct AddGroupResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var groupID: TLVElement
+
+        public init(
+            status: UInt8,
+            groupID: TLVElement
+        ) {
+            self.status = status
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddGroupResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            guard let raw_groupID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(1))
+            }
+            let groupID = raw_groupID
+            return AddGroupResponse(status: status, groupID: groupID)
+        }
+    }
+
+    // MARK: - ViewGroupRequest
+
+    public struct ViewGroupRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+
+        public init(
+            groupID: TLVElement
+        ) {
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ViewGroupRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            return ViewGroupRequest(groupID: groupID)
+        }
+    }
+
+    // MARK: - ViewGroupResponse
+
+    public struct ViewGroupResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var groupID: TLVElement
+        public var groupName: String
+
+        public init(
+            status: UInt8,
+            groupID: TLVElement,
+            groupName: String
+        ) {
+            self.status = status
+            self.groupID = groupID
+            self.groupName = groupName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: groupID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(groupName)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ViewGroupResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            guard let raw_groupID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(1))
+            }
+            let groupID = raw_groupID
+            guard let raw_groupName = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupName", tag: UInt8(2))
+            }
+            let groupName = raw_groupName.stringValue ?? ""
+            return ViewGroupResponse(status: status, groupID: groupID, groupName: groupName)
+        }
+    }
+
+    // MARK: - GetGroupMembershipRequest
+
+    public struct GetGroupMembershipRequest: TLVCodable, Equatable {
+        public var groupList: [TLVElement]
+
+        public init(
+            groupList: [TLVElement]
+        ) {
+            self.groupList = groupList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(groupList)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetGroupMembershipRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupList = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupList", tag: UInt8(0))
+            }
+            let groupList = (raw_groupList.arrayElements ?? []).map { $0 }
+            return GetGroupMembershipRequest(groupList: groupList)
+        }
+    }
+
+    // MARK: - GetGroupMembershipResponse
+
+    public struct GetGroupMembershipResponse: TLVCodable, Equatable {
+        public var capacity: UInt8?
+        public var groupList: [TLVElement]
+
+        public init(
+            capacity: UInt8? = nil,
+            groupList: [TLVElement]
+        ) {
+            self.capacity = capacity
+            self.groupList = groupList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = capacity {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .array(groupList)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetGroupMembershipResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_capacity = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Capacity", tag: UInt8(0))
+            }
+            let capacity: UInt8?
+            if raw_capacity.isNull {
+                capacity = nil
+            } else {
+                capacity = UInt8(raw_capacity.uintValue ?? 0)
+            }
+            guard let raw_groupList = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "GroupList", tag: UInt8(1))
+            }
+            let groupList = (raw_groupList.arrayElements ?? []).map { $0 }
+            return GetGroupMembershipResponse(capacity: capacity, groupList: groupList)
+        }
+    }
+
+    // MARK: - RemoveGroupRequest
+
+    public struct RemoveGroupRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+
+        public init(
+            groupID: TLVElement
+        ) {
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveGroupRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            return RemoveGroupRequest(groupID: groupID)
+        }
+    }
+
+    // MARK: - RemoveGroupResponse
+
+    public struct RemoveGroupResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var groupID: TLVElement
+
+        public init(
+            status: UInt8,
+            groupID: TLVElement
+        ) {
+            self.status = status
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveGroupResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            guard let raw_groupID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(1))
+            }
+            let groupID = raw_groupID
+            return RemoveGroupResponse(status: status, groupID: groupID)
+        }
+    }
+
+    // MARK: - AddGroupIfIdentifyingRequest
+
+    public struct AddGroupIfIdentifyingRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+        public var groupName: String
+
+        public init(
+            groupID: TLVElement,
+            groupName: String
+        ) {
+            self.groupID = groupID
+            self.groupName = groupName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(groupName)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddGroupIfIdentifyingRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            guard let raw_groupName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "GroupName", tag: UInt8(1))
+            }
+            let groupName = raw_groupName.stringValue ?? ""
+            return AddGroupIfIdentifyingRequest(groupID: groupID, groupName: groupName)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -61,12 +406,12 @@ extension GroupsCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "NameSupport", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddGroup", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ViewGroup", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetGroupMembership", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "RemoveGroup", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddGroup", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "GroupName", type: .string, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0000)),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "ViewGroup", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "GetGroupMembership", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupList", type: .list, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0002)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "RemoveGroup", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
             CommandSpec(id: CommandID(rawValue: 0x0004), name: "RemoveAllGroups", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "AddGroupIfIdentifying", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "AddGroupIfIdentifying", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "GroupName", type: .string, isOptional: false, isNullable: false)]),
         ]
     )
 }

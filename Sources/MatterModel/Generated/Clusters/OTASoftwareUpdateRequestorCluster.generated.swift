@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// OTA Software Update Requestor Cluster (0x002A), revision 1
@@ -66,6 +67,112 @@ public enum OTASoftwareUpdateRequestorCluster {
         case rollingBack = 7
         case delayedOnUserConsent = 8
     }
+
+    // MARK: - ProviderLocation
+
+    public struct ProviderLocation: TLVCodable, Equatable {
+        public var providerNodeID: TLVElement
+        public var endpoint: TLVElement
+
+        public init(
+            providerNodeID: TLVElement,
+            endpoint: TLVElement
+        ) {
+            self.providerNodeID = providerNodeID
+            self.endpoint = endpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: providerNodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: endpoint))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ProviderLocation {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_providerNodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ProviderNodeID", tag: UInt8(1))
+            }
+            let providerNodeID = raw_providerNodeID
+            guard let raw_endpoint = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Endpoint", tag: UInt8(2))
+            }
+            let endpoint = raw_endpoint
+            return ProviderLocation(providerNodeID: providerNodeID, endpoint: endpoint)
+        }
+    }
+
+    // MARK: - AnnounceOTAProviderRequest
+
+    public struct AnnounceOTAProviderRequest: TLVCodable, Equatable {
+        public var providerNodeID: TLVElement
+        public var vendorID: TLVElement
+        public var announcementReason: UInt8
+        public var metadataForNode: Data?
+        public var endpoint: TLVElement
+
+        public init(
+            providerNodeID: TLVElement,
+            vendorID: TLVElement,
+            announcementReason: UInt8,
+            metadataForNode: Data? = nil,
+            endpoint: TLVElement
+        ) {
+            self.providerNodeID = providerNodeID
+            self.vendorID = vendorID
+            self.announcementReason = announcementReason
+            self.metadataForNode = metadataForNode
+            self.endpoint = endpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: providerNodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: vendorID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(announcementReason))))
+            if let val = metadataForNode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: endpoint))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AnnounceOTAProviderRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_providerNodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ProviderNodeID", tag: UInt8(0))
+            }
+            let providerNodeID = raw_providerNodeID
+            guard let raw_vendorID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "VendorID", tag: UInt8(1))
+            }
+            let vendorID = raw_vendorID
+            guard let raw_announcementReason = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "AnnouncementReason", tag: UInt8(2))
+            }
+            let announcementReason = UInt8(raw_announcementReason.uintValue ?? 0)
+            let metadataForNode: Data?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                metadataForNode = fieldValue.dataValue ?? Data()
+            } else {
+                metadataForNode = nil
+            }
+            guard let raw_endpoint = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "Endpoint", tag: UInt8(4))
+            }
+            let endpoint = raw_endpoint
+            return AnnounceOTAProviderRequest(providerNodeID: providerNodeID, vendorID: vendorID, announcementReason: announcementReason, metadataForNode: metadataForNode, endpoint: endpoint)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -82,7 +189,7 @@ extension OTASoftwareUpdateRequestorCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0003), name: "UpdateStateProgress", conformance: .mandatory, type: .uint8, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AnnounceOTAProvider", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AnnounceOTAProvider", conformance: .optional, fields: [FieldSpec(id: 0, name: "ProviderNodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "VendorID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "AnnouncementReason", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "MetadataForNode", type: .octstr, isOptional: true, isNullable: false), FieldSpec(id: 4, name: "Endpoint", type: .unknown, isOptional: false, isNullable: false)]),
         ]
     )
 }

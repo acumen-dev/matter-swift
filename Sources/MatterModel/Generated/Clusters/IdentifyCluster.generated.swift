@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Identify Cluster (0x0003), revision 5
@@ -49,6 +50,76 @@ public enum IdentifyCluster {
         case display = 4
         case actuator = 5
     }
+
+    // MARK: - IdentifyRequest
+
+    public struct IdentifyRequest: TLVCodable, Equatable {
+        public var identifyTime: UInt16
+
+        public init(
+            identifyTime: UInt16
+        ) {
+            self.identifyTime = identifyTime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(identifyTime))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> IdentifyRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_identifyTime = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "IdentifyTime", tag: UInt8(0))
+            }
+            let identifyTime = UInt16(raw_identifyTime.uintValue ?? 0)
+            return IdentifyRequest(identifyTime: identifyTime)
+        }
+    }
+
+    // MARK: - TriggerEffectRequest
+
+    public struct TriggerEffectRequest: TLVCodable, Equatable {
+        public var effectIdentifier: UInt8
+        public var effectVariant: UInt8
+
+        public init(
+            effectIdentifier: UInt8,
+            effectVariant: UInt8
+        ) {
+            self.effectIdentifier = effectIdentifier
+            self.effectVariant = effectVariant
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(effectIdentifier))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(effectVariant))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TriggerEffectRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_effectIdentifier = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EffectIdentifier", tag: UInt8(0))
+            }
+            let effectIdentifier = UInt8(raw_effectIdentifier.uintValue ?? 0)
+            guard let raw_effectVariant = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EffectVariant", tag: UInt8(1))
+            }
+            let effectVariant = UInt8(raw_effectVariant.uintValue ?? 0)
+            return TriggerEffectRequest(effectIdentifier: effectIdentifier, effectVariant: effectVariant)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -63,8 +134,8 @@ extension IdentifyCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "IdentifyType", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Identify", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0040), name: "TriggerEffect", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Identify", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "IdentifyTime", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0040), name: "TriggerEffect", conformance: .optional, fields: [FieldSpec(id: 0, name: "EffectIdentifier", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EffectVariant", type: .uint8, isOptional: false, isNullable: false)]),
         ]
     )
 }

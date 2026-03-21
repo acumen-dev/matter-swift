@@ -38,7 +38,7 @@ extension BridgedDeviceBasicInfoCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0016), name: "MaxPathsPerInvoke", conformance: .disallowed, type: .unknown, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0080), name: "KeepActive", conformance: .mandatoryIf(.feature(1 << 20))),
+            CommandSpec(id: CommandID(rawValue: 0x0080), name: "KeepActive", conformance: .mandatoryIf(.feature(1 << 20)), fields: [FieldSpec(id: 0, name: "StayActiveDuration", type: .uint32, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "TimeoutMs", type: .uint32, isOptional: false, isNullable: false)]),
         ]
     )
 }

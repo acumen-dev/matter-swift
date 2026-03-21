@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Time Synchronization Cluster (0x0038), revision 2
@@ -71,6 +72,13 @@ public enum TimeSynchronizationCluster {
         public static let setDefaultNTP = CommandID(rawValue: 0x0005)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// SetTimeZoneResponse
+        public static let setTimeZoneResponse = CommandID(rawValue: 0x0003)
+    }
+
     // MARK: - Events
 
     public enum Event {
@@ -120,6 +128,372 @@ public enum TimeSynchronizationCluster {
         case partial = 1
         case none = 2
     }
+
+    // MARK: - DSTOffsetStruct
+
+    public struct DSTOffsetStruct: TLVCodable, Equatable {
+        public var offset: Int32
+        public var validStarting: TLVElement
+        public var validUntil: TLVElement?
+
+        public init(
+            offset: Int32,
+            validStarting: TLVElement,
+            validUntil: TLVElement? = nil
+        ) {
+            self.offset = offset
+            self.validStarting = validStarting
+            self.validUntil = validUntil
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .signedInt(Int64(offset))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: validStarting))
+            if let val = validUntil {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DSTOffsetStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_offset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Offset", tag: UInt8(0))
+            }
+            let offset = Int32(raw_offset.intValue ?? 0)
+            guard let raw_validStarting = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ValidStarting", tag: UInt8(1))
+            }
+            let validStarting = raw_validStarting
+            guard let raw_validUntil = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ValidUntil", tag: UInt8(2))
+            }
+            let validUntil: TLVElement?
+            if raw_validUntil.isNull {
+                validUntil = nil
+            } else {
+                validUntil = raw_validUntil
+            }
+            return DSTOffsetStruct(offset: offset, validStarting: validStarting, validUntil: validUntil)
+        }
+    }
+
+    // MARK: - FabricScopedTrustedTimeSourceStruct
+
+    public struct FabricScopedTrustedTimeSourceStruct: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var endpoint: TLVElement
+
+        public init(
+            nodeID: TLVElement,
+            endpoint: TLVElement
+        ) {
+            self.nodeID = nodeID
+            self.endpoint = endpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: endpoint))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> FabricScopedTrustedTimeSourceStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_endpoint = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Endpoint", tag: UInt8(1))
+            }
+            let endpoint = raw_endpoint
+            return FabricScopedTrustedTimeSourceStruct(nodeID: nodeID, endpoint: endpoint)
+        }
+    }
+
+    // MARK: - TimeZoneStruct
+
+    public struct TimeZoneStruct: TLVCodable, Equatable {
+        public var offset: Int32
+        public var validAt: TLVElement
+        public var name: String?
+
+        public init(
+            offset: Int32,
+            validAt: TLVElement,
+            name: String? = nil
+        ) {
+            self.offset = offset
+            self.validAt = validAt
+            self.name = name
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .signedInt(Int64(offset))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: validAt))
+            if let val = name {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TimeZoneStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_offset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Offset", tag: UInt8(0))
+            }
+            let offset = Int32(raw_offset.intValue ?? 0)
+            guard let raw_validAt = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ValidAt", tag: UInt8(1))
+            }
+            let validAt = raw_validAt
+            let name: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                name = fieldValue.stringValue ?? ""
+            } else {
+                name = nil
+            }
+            return TimeZoneStruct(offset: offset, validAt: validAt, name: name)
+        }
+    }
+
+    // MARK: - TrustedTimeSourceStruct
+
+    public struct TrustedTimeSourceStruct: TLVCodable, Equatable {
+        public var fabricIndex: TLVElement
+        public var nodeID: TLVElement
+        public var endpoint: TLVElement
+
+        public init(
+            fabricIndex: TLVElement,
+            nodeID: TLVElement,
+            endpoint: TLVElement
+        ) {
+            self.fabricIndex = fabricIndex
+            self.nodeID = nodeID
+            self.endpoint = endpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: fabricIndex))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: endpoint))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> TrustedTimeSourceStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_fabricIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "FabricIndex", tag: UInt8(0))
+            }
+            let fabricIndex = raw_fabricIndex
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_endpoint = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Endpoint", tag: UInt8(2))
+            }
+            let endpoint = raw_endpoint
+            return TrustedTimeSourceStruct(fabricIndex: fabricIndex, nodeID: nodeID, endpoint: endpoint)
+        }
+    }
+
+    // MARK: - SetTrustedTimeSourceRequest
+
+    public struct SetTrustedTimeSourceRequest: TLVCodable, Equatable {
+        public var trustedTimeSource: FabricScopedTrustedTimeSourceStruct?
+
+        public init(
+            trustedTimeSource: FabricScopedTrustedTimeSourceStruct? = nil
+        ) {
+            self.trustedTimeSource = trustedTimeSource
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = trustedTimeSource {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val.toTLVElement()))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetTrustedTimeSourceRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_trustedTimeSource = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TrustedTimeSource", tag: UInt8(0))
+            }
+            let trustedTimeSource: FabricScopedTrustedTimeSourceStruct?
+            if raw_trustedTimeSource.isNull {
+                trustedTimeSource = nil
+            } else {
+                trustedTimeSource = try FabricScopedTrustedTimeSourceStruct.fromTLVElement(raw_trustedTimeSource)
+            }
+            return SetTrustedTimeSourceRequest(trustedTimeSource: trustedTimeSource)
+        }
+    }
+
+    // MARK: - SetTimeZoneRequest
+
+    public struct SetTimeZoneRequest: TLVCodable, Equatable {
+        public var timeZone: [TimeZoneStruct]
+
+        public init(
+            timeZone: [TimeZoneStruct]
+        ) {
+            self.timeZone = timeZone
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(timeZone.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetTimeZoneRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeZone = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TimeZone", tag: UInt8(0))
+            }
+            let timeZone = (raw_timeZone.arrayElements ?? []).compactMap { try? TimeZoneStruct.fromTLVElement($0) }
+            return SetTimeZoneRequest(timeZone: timeZone)
+        }
+    }
+
+    // MARK: - SetTimeZoneResponse
+
+    public struct SetTimeZoneResponse: TLVCodable, Equatable {
+        public var dstOffsetsRequired: Bool
+
+        public init(
+            dstOffsetsRequired: Bool
+        ) {
+            self.dstOffsetsRequired = dstOffsetsRequired
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .bool(dstOffsetsRequired)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetTimeZoneResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_dstOffsetsRequired = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DSTOffsetsRequired", tag: UInt8(0))
+            }
+            let dstOffsetsRequired = raw_dstOffsetsRequired.boolValue ?? false
+            return SetTimeZoneResponse(dstOffsetsRequired: dstOffsetsRequired)
+        }
+    }
+
+    // MARK: - SetDSTOffsetRequest
+
+    public struct SetDSTOffsetRequest: TLVCodable, Equatable {
+        public var dstOffset: [DSTOffsetStruct]
+
+        public init(
+            dstOffset: [DSTOffsetStruct]
+        ) {
+            self.dstOffset = dstOffset
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(dstOffset.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetDSTOffsetRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_dstOffset = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DSTOffset", tag: UInt8(0))
+            }
+            let dstOffset = (raw_dstOffset.arrayElements ?? []).compactMap { try? DSTOffsetStruct.fromTLVElement($0) }
+            return SetDSTOffsetRequest(dstOffset: dstOffset)
+        }
+    }
+
+    // MARK: - SetDefaultNTPRequest
+
+    public struct SetDefaultNTPRequest: TLVCodable, Equatable {
+        public var defaultNTP: String?
+
+        public init(
+            defaultNTP: String? = nil
+        ) {
+            self.defaultNTP = defaultNTP
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = defaultNTP {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetDefaultNTPRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_defaultNTP = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "DefaultNTP", tag: UInt8(0))
+            }
+            let defaultNTP: String?
+            if raw_defaultNTP.isNull {
+                defaultNTP = nil
+            } else {
+                defaultNTP = raw_defaultNTP.stringValue ?? ""
+            }
+            return SetDefaultNTPRequest(defaultNTP: defaultNTP)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -145,11 +519,11 @@ extension TimeSynchronizationCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x000C), name: "SupportsDNSResolve", conformance: .mandatoryIf(.feature(1 << 1)), type: .bool, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetUTCTime", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "SetTrustedTimeSource", conformance: .mandatoryIf(.feature(1 << 3))),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "SetTimeZone", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "SetDSTOffset", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetDefaultNTP", conformance: .mandatoryIf(.feature(1 << 1))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetUTCTime", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "UTCTime", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Granularity", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TimeSource", type: .uint8, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "SetTrustedTimeSource", conformance: .mandatoryIf(.feature(1 << 3)), fields: [FieldSpec(id: 0, name: "TrustedTimeSource", type: .structure, isOptional: false, isNullable: true)]),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "SetTimeZone", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "TimeZone", type: .list, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "SetDSTOffset", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "DSTOffset", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetDefaultNTP", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "DefaultNTP", type: .string, isOptional: false, isNullable: true)]),
         ]
     )
 }

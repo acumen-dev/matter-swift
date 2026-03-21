@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Messages Cluster (0x0097), revision 3
@@ -78,6 +79,270 @@ public enum MessagesCluster {
         public static let messageConfirmed = MessageControlBitmap(rawValue: 1 << 3)
         public static let messageProtected = MessageControlBitmap(rawValue: 1 << 4)
     }
+
+    // MARK: - MessageResponseOptionStruct
+
+    public struct MessageResponseOptionStruct: TLVCodable, Equatable {
+        public var messageResponseID: UInt32
+        public var label: String
+
+        public init(
+            messageResponseID: UInt32,
+            label: String
+        ) {
+            self.messageResponseID = messageResponseID
+            self.label = label
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(messageResponseID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(label)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MessageResponseOptionStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_messageResponseID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MessageResponseID", tag: UInt8(0))
+            }
+            let messageResponseID = UInt32(raw_messageResponseID.uintValue ?? 0)
+            guard let raw_label = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Label", tag: UInt8(1))
+            }
+            let label = raw_label.stringValue ?? ""
+            return MessageResponseOptionStruct(messageResponseID: messageResponseID, label: label)
+        }
+    }
+
+    // MARK: - MessageStruct
+
+    public struct MessageStruct: TLVCodable, Equatable {
+        public var messageID: TLVElement
+        public var priority: UInt8
+        public var messageControl: UInt8
+        public var startTime: TLVElement?
+        public var duration: UInt64?
+        public var messageText: String
+        public var responses: [MessageResponseOptionStruct]
+
+        public init(
+            messageID: TLVElement,
+            priority: UInt8,
+            messageControl: UInt8,
+            startTime: TLVElement? = nil,
+            duration: UInt64? = nil,
+            messageText: String,
+            responses: [MessageResponseOptionStruct]
+        ) {
+            self.messageID = messageID
+            self.priority = priority
+            self.messageControl = messageControl
+            self.startTime = startTime
+            self.duration = duration
+            self.messageText = messageText
+            self.responses = responses
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: messageID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(priority))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(messageControl))))
+            if let val = startTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = duration {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .utf8String(messageText)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .array(responses.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MessageStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_messageID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MessageID", tag: UInt8(0))
+            }
+            let messageID = raw_messageID
+            guard let raw_priority = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Priority", tag: UInt8(1))
+            }
+            let priority = UInt8(raw_priority.uintValue ?? 0)
+            guard let raw_messageControl = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "MessageControl", tag: UInt8(2))
+            }
+            let messageControl = UInt8(raw_messageControl.uintValue ?? 0)
+            guard let raw_startTime = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "StartTime", tag: UInt8(3))
+            }
+            let startTime: TLVElement?
+            if raw_startTime.isNull {
+                startTime = nil
+            } else {
+                startTime = raw_startTime
+            }
+            guard let raw_duration = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "Duration", tag: UInt8(4))
+            }
+            let duration: UInt64?
+            if raw_duration.isNull {
+                duration = nil
+            } else {
+                duration = UInt64(raw_duration.uintValue ?? 0)
+            }
+            guard let raw_messageText = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "MessageText", tag: UInt8(5))
+            }
+            let messageText = raw_messageText.stringValue ?? ""
+            guard let raw_responses = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "Responses", tag: UInt8(6))
+            }
+            let responses = (raw_responses.arrayElements ?? []).compactMap { try? MessageResponseOptionStruct.fromTLVElement($0) }
+            return MessageStruct(messageID: messageID, priority: priority, messageControl: messageControl, startTime: startTime, duration: duration, messageText: messageText, responses: responses)
+        }
+    }
+
+    // MARK: - PresentMessagesRequest
+
+    public struct PresentMessagesRequest: TLVCodable, Equatable {
+        public var messageID: TLVElement
+        public var priority: UInt8
+        public var messageControl: UInt8
+        public var startTime: TLVElement?
+        public var duration: UInt64?
+        public var messageText: String
+        public var responses: [MessageResponseOptionStruct]
+
+        public init(
+            messageID: TLVElement,
+            priority: UInt8,
+            messageControl: UInt8,
+            startTime: TLVElement? = nil,
+            duration: UInt64? = nil,
+            messageText: String,
+            responses: [MessageResponseOptionStruct]
+        ) {
+            self.messageID = messageID
+            self.priority = priority
+            self.messageControl = messageControl
+            self.startTime = startTime
+            self.duration = duration
+            self.messageText = messageText
+            self.responses = responses
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: messageID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(priority))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(messageControl))))
+            if let val = startTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = duration {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .utf8String(messageText)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .array(responses.map { $0.toTLVElement() })))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> PresentMessagesRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_messageID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MessageID", tag: UInt8(0))
+            }
+            let messageID = raw_messageID
+            guard let raw_priority = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Priority", tag: UInt8(1))
+            }
+            let priority = UInt8(raw_priority.uintValue ?? 0)
+            guard let raw_messageControl = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "MessageControl", tag: UInt8(2))
+            }
+            let messageControl = UInt8(raw_messageControl.uintValue ?? 0)
+            guard let raw_startTime = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "StartTime", tag: UInt8(3))
+            }
+            let startTime: TLVElement?
+            if raw_startTime.isNull {
+                startTime = nil
+            } else {
+                startTime = raw_startTime
+            }
+            guard let raw_duration = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "Duration", tag: UInt8(4))
+            }
+            let duration: UInt64?
+            if raw_duration.isNull {
+                duration = nil
+            } else {
+                duration = UInt64(raw_duration.uintValue ?? 0)
+            }
+            guard let raw_messageText = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "MessageText", tag: UInt8(5))
+            }
+            let messageText = raw_messageText.stringValue ?? ""
+            guard let raw_responses = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "Responses", tag: UInt8(6))
+            }
+            let responses = (raw_responses.arrayElements ?? []).compactMap { try? MessageResponseOptionStruct.fromTLVElement($0) }
+            return PresentMessagesRequest(messageID: messageID, priority: priority, messageControl: messageControl, startTime: startTime, duration: duration, messageText: messageText, responses: responses)
+        }
+    }
+
+    // MARK: - CancelMessagesRequest
+
+    public struct CancelMessagesRequest: TLVCodable, Equatable {
+        public var messageIDs: [TLVElement]
+
+        public init(
+            messageIDs: [TLVElement]
+        ) {
+            self.messageIDs = messageIDs
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(messageIDs)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CancelMessagesRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_messageIDs = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MessageIDs", tag: UInt8(0))
+            }
+            let messageIDs = (raw_messageIDs.arrayElements ?? []).map { $0 }
+            return CancelMessagesRequest(messageIDs: messageIDs)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -92,8 +357,8 @@ extension MessagesCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "ActiveMessageIDs", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "PresentMessagesRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "CancelMessagesRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "PresentMessagesRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "MessageID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Priority", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "MessageControl", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "StartTime", type: .unknown, isOptional: false, isNullable: true), FieldSpec(id: 4, name: "Duration", type: .uint64, isOptional: false, isNullable: true), FieldSpec(id: 5, name: "MessageText", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 6, name: "Responses", type: .list, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "CancelMessagesRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "MessageIDs", type: .list, isOptional: false, isNullable: false)]),
         ]
     )
 }

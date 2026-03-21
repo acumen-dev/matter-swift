@@ -3,12 +3,143 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Ecosystem Information Cluster (0x0750), revision 1
 public enum EcosystemInformationCluster {
 
     public static let revision: UInt16 = 1
+
+    // MARK: - EcosystemDeviceStruct
+
+    public struct EcosystemDeviceStruct: TLVCodable, Equatable {
+        public var deviceName: String?
+        public var deviceNameLastEdit: TLVElement
+        public var bridgedEndpoint: TLVElement
+        public var originalEndpoint: TLVElement
+        public var deviceTypes: [TLVElement]
+        public var uniqueLocationIDs: [String]
+        public var uniqueLocationIDsLastEdit: TLVElement
+
+        public init(
+            deviceName: String? = nil,
+            deviceNameLastEdit: TLVElement,
+            bridgedEndpoint: TLVElement,
+            originalEndpoint: TLVElement,
+            deviceTypes: [TLVElement],
+            uniqueLocationIDs: [String],
+            uniqueLocationIDsLastEdit: TLVElement
+        ) {
+            self.deviceName = deviceName
+            self.deviceNameLastEdit = deviceNameLastEdit
+            self.bridgedEndpoint = bridgedEndpoint
+            self.originalEndpoint = originalEndpoint
+            self.deviceTypes = deviceTypes
+            self.uniqueLocationIDs = uniqueLocationIDs
+            self.uniqueLocationIDsLastEdit = uniqueLocationIDsLastEdit
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = deviceName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: deviceNameLastEdit))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: bridgedEndpoint))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: originalEndpoint))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .array(deviceTypes)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .array(uniqueLocationIDs.map { .utf8String($0) })))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: uniqueLocationIDsLastEdit))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EcosystemDeviceStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let deviceName: String?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                deviceName = fieldValue.stringValue ?? ""
+            } else {
+                deviceName = nil
+            }
+            guard let raw_deviceNameLastEdit = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "DeviceNameLastEdit", tag: UInt8(1))
+            }
+            let deviceNameLastEdit = raw_deviceNameLastEdit
+            guard let raw_bridgedEndpoint = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "BridgedEndpoint", tag: UInt8(2))
+            }
+            let bridgedEndpoint = raw_bridgedEndpoint
+            guard let raw_originalEndpoint = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OriginalEndpoint", tag: UInt8(3))
+            }
+            let originalEndpoint = raw_originalEndpoint
+            guard let raw_deviceTypes = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "DeviceTypes", tag: UInt8(4))
+            }
+            let deviceTypes = (raw_deviceTypes.arrayElements ?? []).map { $0 }
+            guard let raw_uniqueLocationIDs = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "UniqueLocationIDs", tag: UInt8(5))
+            }
+            let uniqueLocationIDs = (raw_uniqueLocationIDs.arrayElements ?? []).map { $0.stringValue ?? "" }
+            guard let raw_uniqueLocationIDsLastEdit = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "UniqueLocationIDsLastEdit", tag: UInt8(6))
+            }
+            let uniqueLocationIDsLastEdit = raw_uniqueLocationIDsLastEdit
+            return EcosystemDeviceStruct(deviceName: deviceName, deviceNameLastEdit: deviceNameLastEdit, bridgedEndpoint: bridgedEndpoint, originalEndpoint: originalEndpoint, deviceTypes: deviceTypes, uniqueLocationIDs: uniqueLocationIDs, uniqueLocationIDsLastEdit: uniqueLocationIDsLastEdit)
+        }
+    }
+
+    // MARK: - EcosystemLocationStruct
+
+    public struct EcosystemLocationStruct: TLVCodable, Equatable {
+        public var uniqueLocationID: String
+        public var locationDescriptor: TLVElement
+        public var locationDescriptorLastEdit: TLVElement
+
+        public init(
+            uniqueLocationID: String,
+            locationDescriptor: TLVElement,
+            locationDescriptorLastEdit: TLVElement
+        ) {
+            self.uniqueLocationID = uniqueLocationID
+            self.locationDescriptor = locationDescriptor
+            self.locationDescriptorLastEdit = locationDescriptorLastEdit
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(uniqueLocationID)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: locationDescriptor))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: locationDescriptorLastEdit))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EcosystemLocationStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_uniqueLocationID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UniqueLocationID", tag: UInt8(0))
+            }
+            let uniqueLocationID = raw_uniqueLocationID.stringValue ?? ""
+            guard let raw_locationDescriptor = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "LocationDescriptor", tag: UInt8(1))
+            }
+            let locationDescriptor = raw_locationDescriptor
+            guard let raw_locationDescriptorLastEdit = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "LocationDescriptorLastEdit", tag: UInt8(2))
+            }
+            let locationDescriptorLastEdit = raw_locationDescriptorLastEdit
+            return EcosystemLocationStruct(uniqueLocationID: uniqueLocationID, locationDescriptor: locationDescriptor, locationDescriptorLastEdit: locationDescriptorLastEdit)
+        }
+    }
 }
 
 // MARK: - Spec Metadata

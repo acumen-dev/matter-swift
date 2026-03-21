@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Laundry Washer Mode Cluster (0x0051), revision 3
@@ -31,6 +32,7 @@ public enum LaundryWasherModeCluster {
         /// OnMode — type: unknown, disallowed
         public static let onMode = AttributeID(rawValue: 0x0003)
     }
+
 }
 
 // MARK: - Spec Metadata

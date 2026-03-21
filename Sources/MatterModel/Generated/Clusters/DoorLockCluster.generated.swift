@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Door Lock Cluster (0x0101), revision 8
@@ -213,6 +214,31 @@ public enum DoorLockCluster {
         public static let setAliroReaderConfig = CommandID(rawValue: 0x0028)
         /// ClearAliroReaderConfig, mandatory when ALIRO
         public static let clearAliroReaderConfig = CommandID(rawValue: 0x0029)
+    }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// GetPINCodeResponse
+        public static let getPINCodeResponse = CommandID(rawValue: 0x0006)
+        /// GetUserStatusResponse
+        public static let getUserStatusResponse = CommandID(rawValue: 0x000A)
+        /// GetWeekDayScheduleResponse
+        public static let getWeekDayScheduleResponse = CommandID(rawValue: 0x000C)
+        /// GetYearDayScheduleResponse
+        public static let getYearDayScheduleResponse = CommandID(rawValue: 0x000F)
+        /// GetHolidayScheduleResponse
+        public static let getHolidayScheduleResponse = CommandID(rawValue: 0x0012)
+        /// GetUserTypeResponse
+        public static let getUserTypeResponse = CommandID(rawValue: 0x0015)
+        /// GetRFIDCodeResponse
+        public static let getRFIDCodeResponse = CommandID(rawValue: 0x0017)
+        /// GetUserResponse
+        public static let getUserResponse = CommandID(rawValue: 0x001C)
+        /// SetCredentialResponse
+        public static let setCredentialResponse = CommandID(rawValue: 0x0023)
+        /// GetCredentialStatusResponse
+        public static let getCredentialStatusResponse = CommandID(rawValue: 0x0025)
     }
 
     // MARK: - Events
@@ -450,6 +476,2289 @@ public enum DoorLockCluster {
         public static let noRemoteLockUnlock = OperatingModesBitmap(rawValue: 1 << 3)
         public static let passage = OperatingModesBitmap(rawValue: 1 << 4)
     }
+
+    // MARK: - CredentialStruct
+
+    public struct CredentialStruct: TLVCodable, Equatable {
+        public var credentialType: UInt8
+        public var credentialIndex: UInt16
+
+        public init(
+            credentialType: UInt8,
+            credentialIndex: UInt16
+        ) {
+            self.credentialType = credentialType
+            self.credentialIndex = credentialIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(credentialType))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(credentialIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CredentialStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_credentialType = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CredentialType", tag: UInt8(0))
+            }
+            let credentialType = UInt8(raw_credentialType.uintValue ?? 0)
+            guard let raw_credentialIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "CredentialIndex", tag: UInt8(1))
+            }
+            let credentialIndex = UInt16(raw_credentialIndex.uintValue ?? 0)
+            return CredentialStruct(credentialType: credentialType, credentialIndex: credentialIndex)
+        }
+    }
+
+    // MARK: - LockDoorRequest
+
+    public struct LockDoorRequest: TLVCodable, Equatable {
+        public var pinCode: Data?
+
+        public init(
+            pinCode: Data? = nil
+        ) {
+            self.pinCode = pinCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = pinCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> LockDoorRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let pinCode: Data?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                pinCode = fieldValue.dataValue ?? Data()
+            } else {
+                pinCode = nil
+            }
+            return LockDoorRequest(pinCode: pinCode)
+        }
+    }
+
+    // MARK: - UnlockDoorRequest
+
+    public struct UnlockDoorRequest: TLVCodable, Equatable {
+        public var pinCode: Data?
+
+        public init(
+            pinCode: Data? = nil
+        ) {
+            self.pinCode = pinCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = pinCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UnlockDoorRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let pinCode: Data?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                pinCode = fieldValue.dataValue ?? Data()
+            } else {
+                pinCode = nil
+            }
+            return UnlockDoorRequest(pinCode: pinCode)
+        }
+    }
+
+    // MARK: - UnlockWithTimeoutRequest
+
+    public struct UnlockWithTimeoutRequest: TLVCodable, Equatable {
+        public var timeout: UInt16
+        public var pinCode: Data?
+
+        public init(
+            timeout: UInt16,
+            pinCode: Data? = nil
+        ) {
+            self.timeout = timeout
+            self.pinCode = pinCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(timeout))))
+            if let val = pinCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UnlockWithTimeoutRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_timeout = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Timeout", tag: UInt8(0))
+            }
+            let timeout = UInt16(raw_timeout.uintValue ?? 0)
+            let pinCode: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                pinCode = fieldValue.dataValue ?? Data()
+            } else {
+                pinCode = nil
+            }
+            return UnlockWithTimeoutRequest(timeout: timeout, pinCode: pinCode)
+        }
+    }
+
+    // MARK: - SetPINCodeRequest
+
+    public struct SetPINCodeRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+        public var pin: Data
+
+        public init(
+            userID: UInt16,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil,
+            pin: Data
+        ) {
+            self.userID = userID
+            self.userStatus = userStatus
+            self.userType = userType
+            self.pin = pin
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(pin)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetPINCodeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(1))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(2))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            guard let raw_pin = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "PIN", tag: UInt8(3))
+            }
+            let pin = raw_pin.dataValue ?? Data()
+            return SetPINCodeRequest(userID: userID, userStatus: userStatus, userType: userType, pin: pin)
+        }
+    }
+
+    // MARK: - GetPINCodeRequest
+
+    public struct GetPINCodeRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+
+        public init(
+            userID: UInt16
+        ) {
+            self.userID = userID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetPINCodeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            return GetPINCodeRequest(userID: userID)
+        }
+    }
+
+    // MARK: - GetPINCodeResponse
+
+    public struct GetPINCodeResponse: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+        public var pinCode: Data?
+
+        public init(
+            userID: UInt16,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil,
+            pinCode: Data? = nil
+        ) {
+            self.userID = userID
+            self.userStatus = userStatus
+            self.userType = userType
+            self.pinCode = pinCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = pinCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetPINCodeResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(1))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(2))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            guard let raw_pinCode = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "PINCode", tag: UInt8(3))
+            }
+            let pinCode: Data?
+            if raw_pinCode.isNull {
+                pinCode = nil
+            } else {
+                pinCode = raw_pinCode.dataValue ?? Data()
+            }
+            return GetPINCodeResponse(userID: userID, userStatus: userStatus, userType: userType, pinCode: pinCode)
+        }
+    }
+
+    // MARK: - ClearPINCodeRequest
+
+    public struct ClearPINCodeRequest: TLVCodable, Equatable {
+        public var pinSlotIndex: UInt16
+
+        public init(
+            pinSlotIndex: UInt16
+        ) {
+            self.pinSlotIndex = pinSlotIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(pinSlotIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearPINCodeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_pinSlotIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "PINSlotIndex", tag: UInt8(0))
+            }
+            let pinSlotIndex = UInt16(raw_pinSlotIndex.uintValue ?? 0)
+            return ClearPINCodeRequest(pinSlotIndex: pinSlotIndex)
+        }
+    }
+
+    // MARK: - SetUserStatusRequest
+
+    public struct SetUserStatusRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userStatus: UInt8
+
+        public init(
+            userID: UInt16,
+            userStatus: UInt8
+        ) {
+            self.userID = userID
+            self.userStatus = userStatus
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userStatus))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetUserStatusRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(1))
+            }
+            let userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            return SetUserStatusRequest(userID: userID, userStatus: userStatus)
+        }
+    }
+
+    // MARK: - GetUserStatusRequest
+
+    public struct GetUserStatusRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+
+        public init(
+            userID: UInt16
+        ) {
+            self.userID = userID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetUserStatusRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            return GetUserStatusRequest(userID: userID)
+        }
+    }
+
+    // MARK: - GetUserStatusResponse
+
+    public struct GetUserStatusResponse: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userStatus: UInt8
+
+        public init(
+            userID: UInt16,
+            userStatus: UInt8
+        ) {
+            self.userID = userID
+            self.userStatus = userStatus
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userStatus))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetUserStatusResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(1))
+            }
+            let userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            return GetUserStatusResponse(userID: userID, userStatus: userStatus)
+        }
+    }
+
+    // MARK: - SetWeekDayScheduleRequest
+
+    public struct SetWeekDayScheduleRequest: TLVCodable, Equatable {
+        public var weekDayIndex: UInt8
+        public var userIndex: UInt16
+        public var daysMask: UInt8
+        public var startHour: UInt8
+        public var startMinute: UInt8
+        public var endHour: UInt8
+        public var endMinute: UInt8
+
+        public init(
+            weekDayIndex: UInt8,
+            userIndex: UInt16,
+            daysMask: UInt8,
+            startHour: UInt8,
+            startMinute: UInt8,
+            endHour: UInt8,
+            endMinute: UInt8
+        ) {
+            self.weekDayIndex = weekDayIndex
+            self.userIndex = userIndex
+            self.daysMask = daysMask
+            self.startHour = startHour
+            self.startMinute = startMinute
+            self.endHour = endHour
+            self.endMinute = endMinute
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(weekDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(daysMask))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(startHour))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(startMinute))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(endHour))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(endMinute))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetWeekDayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_weekDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "WeekDayIndex", tag: UInt8(0))
+            }
+            let weekDayIndex = UInt8(raw_weekDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            guard let raw_daysMask = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "DaysMask", tag: UInt8(2))
+            }
+            let daysMask = UInt8(raw_daysMask.uintValue ?? 0)
+            guard let raw_startHour = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "StartHour", tag: UInt8(3))
+            }
+            let startHour = UInt8(raw_startHour.uintValue ?? 0)
+            guard let raw_startMinute = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "StartMinute", tag: UInt8(4))
+            }
+            let startMinute = UInt8(raw_startMinute.uintValue ?? 0)
+            guard let raw_endHour = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "EndHour", tag: UInt8(5))
+            }
+            let endHour = UInt8(raw_endHour.uintValue ?? 0)
+            guard let raw_endMinute = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "EndMinute", tag: UInt8(6))
+            }
+            let endMinute = UInt8(raw_endMinute.uintValue ?? 0)
+            return SetWeekDayScheduleRequest(weekDayIndex: weekDayIndex, userIndex: userIndex, daysMask: daysMask, startHour: startHour, startMinute: startMinute, endHour: endHour, endMinute: endMinute)
+        }
+    }
+
+    // MARK: - GetWeekDayScheduleRequest
+
+    public struct GetWeekDayScheduleRequest: TLVCodable, Equatable {
+        public var weekDayIndex: UInt8
+        public var userIndex: UInt16
+
+        public init(
+            weekDayIndex: UInt8,
+            userIndex: UInt16
+        ) {
+            self.weekDayIndex = weekDayIndex
+            self.userIndex = userIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(weekDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetWeekDayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_weekDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "WeekDayIndex", tag: UInt8(0))
+            }
+            let weekDayIndex = UInt8(raw_weekDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            return GetWeekDayScheduleRequest(weekDayIndex: weekDayIndex, userIndex: userIndex)
+        }
+    }
+
+    // MARK: - GetWeekDayScheduleResponse
+
+    public struct GetWeekDayScheduleResponse: TLVCodable, Equatable {
+        public var weekDayIndex: UInt8
+        public var userIndex: UInt16
+        public var status: UInt8
+        public var daysMask: UInt8?
+        public var startHour: UInt8?
+        public var startMinute: UInt8?
+        public var endHour: UInt8?
+        public var endMinute: UInt8?
+
+        public init(
+            weekDayIndex: UInt8,
+            userIndex: UInt16,
+            status: UInt8,
+            daysMask: UInt8? = nil,
+            startHour: UInt8? = nil,
+            startMinute: UInt8? = nil,
+            endHour: UInt8? = nil,
+            endMinute: UInt8? = nil
+        ) {
+            self.weekDayIndex = weekDayIndex
+            self.userIndex = userIndex
+            self.status = status
+            self.daysMask = daysMask
+            self.startHour = startHour
+            self.startMinute = startMinute
+            self.endHour = endHour
+            self.endMinute = endMinute
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(weekDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(status))))
+            if let val = daysMask {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = startHour {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = startMinute {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = endHour {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = endMinute {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetWeekDayScheduleResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_weekDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "WeekDayIndex", tag: UInt8(0))
+            }
+            let weekDayIndex = UInt8(raw_weekDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            guard let raw_status = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(2))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let daysMask: UInt8?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                daysMask = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                daysMask = nil
+            }
+            let startHour: UInt8?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                startHour = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                startHour = nil
+            }
+            let startMinute: UInt8?
+            if let fieldValue = element[contextTag: UInt8(5)] {
+                startMinute = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                startMinute = nil
+            }
+            let endHour: UInt8?
+            if let fieldValue = element[contextTag: UInt8(6)] {
+                endHour = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                endHour = nil
+            }
+            let endMinute: UInt8?
+            if let fieldValue = element[contextTag: UInt8(7)] {
+                endMinute = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                endMinute = nil
+            }
+            return GetWeekDayScheduleResponse(weekDayIndex: weekDayIndex, userIndex: userIndex, status: status, daysMask: daysMask, startHour: startHour, startMinute: startMinute, endHour: endHour, endMinute: endMinute)
+        }
+    }
+
+    // MARK: - ClearWeekDayScheduleRequest
+
+    public struct ClearWeekDayScheduleRequest: TLVCodable, Equatable {
+        public var weekDayIndex: UInt8
+        public var userIndex: UInt16
+
+        public init(
+            weekDayIndex: UInt8,
+            userIndex: UInt16
+        ) {
+            self.weekDayIndex = weekDayIndex
+            self.userIndex = userIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(weekDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearWeekDayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_weekDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "WeekDayIndex", tag: UInt8(0))
+            }
+            let weekDayIndex = UInt8(raw_weekDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            return ClearWeekDayScheduleRequest(weekDayIndex: weekDayIndex, userIndex: userIndex)
+        }
+    }
+
+    // MARK: - SetYearDayScheduleRequest
+
+    public struct SetYearDayScheduleRequest: TLVCodable, Equatable {
+        public var yearDayIndex: UInt8
+        public var userIndex: UInt16
+        public var localStartTime: TLVElement
+        public var localEndTime: TLVElement
+
+        public init(
+            yearDayIndex: UInt8,
+            userIndex: UInt16,
+            localStartTime: TLVElement,
+            localEndTime: TLVElement
+        ) {
+            self.yearDayIndex = yearDayIndex
+            self.userIndex = userIndex
+            self.localStartTime = localStartTime
+            self.localEndTime = localEndTime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(yearDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: localStartTime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: localEndTime))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetYearDayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_yearDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "YearDayIndex", tag: UInt8(0))
+            }
+            let yearDayIndex = UInt8(raw_yearDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            guard let raw_localStartTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "LocalStartTime", tag: UInt8(2))
+            }
+            let localStartTime = raw_localStartTime
+            guard let raw_localEndTime = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "LocalEndTime", tag: UInt8(3))
+            }
+            let localEndTime = raw_localEndTime
+            return SetYearDayScheduleRequest(yearDayIndex: yearDayIndex, userIndex: userIndex, localStartTime: localStartTime, localEndTime: localEndTime)
+        }
+    }
+
+    // MARK: - GetYearDayScheduleRequest
+
+    public struct GetYearDayScheduleRequest: TLVCodable, Equatable {
+        public var yearDayIndex: UInt8
+        public var userIndex: UInt16
+
+        public init(
+            yearDayIndex: UInt8,
+            userIndex: UInt16
+        ) {
+            self.yearDayIndex = yearDayIndex
+            self.userIndex = userIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(yearDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetYearDayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_yearDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "YearDayIndex", tag: UInt8(0))
+            }
+            let yearDayIndex = UInt8(raw_yearDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            return GetYearDayScheduleRequest(yearDayIndex: yearDayIndex, userIndex: userIndex)
+        }
+    }
+
+    // MARK: - GetYearDayScheduleResponse
+
+    public struct GetYearDayScheduleResponse: TLVCodable, Equatable {
+        public var yearDayIndex: UInt8
+        public var userIndex: UInt16
+        public var status: UInt8
+        public var localStartTime: TLVElement?
+        public var localEndTime: TLVElement?
+
+        public init(
+            yearDayIndex: UInt8,
+            userIndex: UInt16,
+            status: UInt8,
+            localStartTime: TLVElement? = nil,
+            localEndTime: TLVElement? = nil
+        ) {
+            self.yearDayIndex = yearDayIndex
+            self.userIndex = userIndex
+            self.status = status
+            self.localStartTime = localStartTime
+            self.localEndTime = localEndTime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(yearDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(status))))
+            if let val = localStartTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            }
+            if let val = localEndTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetYearDayScheduleResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_yearDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "YearDayIndex", tag: UInt8(0))
+            }
+            let yearDayIndex = UInt8(raw_yearDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            guard let raw_status = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(2))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let localStartTime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                localStartTime = fieldValue
+            } else {
+                localStartTime = nil
+            }
+            let localEndTime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                localEndTime = fieldValue
+            } else {
+                localEndTime = nil
+            }
+            return GetYearDayScheduleResponse(yearDayIndex: yearDayIndex, userIndex: userIndex, status: status, localStartTime: localStartTime, localEndTime: localEndTime)
+        }
+    }
+
+    // MARK: - ClearYearDayScheduleRequest
+
+    public struct ClearYearDayScheduleRequest: TLVCodable, Equatable {
+        public var yearDayIndex: UInt8
+        public var userIndex: UInt16
+
+        public init(
+            yearDayIndex: UInt8,
+            userIndex: UInt16
+        ) {
+            self.yearDayIndex = yearDayIndex
+            self.userIndex = userIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(yearDayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearYearDayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_yearDayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "YearDayIndex", tag: UInt8(0))
+            }
+            let yearDayIndex = UInt8(raw_yearDayIndex.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            return ClearYearDayScheduleRequest(yearDayIndex: yearDayIndex, userIndex: userIndex)
+        }
+    }
+
+    // MARK: - SetHolidayScheduleRequest
+
+    public struct SetHolidayScheduleRequest: TLVCodable, Equatable {
+        public var holidayIndex: UInt8
+        public var localStartTime: TLVElement
+        public var localEndTime: TLVElement
+        public var operatingMode: UInt8
+
+        public init(
+            holidayIndex: UInt8,
+            localStartTime: TLVElement,
+            localEndTime: TLVElement,
+            operatingMode: UInt8
+        ) {
+            self.holidayIndex = holidayIndex
+            self.localStartTime = localStartTime
+            self.localEndTime = localEndTime
+            self.operatingMode = operatingMode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(holidayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: localStartTime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: localEndTime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(operatingMode))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetHolidayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_holidayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "HolidayIndex", tag: UInt8(0))
+            }
+            let holidayIndex = UInt8(raw_holidayIndex.uintValue ?? 0)
+            guard let raw_localStartTime = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "LocalStartTime", tag: UInt8(1))
+            }
+            let localStartTime = raw_localStartTime
+            guard let raw_localEndTime = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "LocalEndTime", tag: UInt8(2))
+            }
+            let localEndTime = raw_localEndTime
+            guard let raw_operatingMode = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "OperatingMode", tag: UInt8(3))
+            }
+            let operatingMode = UInt8(raw_operatingMode.uintValue ?? 0)
+            return SetHolidayScheduleRequest(holidayIndex: holidayIndex, localStartTime: localStartTime, localEndTime: localEndTime, operatingMode: operatingMode)
+        }
+    }
+
+    // MARK: - GetHolidayScheduleRequest
+
+    public struct GetHolidayScheduleRequest: TLVCodable, Equatable {
+        public var holidayIndex: UInt8
+
+        public init(
+            holidayIndex: UInt8
+        ) {
+            self.holidayIndex = holidayIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(holidayIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetHolidayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_holidayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "HolidayIndex", tag: UInt8(0))
+            }
+            let holidayIndex = UInt8(raw_holidayIndex.uintValue ?? 0)
+            return GetHolidayScheduleRequest(holidayIndex: holidayIndex)
+        }
+    }
+
+    // MARK: - GetHolidayScheduleResponse
+
+    public struct GetHolidayScheduleResponse: TLVCodable, Equatable {
+        public var holidayIndex: UInt8
+        public var status: UInt8
+        public var localStartTime: TLVElement?
+        public var localEndTime: TLVElement?
+        public var operatingMode: UInt8?
+
+        public init(
+            holidayIndex: UInt8,
+            status: UInt8,
+            localStartTime: TLVElement? = nil,
+            localEndTime: TLVElement? = nil,
+            operatingMode: UInt8? = nil
+        ) {
+            self.holidayIndex = holidayIndex
+            self.status = status
+            self.localStartTime = localStartTime
+            self.localEndTime = localEndTime
+            self.operatingMode = operatingMode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(holidayIndex))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(status))))
+            if let val = localStartTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            }
+            if let val = localEndTime {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            }
+            if let val = operatingMode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetHolidayScheduleResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_holidayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "HolidayIndex", tag: UInt8(0))
+            }
+            let holidayIndex = UInt8(raw_holidayIndex.uintValue ?? 0)
+            guard let raw_status = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(1))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let localStartTime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                if fieldValue.isNull {
+                    localStartTime = nil
+                } else {
+                    localStartTime = fieldValue
+                }
+            } else {
+                localStartTime = nil
+            }
+            let localEndTime: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                if fieldValue.isNull {
+                    localEndTime = nil
+                } else {
+                    localEndTime = fieldValue
+                }
+            } else {
+                localEndTime = nil
+            }
+            let operatingMode: UInt8?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                if fieldValue.isNull {
+                    operatingMode = nil
+                } else {
+                    operatingMode = UInt8(fieldValue.uintValue ?? 0)
+                }
+            } else {
+                operatingMode = nil
+            }
+            return GetHolidayScheduleResponse(holidayIndex: holidayIndex, status: status, localStartTime: localStartTime, localEndTime: localEndTime, operatingMode: operatingMode)
+        }
+    }
+
+    // MARK: - ClearHolidayScheduleRequest
+
+    public struct ClearHolidayScheduleRequest: TLVCodable, Equatable {
+        public var holidayIndex: UInt8
+
+        public init(
+            holidayIndex: UInt8
+        ) {
+            self.holidayIndex = holidayIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(holidayIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearHolidayScheduleRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_holidayIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "HolidayIndex", tag: UInt8(0))
+            }
+            let holidayIndex = UInt8(raw_holidayIndex.uintValue ?? 0)
+            return ClearHolidayScheduleRequest(holidayIndex: holidayIndex)
+        }
+    }
+
+    // MARK: - SetUserTypeRequest
+
+    public struct SetUserTypeRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userType: UInt8
+
+        public init(
+            userID: UInt16,
+            userType: UInt8
+        ) {
+            self.userID = userID
+            self.userType = userType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userType))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetUserTypeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userType = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(1))
+            }
+            let userType = UInt8(raw_userType.uintValue ?? 0)
+            return SetUserTypeRequest(userID: userID, userType: userType)
+        }
+    }
+
+    // MARK: - GetUserTypeRequest
+
+    public struct GetUserTypeRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+
+        public init(
+            userID: UInt16
+        ) {
+            self.userID = userID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetUserTypeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            return GetUserTypeRequest(userID: userID)
+        }
+    }
+
+    // MARK: - GetUserTypeResponse
+
+    public struct GetUserTypeResponse: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userType: UInt8
+
+        public init(
+            userID: UInt16,
+            userType: UInt8
+        ) {
+            self.userID = userID
+            self.userType = userType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userType))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetUserTypeResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userType = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(1))
+            }
+            let userType = UInt8(raw_userType.uintValue ?? 0)
+            return GetUserTypeResponse(userID: userID, userType: userType)
+        }
+    }
+
+    // MARK: - SetRFIDCodeRequest
+
+    public struct SetRFIDCodeRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+        public var rfidCode: Data
+
+        public init(
+            userID: UInt16,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil,
+            rfidCode: Data
+        ) {
+            self.userID = userID
+            self.userStatus = userStatus
+            self.userType = userType
+            self.rfidCode = rfidCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(rfidCode)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetRFIDCodeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(1))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(2))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            guard let raw_rfidCode = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "RFIDCode", tag: UInt8(3))
+            }
+            let rfidCode = raw_rfidCode.dataValue ?? Data()
+            return SetRFIDCodeRequest(userID: userID, userStatus: userStatus, userType: userType, rfidCode: rfidCode)
+        }
+    }
+
+    // MARK: - GetRFIDCodeRequest
+
+    public struct GetRFIDCodeRequest: TLVCodable, Equatable {
+        public var userID: UInt16
+
+        public init(
+            userID: UInt16
+        ) {
+            self.userID = userID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetRFIDCodeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            return GetRFIDCodeRequest(userID: userID)
+        }
+    }
+
+    // MARK: - GetRFIDCodeResponse
+
+    public struct GetRFIDCodeResponse: TLVCodable, Equatable {
+        public var userID: UInt16
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+        public var rfidCode: Data?
+
+        public init(
+            userID: UInt16,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil,
+            rfidCode: Data? = nil
+        ) {
+            self.userID = userID
+            self.userStatus = userStatus
+            self.userType = userType
+            self.rfidCode = rfidCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userID))))
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = rfidCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetRFIDCodeResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserID", tag: UInt8(0))
+            }
+            let userID = UInt16(raw_userID.uintValue ?? 0)
+            guard let raw_userStatus = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(1))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(2))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            guard let raw_rfidCode = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "RFIDCode", tag: UInt8(3))
+            }
+            let rfidCode: Data?
+            if raw_rfidCode.isNull {
+                rfidCode = nil
+            } else {
+                rfidCode = raw_rfidCode.dataValue ?? Data()
+            }
+            return GetRFIDCodeResponse(userID: userID, userStatus: userStatus, userType: userType, rfidCode: rfidCode)
+        }
+    }
+
+    // MARK: - ClearRFIDCodeRequest
+
+    public struct ClearRFIDCodeRequest: TLVCodable, Equatable {
+        public var rfidSlotIndex: UInt16
+
+        public init(
+            rfidSlotIndex: UInt16
+        ) {
+            self.rfidSlotIndex = rfidSlotIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(rfidSlotIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearRFIDCodeRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rfidSlotIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "RFIDSlotIndex", tag: UInt8(0))
+            }
+            let rfidSlotIndex = UInt16(raw_rfidSlotIndex.uintValue ?? 0)
+            return ClearRFIDCodeRequest(rfidSlotIndex: rfidSlotIndex)
+        }
+    }
+
+    // MARK: - SetUserRequest
+
+    public struct SetUserRequest: TLVCodable, Equatable {
+        public var operationType: UInt8
+        public var userIndex: UInt16
+        public var userName: String?
+        public var userUniqueID: UInt32?
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+        public var credentialRule: UInt8?
+
+        public init(
+            operationType: UInt8,
+            userIndex: UInt16,
+            userName: String? = nil,
+            userUniqueID: UInt32? = nil,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil,
+            credentialRule: UInt8? = nil
+        ) {
+            self.operationType = operationType
+            self.userIndex = userIndex
+            self.userName = userName
+            self.userUniqueID = userUniqueID
+            self.userStatus = userStatus
+            self.userType = userType
+            self.credentialRule = credentialRule
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(operationType))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(userIndex))))
+            if let val = userName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = userUniqueID {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .null))
+            }
+            if let val = credentialRule {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetUserRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_operationType = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OperationType", tag: UInt8(0))
+            }
+            let operationType = UInt8(raw_operationType.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            guard let raw_userName = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "UserName", tag: UInt8(2))
+            }
+            let userName: String?
+            if raw_userName.isNull {
+                userName = nil
+            } else {
+                userName = raw_userName.stringValue ?? ""
+            }
+            guard let raw_userUniqueID = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "UserUniqueID", tag: UInt8(3))
+            }
+            let userUniqueID: UInt32?
+            if raw_userUniqueID.isNull {
+                userUniqueID = nil
+            } else {
+                userUniqueID = UInt32(raw_userUniqueID.uintValue ?? 0)
+            }
+            guard let raw_userStatus = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(4))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(5))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            guard let raw_credentialRule = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "CredentialRule", tag: UInt8(6))
+            }
+            let credentialRule: UInt8?
+            if raw_credentialRule.isNull {
+                credentialRule = nil
+            } else {
+                credentialRule = UInt8(raw_credentialRule.uintValue ?? 0)
+            }
+            return SetUserRequest(operationType: operationType, userIndex: userIndex, userName: userName, userUniqueID: userUniqueID, userStatus: userStatus, userType: userType, credentialRule: credentialRule)
+        }
+    }
+
+    // MARK: - GetUserRequest
+
+    public struct GetUserRequest: TLVCodable, Equatable {
+        public var userIndex: UInt16
+
+        public init(
+            userIndex: UInt16
+        ) {
+            self.userIndex = userIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetUserRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(0))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            return GetUserRequest(userIndex: userIndex)
+        }
+    }
+
+    // MARK: - GetUserResponse
+
+    public struct GetUserResponse: TLVCodable, Equatable {
+        public var userIndex: UInt16
+        public var userName: String?
+        public var userUniqueID: UInt32?
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+        public var credentialRule: UInt8?
+        public var credentials: [CredentialStruct]?
+        public var creatorFabricIndex: TLVElement?
+        public var lastModifiedFabricIndex: TLVElement?
+        public var nextUserIndex: UInt16?
+
+        public init(
+            userIndex: UInt16,
+            userName: String? = nil,
+            userUniqueID: UInt32? = nil,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil,
+            credentialRule: UInt8? = nil,
+            credentials: [CredentialStruct]? = nil,
+            creatorFabricIndex: TLVElement? = nil,
+            lastModifiedFabricIndex: TLVElement? = nil,
+            nextUserIndex: UInt16? = nil
+        ) {
+            self.userIndex = userIndex
+            self.userName = userName
+            self.userUniqueID = userUniqueID
+            self.userStatus = userStatus
+            self.userType = userType
+            self.credentialRule = credentialRule
+            self.credentials = credentials
+            self.creatorFabricIndex = creatorFabricIndex
+            self.lastModifiedFabricIndex = lastModifiedFabricIndex
+            self.nextUserIndex = nextUserIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userIndex))))
+            if let val = userName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = userUniqueID {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .null))
+            }
+            if let val = credentialRule {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .null))
+            }
+            if let val = credentials {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .array(val.map { $0.toTLVElement() })))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: .null))
+            }
+            if let val = creatorFabricIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: .null))
+            }
+            if let val = lastModifiedFabricIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: .null))
+            }
+            if let val = nextUserIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetUserResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(0))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            guard let raw_userName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserName", tag: UInt8(1))
+            }
+            let userName: String?
+            if raw_userName.isNull {
+                userName = nil
+            } else {
+                userName = raw_userName.stringValue ?? ""
+            }
+            guard let raw_userUniqueID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "UserUniqueID", tag: UInt8(2))
+            }
+            let userUniqueID: UInt32?
+            if raw_userUniqueID.isNull {
+                userUniqueID = nil
+            } else {
+                userUniqueID = UInt32(raw_userUniqueID.uintValue ?? 0)
+            }
+            guard let raw_userStatus = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(3))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(4))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            guard let raw_credentialRule = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "CredentialRule", tag: UInt8(5))
+            }
+            let credentialRule: UInt8?
+            if raw_credentialRule.isNull {
+                credentialRule = nil
+            } else {
+                credentialRule = UInt8(raw_credentialRule.uintValue ?? 0)
+            }
+            guard let raw_credentials = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "Credentials", tag: UInt8(6))
+            }
+            let credentials: [CredentialStruct]?
+            if raw_credentials.isNull {
+                credentials = nil
+            } else {
+                credentials = (raw_credentials.arrayElements ?? []).compactMap { try? CredentialStruct.fromTLVElement($0) }
+            }
+            guard let raw_creatorFabricIndex = element[contextTag: UInt8(7)] else {
+                throw TLVDecodingError.missingField(name: "CreatorFabricIndex", tag: UInt8(7))
+            }
+            let creatorFabricIndex: TLVElement?
+            if raw_creatorFabricIndex.isNull {
+                creatorFabricIndex = nil
+            } else {
+                creatorFabricIndex = raw_creatorFabricIndex
+            }
+            guard let raw_lastModifiedFabricIndex = element[contextTag: UInt8(8)] else {
+                throw TLVDecodingError.missingField(name: "LastModifiedFabricIndex", tag: UInt8(8))
+            }
+            let lastModifiedFabricIndex: TLVElement?
+            if raw_lastModifiedFabricIndex.isNull {
+                lastModifiedFabricIndex = nil
+            } else {
+                lastModifiedFabricIndex = raw_lastModifiedFabricIndex
+            }
+            guard let raw_nextUserIndex = element[contextTag: UInt8(9)] else {
+                throw TLVDecodingError.missingField(name: "NextUserIndex", tag: UInt8(9))
+            }
+            let nextUserIndex: UInt16?
+            if raw_nextUserIndex.isNull {
+                nextUserIndex = nil
+            } else {
+                nextUserIndex = UInt16(raw_nextUserIndex.uintValue ?? 0)
+            }
+            return GetUserResponse(userIndex: userIndex, userName: userName, userUniqueID: userUniqueID, userStatus: userStatus, userType: userType, credentialRule: credentialRule, credentials: credentials, creatorFabricIndex: creatorFabricIndex, lastModifiedFabricIndex: lastModifiedFabricIndex, nextUserIndex: nextUserIndex)
+        }
+    }
+
+    // MARK: - ClearUserRequest
+
+    public struct ClearUserRequest: TLVCodable, Equatable {
+        public var userIndex: UInt16
+
+        public init(
+            userIndex: UInt16
+        ) {
+            self.userIndex = userIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(userIndex))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearUserRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_userIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(0))
+            }
+            let userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            return ClearUserRequest(userIndex: userIndex)
+        }
+    }
+
+    // MARK: - SetCredentialRequest
+
+    public struct SetCredentialRequest: TLVCodable, Equatable {
+        public var operationType: UInt8
+        public var credential: CredentialStruct
+        public var credentialData: Data
+        public var userIndex: UInt16?
+        public var userStatus: UInt8?
+        public var userType: UInt8?
+
+        public init(
+            operationType: UInt8,
+            credential: CredentialStruct,
+            credentialData: Data,
+            userIndex: UInt16? = nil,
+            userStatus: UInt8? = nil,
+            userType: UInt8? = nil
+        ) {
+            self.operationType = operationType
+            self.credential = credential
+            self.credentialData = credentialData
+            self.userIndex = userIndex
+            self.userStatus = userStatus
+            self.userType = userType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(operationType))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: credential.toTLVElement()))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(credentialData)))
+            if let val = userIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = userStatus {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .null))
+            }
+            if let val = userType {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetCredentialRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_operationType = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OperationType", tag: UInt8(0))
+            }
+            let operationType = UInt8(raw_operationType.uintValue ?? 0)
+            guard let raw_credential = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Credential", tag: UInt8(1))
+            }
+            let credential = try CredentialStruct.fromTLVElement(raw_credential)
+            guard let raw_credentialData = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "CredentialData", tag: UInt8(2))
+            }
+            let credentialData = raw_credentialData.dataValue ?? Data()
+            guard let raw_userIndex = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(3))
+            }
+            let userIndex: UInt16?
+            if raw_userIndex.isNull {
+                userIndex = nil
+            } else {
+                userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            }
+            guard let raw_userStatus = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "UserStatus", tag: UInt8(4))
+            }
+            let userStatus: UInt8?
+            if raw_userStatus.isNull {
+                userStatus = nil
+            } else {
+                userStatus = UInt8(raw_userStatus.uintValue ?? 0)
+            }
+            guard let raw_userType = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "UserType", tag: UInt8(5))
+            }
+            let userType: UInt8?
+            if raw_userType.isNull {
+                userType = nil
+            } else {
+                userType = UInt8(raw_userType.uintValue ?? 0)
+            }
+            return SetCredentialRequest(operationType: operationType, credential: credential, credentialData: credentialData, userIndex: userIndex, userStatus: userStatus, userType: userType)
+        }
+    }
+
+    // MARK: - SetCredentialResponse
+
+    public struct SetCredentialResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var userIndex: UInt16?
+        public var nextCredentialIndex: UInt16?
+
+        public init(
+            status: UInt8,
+            userIndex: UInt16? = nil,
+            nextCredentialIndex: UInt16? = nil
+        ) {
+            self.status = status
+            self.userIndex = userIndex
+            self.nextCredentialIndex = nextCredentialIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            if let val = userIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = nextCredentialIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetCredentialResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex: UInt16?
+            if raw_userIndex.isNull {
+                userIndex = nil
+            } else {
+                userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            }
+            let nextCredentialIndex: UInt16?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                if fieldValue.isNull {
+                    nextCredentialIndex = nil
+                } else {
+                    nextCredentialIndex = UInt16(fieldValue.uintValue ?? 0)
+                }
+            } else {
+                nextCredentialIndex = nil
+            }
+            return SetCredentialResponse(status: status, userIndex: userIndex, nextCredentialIndex: nextCredentialIndex)
+        }
+    }
+
+    // MARK: - GetCredentialStatusRequest
+
+    public struct GetCredentialStatusRequest: TLVCodable, Equatable {
+        public var credential: CredentialStruct
+
+        public init(
+            credential: CredentialStruct
+        ) {
+            self.credential = credential
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: credential.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetCredentialStatusRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_credential = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Credential", tag: UInt8(0))
+            }
+            let credential = try CredentialStruct.fromTLVElement(raw_credential)
+            return GetCredentialStatusRequest(credential: credential)
+        }
+    }
+
+    // MARK: - GetCredentialStatusResponse
+
+    public struct GetCredentialStatusResponse: TLVCodable, Equatable {
+        public var credentialExists: Bool
+        public var userIndex: UInt16?
+        public var creatorFabricIndex: TLVElement?
+        public var lastModifiedFabricIndex: TLVElement?
+        public var nextCredentialIndex: UInt16?
+        public var credentialData: Data?
+
+        public init(
+            credentialExists: Bool,
+            userIndex: UInt16? = nil,
+            creatorFabricIndex: TLVElement? = nil,
+            lastModifiedFabricIndex: TLVElement? = nil,
+            nextCredentialIndex: UInt16? = nil,
+            credentialData: Data? = nil
+        ) {
+            self.credentialExists = credentialExists
+            self.userIndex = userIndex
+            self.creatorFabricIndex = creatorFabricIndex
+            self.lastModifiedFabricIndex = lastModifiedFabricIndex
+            self.nextCredentialIndex = nextCredentialIndex
+            self.credentialData = credentialData
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .bool(credentialExists)))
+            if let val = userIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = creatorFabricIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = lastModifiedFabricIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = nextCredentialIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            }
+            if let val = credentialData {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetCredentialStatusResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_credentialExists = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CredentialExists", tag: UInt8(0))
+            }
+            let credentialExists = raw_credentialExists.boolValue ?? false
+            guard let raw_userIndex = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UserIndex", tag: UInt8(1))
+            }
+            let userIndex: UInt16?
+            if raw_userIndex.isNull {
+                userIndex = nil
+            } else {
+                userIndex = UInt16(raw_userIndex.uintValue ?? 0)
+            }
+            guard let raw_creatorFabricIndex = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "CreatorFabricIndex", tag: UInt8(2))
+            }
+            let creatorFabricIndex: TLVElement?
+            if raw_creatorFabricIndex.isNull {
+                creatorFabricIndex = nil
+            } else {
+                creatorFabricIndex = raw_creatorFabricIndex
+            }
+            guard let raw_lastModifiedFabricIndex = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "LastModifiedFabricIndex", tag: UInt8(3))
+            }
+            let lastModifiedFabricIndex: TLVElement?
+            if raw_lastModifiedFabricIndex.isNull {
+                lastModifiedFabricIndex = nil
+            } else {
+                lastModifiedFabricIndex = raw_lastModifiedFabricIndex
+            }
+            let nextCredentialIndex: UInt16?
+            if let fieldValue = element[contextTag: UInt8(4)] {
+                if fieldValue.isNull {
+                    nextCredentialIndex = nil
+                } else {
+                    nextCredentialIndex = UInt16(fieldValue.uintValue ?? 0)
+                }
+            } else {
+                nextCredentialIndex = nil
+            }
+            let credentialData: Data?
+            if let fieldValue = element[contextTag: UInt8(5)] {
+                if fieldValue.isNull {
+                    credentialData = nil
+                } else {
+                    credentialData = fieldValue.dataValue ?? Data()
+                }
+            } else {
+                credentialData = nil
+            }
+            return GetCredentialStatusResponse(credentialExists: credentialExists, userIndex: userIndex, creatorFabricIndex: creatorFabricIndex, lastModifiedFabricIndex: lastModifiedFabricIndex, nextCredentialIndex: nextCredentialIndex, credentialData: credentialData)
+        }
+    }
+
+    // MARK: - ClearCredentialRequest
+
+    public struct ClearCredentialRequest: TLVCodable, Equatable {
+        public var credential: CredentialStruct?
+
+        public init(
+            credential: CredentialStruct? = nil
+        ) {
+            self.credential = credential
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = credential {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val.toTLVElement()))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ClearCredentialRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_credential = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Credential", tag: UInt8(0))
+            }
+            let credential: CredentialStruct?
+            if raw_credential.isNull {
+                credential = nil
+            } else {
+                credential = try CredentialStruct.fromTLVElement(raw_credential)
+            }
+            return ClearCredentialRequest(credential: credential)
+        }
+    }
+
+    // MARK: - UnboltDoorRequest
+
+    public struct UnboltDoorRequest: TLVCodable, Equatable {
+        public var pinCode: Data?
+
+        public init(
+            pinCode: Data? = nil
+        ) {
+            self.pinCode = pinCode
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = pinCode {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UnboltDoorRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let pinCode: Data?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                pinCode = fieldValue.dataValue ?? Data()
+            } else {
+                pinCode = nil
+            }
+            return UnboltDoorRequest(pinCode: pinCode)
+        }
+    }
+
+    // MARK: - SetAliroReaderConfigRequest
+
+    public struct SetAliroReaderConfigRequest: TLVCodable, Equatable {
+        public var signingKey: Data
+        public var verificationKey: Data
+        public var groupIdentifier: Data
+        public var groupResolvingKey: Data
+
+        public init(
+            signingKey: Data,
+            verificationKey: Data,
+            groupIdentifier: Data,
+            groupResolvingKey: Data
+        ) {
+            self.signingKey = signingKey
+            self.verificationKey = verificationKey
+            self.groupIdentifier = groupIdentifier
+            self.groupResolvingKey = groupResolvingKey
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(signingKey)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(verificationKey)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(groupIdentifier)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .octetString(groupResolvingKey)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetAliroReaderConfigRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_signingKey = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "SigningKey", tag: UInt8(0))
+            }
+            let signingKey = raw_signingKey.dataValue ?? Data()
+            guard let raw_verificationKey = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "VerificationKey", tag: UInt8(1))
+            }
+            let verificationKey = raw_verificationKey.dataValue ?? Data()
+            guard let raw_groupIdentifier = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupIdentifier", tag: UInt8(2))
+            }
+            let groupIdentifier = raw_groupIdentifier.dataValue ?? Data()
+            guard let raw_groupResolvingKey = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "GroupResolvingKey", tag: UInt8(3))
+            }
+            let groupResolvingKey = raw_groupResolvingKey.dataValue ?? Data()
+            return SetAliroReaderConfigRequest(signingKey: signingKey, verificationKey: verificationKey, groupIdentifier: groupIdentifier, groupResolvingKey: groupResolvingKey)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -509,39 +2818,39 @@ extension DoorLockCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0088), name: "NumberOfAliroEndpointKeysSupported", conformance: .mandatoryIf(.feature(1 << 13)), type: .uint16, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "LockDoor", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "UnlockDoor", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "LockDoor", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "PINCode", type: .octstr, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "UnlockDoor", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "PINCode", type: .octstr, isOptional: true, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0002), name: "Toggle", conformance: .disallowed),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "UnlockWithTimeout", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetPINCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "GetPINCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "ClearPINCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "UnlockWithTimeout", conformance: .optional, fields: [FieldSpec(id: 0, name: "Timeout", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "PINCode", type: .octstr, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "SetPINCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserStatus", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 2, name: "UserType", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 3, name: "PIN", type: .octstr, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "GetPINCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0006)),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "ClearPINCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)])), fields: [FieldSpec(id: 0, name: "PINSlotIndex", type: .uint16, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0008), name: "ClearAllPINCodes", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 0)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SetUserStatus", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])]))),
-            CommandSpec(id: CommandID(rawValue: 0x000A), name: "GetUserStatus", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])]))),
-            CommandSpec(id: CommandID(rawValue: 0x000B), name: "SetWeekDaySchedule", conformance: .mandatoryIf(.feature(1 << 4))),
-            CommandSpec(id: CommandID(rawValue: 0x000C), name: "GetWeekDaySchedule", conformance: .mandatoryIf(.feature(1 << 4))),
-            CommandSpec(id: CommandID(rawValue: 0x000D), name: "ClearWeekDaySchedule", conformance: .mandatoryIf(.feature(1 << 4))),
-            CommandSpec(id: CommandID(rawValue: 0x000E), name: "SetYearDaySchedule", conformance: .mandatoryIf(.feature(1 << 10))),
-            CommandSpec(id: CommandID(rawValue: 0x000F), name: "GetYearDaySchedule", conformance: .mandatoryIf(.feature(1 << 10))),
-            CommandSpec(id: CommandID(rawValue: 0x0010), name: "ClearYearDaySchedule", conformance: .mandatoryIf(.feature(1 << 10))),
-            CommandSpec(id: CommandID(rawValue: 0x0011), name: "SetHolidaySchedule", conformance: .mandatoryIf(.feature(1 << 11))),
-            CommandSpec(id: CommandID(rawValue: 0x0012), name: "GetHolidaySchedule", conformance: .mandatoryIf(.feature(1 << 11))),
-            CommandSpec(id: CommandID(rawValue: 0x0013), name: "ClearHolidaySchedule", conformance: .mandatoryIf(.feature(1 << 11))),
-            CommandSpec(id: CommandID(rawValue: 0x0014), name: "SetUserType", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])]))),
-            CommandSpec(id: CommandID(rawValue: 0x0015), name: "GetUserType", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])]))),
-            CommandSpec(id: CommandID(rawValue: 0x0016), name: "SetRFIDCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0017), name: "GetRFIDCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0018), name: "ClearRFIDCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "SetUserStatus", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserStatus", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "GetUserStatus", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000A)),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "SetWeekDaySchedule", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "WeekDayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "DaysMask", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "StartHour", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "StartMinute", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 5, name: "EndHour", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 6, name: "EndMinute", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "GetWeekDaySchedule", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "WeekDayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000C)),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "ClearWeekDaySchedule", conformance: .mandatoryIf(.feature(1 << 4)), fields: [FieldSpec(id: 0, name: "WeekDayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000E), name: "SetYearDaySchedule", conformance: .mandatoryIf(.feature(1 << 10)), fields: [FieldSpec(id: 0, name: "YearDayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "LocalStartTime", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "LocalEndTime", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000F), name: "GetYearDaySchedule", conformance: .mandatoryIf(.feature(1 << 10)), fields: [FieldSpec(id: 0, name: "YearDayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x000F)),
+            CommandSpec(id: CommandID(rawValue: 0x0010), name: "ClearYearDaySchedule", conformance: .mandatoryIf(.feature(1 << 10)), fields: [FieldSpec(id: 0, name: "YearDayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0011), name: "SetHolidaySchedule", conformance: .mandatoryIf(.feature(1 << 11)), fields: [FieldSpec(id: 0, name: "HolidayIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "LocalStartTime", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "LocalEndTime", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "OperatingMode", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0012), name: "GetHolidaySchedule", conformance: .mandatoryIf(.feature(1 << 11)), fields: [FieldSpec(id: 0, name: "HolidayIndex", type: .uint8, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0012)),
+            CommandSpec(id: CommandID(rawValue: 0x0013), name: "ClearHolidaySchedule", conformance: .mandatoryIf(.feature(1 << 11)), fields: [FieldSpec(id: 0, name: "HolidayIndex", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0014), name: "SetUserType", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserType", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0015), name: "GetUserType", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .or([.feature(1 << 0), .feature(1 << 1), .feature(1 << 2)])])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0015)),
+            CommandSpec(id: CommandID(rawValue: 0x0016), name: "SetRFIDCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserStatus", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 2, name: "UserType", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 3, name: "RFIDCode", type: .octstr, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0017), name: "GetRFIDCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "UserID", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0017)),
+            CommandSpec(id: CommandID(rawValue: 0x0018), name: "ClearRFIDCode", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "RFIDSlotIndex", type: .uint16, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0019), name: "ClearAllRFIDCodes", conformance: .mandatoryIf(.and([.not(.feature(1 << 8)), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x001A), name: "SetUser", conformance: .mandatoryIf(.feature(1 << 8))),
-            CommandSpec(id: CommandID(rawValue: 0x001B), name: "GetUser", conformance: .mandatoryIf(.feature(1 << 8))),
-            CommandSpec(id: CommandID(rawValue: 0x001D), name: "ClearUser", conformance: .mandatoryIf(.feature(1 << 8))),
-            CommandSpec(id: CommandID(rawValue: 0x0022), name: "SetCredential", conformance: .mandatoryIf(.feature(1 << 8))),
-            CommandSpec(id: CommandID(rawValue: 0x0024), name: "GetCredentialStatus", conformance: .mandatoryIf(.feature(1 << 8))),
-            CommandSpec(id: CommandID(rawValue: 0x0026), name: "ClearCredential", conformance: .mandatoryIf(.feature(1 << 8))),
-            CommandSpec(id: CommandID(rawValue: 0x0027), name: "UnboltDoor", conformance: .mandatoryIf(.feature(1 << 12))),
-            CommandSpec(id: CommandID(rawValue: 0x0028), name: "SetAliroReaderConfig", conformance: .mandatoryIf(.feature(1 << 13))),
+            CommandSpec(id: CommandID(rawValue: 0x001A), name: "SetUser", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "OperationType", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "UserName", type: .string, isOptional: false, isNullable: true), FieldSpec(id: 3, name: "UserUniqueID", type: .uint32, isOptional: false, isNullable: true), FieldSpec(id: 4, name: "UserStatus", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 5, name: "UserType", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 6, name: "CredentialRule", type: .uint8, isOptional: false, isNullable: true)]),
+            CommandSpec(id: CommandID(rawValue: 0x001B), name: "GetUser", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x001C)),
+            CommandSpec(id: CommandID(rawValue: 0x001D), name: "ClearUser", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "UserIndex", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0022), name: "SetCredential", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "OperationType", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Credential", type: .structure, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "CredentialData", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "UserIndex", type: .uint16, isOptional: false, isNullable: true), FieldSpec(id: 4, name: "UserStatus", type: .uint8, isOptional: false, isNullable: true), FieldSpec(id: 5, name: "UserType", type: .uint8, isOptional: false, isNullable: true)], responseID: CommandID(rawValue: 0x0023)),
+            CommandSpec(id: CommandID(rawValue: 0x0024), name: "GetCredentialStatus", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "Credential", type: .structure, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0025)),
+            CommandSpec(id: CommandID(rawValue: 0x0026), name: "ClearCredential", conformance: .mandatoryIf(.feature(1 << 8)), fields: [FieldSpec(id: 0, name: "Credential", type: .structure, isOptional: false, isNullable: true)]),
+            CommandSpec(id: CommandID(rawValue: 0x0027), name: "UnboltDoor", conformance: .mandatoryIf(.feature(1 << 12)), fields: [FieldSpec(id: 0, name: "PINCode", type: .octstr, isOptional: true, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0028), name: "SetAliroReaderConfig", conformance: .mandatoryIf(.feature(1 << 13)), fields: [FieldSpec(id: 0, name: "SigningKey", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "VerificationKey", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "GroupIdentifier", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "GroupResolvingKey", type: .octstr, isOptional: false, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0029), name: "ClearAliroReaderConfig", conformance: .mandatoryIf(.feature(1 << 13))),
         ]
     )

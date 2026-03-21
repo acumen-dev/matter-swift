@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Proxy Configuration Cluster (0x0042), revision 1
@@ -15,6 +16,45 @@ public enum ProxyConfigurationCluster {
     public enum Attribute {
         /// ConfigurationList — type: list, writable, nonVolatile, mandatory
         public static let configurationList = AttributeID(rawValue: 0x0000)
+    }
+
+    // MARK: - ConfigurationStruct
+
+    public struct ConfigurationStruct: TLVCodable, Equatable {
+        public var proxyAllNodes: Bool
+        public var sourceList: [TLVElement]
+
+        public init(
+            proxyAllNodes: Bool,
+            sourceList: [TLVElement]
+        ) {
+            self.proxyAllNodes = proxyAllNodes
+            self.sourceList = sourceList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(proxyAllNodes)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .array(sourceList)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ConfigurationStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_proxyAllNodes = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ProxyAllNodes", tag: UInt8(1))
+            }
+            let proxyAllNodes = raw_proxyAllNodes.boolValue ?? false
+            guard let raw_sourceList = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "SourceList", tag: UInt8(2))
+            }
+            let sourceList = (raw_sourceList.arrayElements ?? []).map { $0 }
+            return ConfigurationStruct(proxyAllNodes: proxyAllNodes, sourceList: sourceList)
+        }
     }
 }
 

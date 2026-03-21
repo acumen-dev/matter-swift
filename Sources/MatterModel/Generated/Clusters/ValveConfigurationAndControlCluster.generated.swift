@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Valve Configuration and Control Cluster (0x0081), revision 1
@@ -83,6 +84,57 @@ public enum ValveConfigurationAndControlCluster {
         public static let shortCircuit = ValveFaultBitmap(rawValue: 1 << 4)
         public static let currentExceeded = ValveFaultBitmap(rawValue: 1 << 5)
     }
+
+    // MARK: - OpenRequest
+
+    public struct OpenRequest: TLVCodable, Equatable {
+        public var openDuration: TLVElement?
+        public var targetLevel: UInt8?
+
+        public init(
+            openDuration: TLVElement? = nil,
+            targetLevel: UInt8? = nil
+        ) {
+            self.openDuration = openDuration
+            self.targetLevel = targetLevel
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = openDuration {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val))
+            }
+            if let val = targetLevel {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(val))))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OpenRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            let openDuration: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(0)] {
+                if fieldValue.isNull {
+                    openDuration = nil
+                } else {
+                    openDuration = fieldValue
+                }
+            } else {
+                openDuration = nil
+            }
+            let targetLevel: UInt8?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                targetLevel = UInt8(fieldValue.uintValue ?? 0)
+            } else {
+                targetLevel = nil
+            }
+            return OpenRequest(openDuration: openDuration, targetLevel: targetLevel)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -106,7 +158,7 @@ extension ValveConfigurationAndControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "LevelStep", conformance: .optionalIf(.feature(1 << 1)), type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Open", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Open", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "OpenDuration", type: .unknown, isOptional: true, isNullable: true), FieldSpec(id: 1, name: "TargetLevel", type: .uint8, isOptional: true, isNullable: false)]),
             CommandSpec(id: CommandID(rawValue: 0x0001), name: "Close", conformance: .mandatory),
         ]
     )

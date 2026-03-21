@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Audio Output Cluster (0x050B), revision 1
@@ -45,6 +46,123 @@ public enum AudioOutputCluster {
         case `internal` = 4
         case other = 5
     }
+
+    // MARK: - OutputInfoStruct
+
+    public struct OutputInfoStruct: TLVCodable, Equatable {
+        public var index: UInt8
+        public var outputType: UInt8
+        public var name: String
+
+        public init(
+            index: UInt8,
+            outputType: UInt8,
+            name: String
+        ) {
+            self.index = index
+            self.outputType = outputType
+            self.name = name
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(index))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(outputType))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(name)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OutputInfoStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_index = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Index", tag: UInt8(0))
+            }
+            let index = UInt8(raw_index.uintValue ?? 0)
+            guard let raw_outputType = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "OutputType", tag: UInt8(1))
+            }
+            let outputType = UInt8(raw_outputType.uintValue ?? 0)
+            guard let raw_name = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Name", tag: UInt8(2))
+            }
+            let name = raw_name.stringValue ?? ""
+            return OutputInfoStruct(index: index, outputType: outputType, name: name)
+        }
+    }
+
+    // MARK: - SelectOutputRequest
+
+    public struct SelectOutputRequest: TLVCodable, Equatable {
+        public var index: UInt8
+
+        public init(
+            index: UInt8
+        ) {
+            self.index = index
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(index))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SelectOutputRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_index = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Index", tag: UInt8(0))
+            }
+            let index = UInt8(raw_index.uintValue ?? 0)
+            return SelectOutputRequest(index: index)
+        }
+    }
+
+    // MARK: - RenameOutputRequest
+
+    public struct RenameOutputRequest: TLVCodable, Equatable {
+        public var index: UInt8
+        public var name: String
+
+        public init(
+            index: UInt8,
+            name: String
+        ) {
+            self.index = index
+            self.name = name
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(index))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(name)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RenameOutputRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_index = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Index", tag: UInt8(0))
+            }
+            let index = UInt8(raw_index.uintValue ?? 0)
+            guard let raw_name = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Name", tag: UInt8(1))
+            }
+            let name = raw_name.stringValue ?? ""
+            return RenameOutputRequest(index: index, name: name)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -59,8 +177,8 @@ extension AudioOutputCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentOutput", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectOutput", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "RenameOutput", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SelectOutput", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Index", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "RenameOutput", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "Index", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Name", type: .string, isOptional: false, isNullable: false)]),
         ]
     )
 }

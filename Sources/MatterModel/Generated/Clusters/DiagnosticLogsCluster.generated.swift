@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Diagnostic Logs Cluster (0x0032), revision 1
@@ -15,6 +16,13 @@ public enum DiagnosticLogsCluster {
     public enum Command {
         /// RetrieveLogsRequest, mandatory
         public static let retrieveLogsRequest = CommandID(rawValue: 0x0000)
+    }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// RetrieveLogsResponse
+        public static let retrieveLogsResponse = CommandID(rawValue: 0x0001)
     }
 
     public enum IntentEnum: UInt8, Sendable, Equatable {
@@ -35,6 +43,120 @@ public enum DiagnosticLogsCluster {
         case responsePayload = 0
         case bdx = 1
     }
+
+    // MARK: - RetrieveLogsRequest
+
+    public struct RetrieveLogsRequest: TLVCodable, Equatable {
+        public var intent: UInt8
+        public var requestedProtocol: UInt8
+        public var transferFileDesignator: String?
+
+        public init(
+            intent: UInt8,
+            requestedProtocol: UInt8,
+            transferFileDesignator: String? = nil
+        ) {
+            self.intent = intent
+            self.requestedProtocol = requestedProtocol
+            self.transferFileDesignator = transferFileDesignator
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(intent))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(requestedProtocol))))
+            if let val = transferFileDesignator {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RetrieveLogsRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_intent = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Intent", tag: UInt8(0))
+            }
+            let intent = UInt8(raw_intent.uintValue ?? 0)
+            guard let raw_requestedProtocol = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "RequestedProtocol", tag: UInt8(1))
+            }
+            let requestedProtocol = UInt8(raw_requestedProtocol.uintValue ?? 0)
+            let transferFileDesignator: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                transferFileDesignator = fieldValue.stringValue ?? ""
+            } else {
+                transferFileDesignator = nil
+            }
+            return RetrieveLogsRequest(intent: intent, requestedProtocol: requestedProtocol, transferFileDesignator: transferFileDesignator)
+        }
+    }
+
+    // MARK: - RetrieveLogsResponse
+
+    public struct RetrieveLogsResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var logContent: Data
+        public var utcTimeStamp: TLVElement?
+        public var timeSinceBoot: TLVElement?
+
+        public init(
+            status: UInt8,
+            logContent: Data,
+            utcTimeStamp: TLVElement? = nil,
+            timeSinceBoot: TLVElement? = nil
+        ) {
+            self.status = status
+            self.logContent = logContent
+            self.utcTimeStamp = utcTimeStamp
+            self.timeSinceBoot = timeSinceBoot
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(logContent)))
+            if let val = utcTimeStamp {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: val))
+            }
+            if let val = timeSinceBoot {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RetrieveLogsResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            guard let raw_logContent = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "LogContent", tag: UInt8(1))
+            }
+            let logContent = raw_logContent.dataValue ?? Data()
+            let utcTimeStamp: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                utcTimeStamp = fieldValue
+            } else {
+                utcTimeStamp = nil
+            }
+            let timeSinceBoot: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(3)] {
+                timeSinceBoot = fieldValue
+            } else {
+                timeSinceBoot = nil
+            }
+            return RetrieveLogsResponse(status: status, logContent: logContent, utcTimeStamp: utcTimeStamp, timeSinceBoot: timeSinceBoot)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -47,7 +169,7 @@ extension DiagnosticLogsCluster {
         attributes: [
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "RetrieveLogsRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "RetrieveLogsRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Intent", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "RequestedProtocol", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "TransferFileDesignator", type: .string, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

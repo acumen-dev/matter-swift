@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Energy Preference Cluster (0x009B), revision 1
@@ -41,6 +42,49 @@ public enum EnergyPreferenceCluster {
         case speed = 1
         case efficiency = 2
         case waterConsumption = 3
+    }
+
+    // MARK: - BalanceStruct
+
+    public struct BalanceStruct: TLVCodable, Equatable {
+        public var step: UInt8
+        public var label: String?
+
+        public init(
+            step: UInt8,
+            label: String? = nil
+        ) {
+            self.step = step
+            self.label = label
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(step))))
+            if let val = label {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> BalanceStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_step = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Step", tag: UInt8(0))
+            }
+            let step = UInt8(raw_step.uintValue ?? 0)
+            let label: String?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                label = fieldValue.stringValue ?? ""
+            } else {
+                label = nil
+            }
+            return BalanceStruct(step: step, label: label)
+        }
     }
 }
 

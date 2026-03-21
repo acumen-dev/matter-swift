@@ -25,10 +25,10 @@ extension GeneralCommissioningCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0009), name: "TCUpdateDeadline", conformance: .mandatoryIf(.feature(1 << 0)), type: .uint32, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ArmFailSafe", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "SetRegulatoryConfig", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "CommissioningComplete", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetTCAcknowledgements", conformance: .mandatoryIf(.feature(1 << 0))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ArmFailSafe", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ExpiryLengthSeconds", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Breadcrumb", type: .uint64, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "SetRegulatoryConfig", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NewRegulatoryConfig", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "CountryCode", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Breadcrumb", type: .uint64, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "CommissioningComplete", conformance: .mandatory, responseID: CommandID(rawValue: 0x0005)),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "SetTCAcknowledgements", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "TCVersion", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "TCUserResponse", type: .unknown, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0007)),
         ]
     )
 }

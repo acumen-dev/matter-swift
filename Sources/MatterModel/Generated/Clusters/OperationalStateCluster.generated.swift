@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Operational State Cluster (0x0060), revision 3
@@ -40,6 +41,13 @@ public enum OperationalStateCluster {
         public static let resume = CommandID(rawValue: 0x0003)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// OperationalCommandResponse
+        public static let operationalCommandResponse = CommandID(rawValue: 0x0004)
+    }
+
     // MARK: - Events
 
     public enum Event {
@@ -55,6 +63,127 @@ public enum OperationalStateCluster {
 
     public enum OperationalStateEnum: UInt8, Sendable, Equatable {
         case generalStates = 0
+    }
+
+    // MARK: - ErrorStateStruct
+
+    public struct ErrorStateStruct: TLVCodable, Equatable {
+        public var errorStateID: UInt8
+        public var errorStateLabel: String
+        public var errorStateDetails: String?
+
+        public init(
+            errorStateID: UInt8,
+            errorStateLabel: String,
+            errorStateDetails: String? = nil
+        ) {
+            self.errorStateID = errorStateID
+            self.errorStateLabel = errorStateLabel
+            self.errorStateDetails = errorStateDetails
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(errorStateID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(errorStateLabel)))
+            if let val = errorStateDetails {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ErrorStateStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_errorStateID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ErrorStateID", tag: UInt8(0))
+            }
+            let errorStateID = UInt8(raw_errorStateID.uintValue ?? 0)
+            guard let raw_errorStateLabel = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ErrorStateLabel", tag: UInt8(1))
+            }
+            let errorStateLabel = raw_errorStateLabel.stringValue ?? ""
+            let errorStateDetails: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                errorStateDetails = fieldValue.stringValue ?? ""
+            } else {
+                errorStateDetails = nil
+            }
+            return ErrorStateStruct(errorStateID: errorStateID, errorStateLabel: errorStateLabel, errorStateDetails: errorStateDetails)
+        }
+    }
+
+    // MARK: - OperationalStateStruct
+
+    public struct OperationalStateStruct: TLVCodable, Equatable {
+        public var operationalStateID: UInt8
+        public var operationalStateLabel: String
+
+        public init(
+            operationalStateID: UInt8,
+            operationalStateLabel: String
+        ) {
+            self.operationalStateID = operationalStateID
+            self.operationalStateLabel = operationalStateLabel
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(operationalStateID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(operationalStateLabel)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OperationalStateStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_operationalStateID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "OperationalStateID", tag: UInt8(0))
+            }
+            let operationalStateID = UInt8(raw_operationalStateID.uintValue ?? 0)
+            guard let raw_operationalStateLabel = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "OperationalStateLabel", tag: UInt8(1))
+            }
+            let operationalStateLabel = raw_operationalStateLabel.stringValue ?? ""
+            return OperationalStateStruct(operationalStateID: operationalStateID, operationalStateLabel: operationalStateLabel)
+        }
+    }
+
+    // MARK: - OperationalCommandResponse
+
+    public struct OperationalCommandResponse: TLVCodable, Equatable {
+        public var commandResponseState: ErrorStateStruct
+
+        public init(
+            commandResponseState: ErrorStateStruct
+        ) {
+            self.commandResponseState = commandResponseState
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: commandResponseState.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> OperationalCommandResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_commandResponseState = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CommandResponseState", tag: UInt8(0))
+            }
+            let commandResponseState = try ErrorStateStruct.fromTLVElement(raw_commandResponseState)
+            return OperationalCommandResponse(commandResponseState: commandResponseState)
+        }
     }
 }
 
@@ -74,10 +203,10 @@ extension OperationalStateCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "OperationalError", conformance: .mandatory, type: .structure, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Pause", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Stop", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Start", conformance: .optional),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Resume", conformance: .optional),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "Pause", conformance: .optional, responseID: CommandID(rawValue: 0x0004)),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "Stop", conformance: .optional, responseID: CommandID(rawValue: 0x0004)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "Start", conformance: .optional, responseID: CommandID(rawValue: 0x0004)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "Resume", conformance: .optional, responseID: CommandID(rawValue: 0x0004)),
         ]
     )
 }

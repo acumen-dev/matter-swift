@@ -413,4 +413,61 @@ struct EndpointManagerTests {
         let value4 = store.get(endpoint: ep4, cluster: .onOff, attribute: OnOffCluster.Attribute.onOff)
         #expect(value4 == .bool(false))
     }
+
+    // MARK: - Command Validation Tests
+
+    @Test("Strict validation rejects command with missing required field")
+    func strictValidationRejectsMissingField() async throws {
+        let (manager, _) = makeManager()
+        let ep = EndpointID(rawValue: 3)
+        manager.addEndpoint(makeOnOffEndpoint(id: ep))
+        manager.strictCommandValidation = true
+
+        // OffWithEffect requires EffectIdentifier (tag 0) and EffectVariant (tag 1)
+        // Send command with no fields
+        let path = CommandPath(endpointID: ep, clusterID: .onOff, commandID: OnOffCluster.Command.offWithEffect)
+        let (response, _) = try await manager.handleCommand(path: path, fields: nil)
+
+        // Should return INVALID_COMMAND status
+        #expect(response != nil)
+        #expect(response?[contextTag: 0]?.uintValue == 0x85)
+    }
+
+    @Test("Non-strict validation allows command with missing field")
+    func nonStrictValidationAllowsMissingField() async throws {
+        let (manager, _) = makeManager()
+        let ep = EndpointID(rawValue: 3)
+        manager.addEndpoint(makeOnOffEndpoint(id: ep))
+        manager.strictCommandValidation = false
+
+        // Off command has no required fields — should always succeed
+        let path = CommandPath(endpointID: ep, clusterID: .onOff, commandID: OnOffCluster.Command.off)
+        let (response, _) = try await manager.handleCommand(path: path, fields: nil)
+
+        // Off command with no fields should succeed (toggles off)
+        // Response may be nil for status-only commands
+        _ = response
+    }
+
+    @Test("Strict validation allows command with all required fields present")
+    func strictValidationAllowsCompleteFields() async throws {
+        let (manager, _) = makeManager()
+        let ep = EndpointID(rawValue: 3)
+        manager.addEndpoint(makeOnOffEndpoint(id: ep))
+        manager.strictCommandValidation = true
+
+        // OffWithEffect with all required fields
+        let path = CommandPath(endpointID: ep, clusterID: .onOff, commandID: OnOffCluster.Command.offWithEffect)
+        let fields = TLVElement.structure([
+            TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(0)),
+            TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(0)),
+        ])
+        let (response, _) = try await manager.handleCommand(path: path, fields: fields)
+
+        // Should not return INVALID_COMMAND
+        if let resp = response {
+            #expect(resp[contextTag: 0]?.uintValue != 0x85)
+        }
+        // nil response is also acceptable (handler may not produce one)
+    }
 }

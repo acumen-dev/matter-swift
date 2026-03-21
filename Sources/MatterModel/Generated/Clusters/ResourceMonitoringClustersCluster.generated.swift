@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Resource Monitoring Clusters (0x0071), revision 1
@@ -64,6 +65,45 @@ public enum ResourceMonitoringClustersCluster {
         case ean = 2
         case gtiN14 = 3
         case oem = 4
+    }
+
+    // MARK: - ReplacementProductStruct
+
+    public struct ReplacementProductStruct: TLVCodable, Equatable {
+        public var productIdentifierType: UInt8
+        public var productIdentifierValue: String
+
+        public init(
+            productIdentifierType: UInt8,
+            productIdentifierValue: String
+        ) {
+            self.productIdentifierType = productIdentifierType
+            self.productIdentifierValue = productIdentifierValue
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(productIdentifierType))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(productIdentifierValue)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ReplacementProductStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_productIdentifierType = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ProductIdentifierType", tag: UInt8(0))
+            }
+            let productIdentifierType = UInt8(raw_productIdentifierType.uintValue ?? 0)
+            guard let raw_productIdentifierValue = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ProductIdentifierValue", tag: UInt8(1))
+            }
+            let productIdentifierValue = raw_productIdentifierValue.stringValue ?? ""
+            return ReplacementProductStruct(productIdentifierType: productIdentifierType, productIdentifierValue: productIdentifierValue)
+        }
     }
 }
 

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Device Energy Management Mode Cluster (0x009F), revision 2
@@ -31,6 +32,7 @@ public enum DeviceEnergyManagementModeCluster {
         /// OnMode — type: unknown, disallowed
         public static let onMode = AttributeID(rawValue: 0x0003)
     }
+
 }
 
 // MARK: - Spec Metadata

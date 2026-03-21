@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Node Operational Credentials Cluster (0x003E), revision 1
@@ -48,6 +49,19 @@ public enum NodeOperationalCredentialsCluster {
         public static let addTrustedRootCertificate = CommandID(rawValue: 0x000B)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// AttestationResponse
+        public static let attestationResponse = CommandID(rawValue: 0x0001)
+        /// CertificateChainResponse
+        public static let certificateChainResponse = CommandID(rawValue: 0x0003)
+        /// CSRResponse
+        public static let csrResponse = CommandID(rawValue: 0x0005)
+        /// NOCResponse
+        public static let nocResponse = CommandID(rawValue: 0x0008)
+    }
+
     public enum CertificateChainTypeEnum: UInt8, Sendable, Equatable {
         case dacCertificate = 1
         case paiCertificate = 2
@@ -67,6 +81,589 @@ public enum NodeOperationalCredentialsCluster {
         case labelConflict = 10
         case invalidFabricIndex = 11
     }
+
+    // MARK: - FabricDescriptorStruct
+
+    public struct FabricDescriptorStruct: TLVCodable, Equatable {
+        public var rootPublicKey: Data
+        public var vendorID: TLVElement
+        public var fabricID: TLVElement
+        public var nodeID: TLVElement
+        public var label: String
+
+        public init(
+            rootPublicKey: Data,
+            vendorID: TLVElement,
+            fabricID: TLVElement,
+            nodeID: TLVElement,
+            label: String
+        ) {
+            self.rootPublicKey = rootPublicKey
+            self.vendorID = vendorID
+            self.fabricID = fabricID
+            self.nodeID = nodeID
+            self.label = label
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(rootPublicKey)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: vendorID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: fabricID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .utf8String(label)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> FabricDescriptorStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rootPublicKey = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "RootPublicKey", tag: UInt8(1))
+            }
+            let rootPublicKey = raw_rootPublicKey.dataValue ?? Data()
+            guard let raw_vendorID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "VendorID", tag: UInt8(2))
+            }
+            let vendorID = raw_vendorID
+            guard let raw_fabricID = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "FabricID", tag: UInt8(3))
+            }
+            let fabricID = raw_fabricID
+            guard let raw_nodeID = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(4))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_label = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "Label", tag: UInt8(5))
+            }
+            let label = raw_label.stringValue ?? ""
+            return FabricDescriptorStruct(rootPublicKey: rootPublicKey, vendorID: vendorID, fabricID: fabricID, nodeID: nodeID, label: label)
+        }
+    }
+
+    // MARK: - NOCStruct
+
+    public struct NOCStruct: TLVCodable, Equatable {
+        public var noc: Data
+        public var icac: Data?
+
+        public init(
+            noc: Data,
+            icac: Data? = nil
+        ) {
+            self.noc = noc
+            self.icac = icac
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(noc)))
+            if let val = icac {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> NOCStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_noc = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NOC", tag: UInt8(1))
+            }
+            let noc = raw_noc.dataValue ?? Data()
+            guard let raw_icac = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ICAC", tag: UInt8(2))
+            }
+            let icac: Data?
+            if raw_icac.isNull {
+                icac = nil
+            } else {
+                icac = raw_icac.dataValue ?? Data()
+            }
+            return NOCStruct(noc: noc, icac: icac)
+        }
+    }
+
+    // MARK: - AttestationRequest
+
+    public struct AttestationRequest: TLVCodable, Equatable {
+        public var attestationNonce: Data
+
+        public init(
+            attestationNonce: Data
+        ) {
+            self.attestationNonce = attestationNonce
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(attestationNonce)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AttestationRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_attestationNonce = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AttestationNonce", tag: UInt8(0))
+            }
+            let attestationNonce = raw_attestationNonce.dataValue ?? Data()
+            return AttestationRequest(attestationNonce: attestationNonce)
+        }
+    }
+
+    // MARK: - AttestationResponse
+
+    public struct AttestationResponse: TLVCodable, Equatable {
+        public var attestationElements: Data
+        public var attestationSignature: Data
+
+        public init(
+            attestationElements: Data,
+            attestationSignature: Data
+        ) {
+            self.attestationElements = attestationElements
+            self.attestationSignature = attestationSignature
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(attestationElements)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(attestationSignature)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AttestationResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_attestationElements = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AttestationElements", tag: UInt8(0))
+            }
+            let attestationElements = raw_attestationElements.dataValue ?? Data()
+            guard let raw_attestationSignature = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "AttestationSignature", tag: UInt8(1))
+            }
+            let attestationSignature = raw_attestationSignature.dataValue ?? Data()
+            return AttestationResponse(attestationElements: attestationElements, attestationSignature: attestationSignature)
+        }
+    }
+
+    // MARK: - CertificateChainRequest
+
+    public struct CertificateChainRequest: TLVCodable, Equatable {
+        public var certificateType: UInt8
+
+        public init(
+            certificateType: UInt8
+        ) {
+            self.certificateType = certificateType
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(certificateType))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CertificateChainRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_certificateType = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CertificateType", tag: UInt8(0))
+            }
+            let certificateType = UInt8(raw_certificateType.uintValue ?? 0)
+            return CertificateChainRequest(certificateType: certificateType)
+        }
+    }
+
+    // MARK: - CertificateChainResponse
+
+    public struct CertificateChainResponse: TLVCodable, Equatable {
+        public var certificate: Data
+
+        public init(
+            certificate: Data
+        ) {
+            self.certificate = certificate
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(certificate)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CertificateChainResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_certificate = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Certificate", tag: UInt8(0))
+            }
+            let certificate = raw_certificate.dataValue ?? Data()
+            return CertificateChainResponse(certificate: certificate)
+        }
+    }
+
+    // MARK: - CSRRequest
+
+    public struct CSRRequest: TLVCodable, Equatable {
+        public var csrNonce: Data
+        public var isForUpdateNOC: Bool?
+
+        public init(
+            csrNonce: Data,
+            isForUpdateNOC: Bool? = nil
+        ) {
+            self.csrNonce = csrNonce
+            self.isForUpdateNOC = isForUpdateNOC
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(csrNonce)))
+            if let val = isForUpdateNOC {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .bool(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CSRRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_csrNonce = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CSRNonce", tag: UInt8(0))
+            }
+            let csrNonce = raw_csrNonce.dataValue ?? Data()
+            let isForUpdateNOC: Bool?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                isForUpdateNOC = fieldValue.boolValue ?? false
+            } else {
+                isForUpdateNOC = nil
+            }
+            return CSRRequest(csrNonce: csrNonce, isForUpdateNOC: isForUpdateNOC)
+        }
+    }
+
+    // MARK: - CSRResponse
+
+    public struct CSRResponse: TLVCodable, Equatable {
+        public var nocsrElements: Data
+        public var attestationSignature: Data
+
+        public init(
+            nocsrElements: Data,
+            attestationSignature: Data
+        ) {
+            self.nocsrElements = nocsrElements
+            self.attestationSignature = attestationSignature
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(nocsrElements)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(attestationSignature)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> CSRResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nocsrElements = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NOCSRElements", tag: UInt8(0))
+            }
+            let nocsrElements = raw_nocsrElements.dataValue ?? Data()
+            guard let raw_attestationSignature = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "AttestationSignature", tag: UInt8(1))
+            }
+            let attestationSignature = raw_attestationSignature.dataValue ?? Data()
+            return CSRResponse(nocsrElements: nocsrElements, attestationSignature: attestationSignature)
+        }
+    }
+
+    // MARK: - AddNOCRequest
+
+    public struct AddNOCRequest: TLVCodable, Equatable {
+        public var nocValue: Data
+        public var icacValue: Data?
+        public var ipkValue: Data
+        public var caseAdminSubject: TLVElement
+        public var adminVendorId: TLVElement
+
+        public init(
+            nocValue: Data,
+            icacValue: Data? = nil,
+            ipkValue: Data,
+            caseAdminSubject: TLVElement,
+            adminVendorId: TLVElement
+        ) {
+            self.nocValue = nocValue
+            self.icacValue = icacValue
+            self.ipkValue = ipkValue
+            self.caseAdminSubject = caseAdminSubject
+            self.adminVendorId = adminVendorId
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(nocValue)))
+            if let val = icacValue {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(ipkValue)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: caseAdminSubject))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: adminVendorId))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddNOCRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nocValue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NOCValue", tag: UInt8(0))
+            }
+            let nocValue = raw_nocValue.dataValue ?? Data()
+            let icacValue: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                icacValue = fieldValue.dataValue ?? Data()
+            } else {
+                icacValue = nil
+            }
+            guard let raw_ipkValue = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "IPKValue", tag: UInt8(2))
+            }
+            let ipkValue = raw_ipkValue.dataValue ?? Data()
+            guard let raw_caseAdminSubject = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "CaseAdminSubject", tag: UInt8(3))
+            }
+            let caseAdminSubject = raw_caseAdminSubject
+            guard let raw_adminVendorId = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "AdminVendorId", tag: UInt8(4))
+            }
+            let adminVendorId = raw_adminVendorId
+            return AddNOCRequest(nocValue: nocValue, icacValue: icacValue, ipkValue: ipkValue, caseAdminSubject: caseAdminSubject, adminVendorId: adminVendorId)
+        }
+    }
+
+    // MARK: - UpdateNOCRequest
+
+    public struct UpdateNOCRequest: TLVCodable, Equatable {
+        public var nocValue: Data
+        public var icacValue: Data?
+
+        public init(
+            nocValue: Data,
+            icacValue: Data? = nil
+        ) {
+            self.nocValue = nocValue
+            self.icacValue = icacValue
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(nocValue)))
+            if let val = icacValue {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateNOCRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nocValue = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NOCValue", tag: UInt8(0))
+            }
+            let nocValue = raw_nocValue.dataValue ?? Data()
+            let icacValue: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                icacValue = fieldValue.dataValue ?? Data()
+            } else {
+                icacValue = nil
+            }
+            return UpdateNOCRequest(nocValue: nocValue, icacValue: icacValue)
+        }
+    }
+
+    // MARK: - NOCResponse
+
+    public struct NOCResponse: TLVCodable, Equatable {
+        public var statusCode: UInt8
+        public var fabricIndex: TLVElement?
+        public var debugText: String?
+
+        public init(
+            statusCode: UInt8,
+            fabricIndex: TLVElement? = nil,
+            debugText: String? = nil
+        ) {
+            self.statusCode = statusCode
+            self.fabricIndex = fabricIndex
+            self.debugText = debugText
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(statusCode))))
+            if let val = fabricIndex {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: val))
+            }
+            if let val = debugText {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> NOCResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_statusCode = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "StatusCode", tag: UInt8(0))
+            }
+            let statusCode = UInt8(raw_statusCode.uintValue ?? 0)
+            let fabricIndex: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                fabricIndex = fieldValue
+            } else {
+                fabricIndex = nil
+            }
+            let debugText: String?
+            if let fieldValue = element[contextTag: UInt8(2)] {
+                debugText = fieldValue.stringValue ?? ""
+            } else {
+                debugText = nil
+            }
+            return NOCResponse(statusCode: statusCode, fabricIndex: fabricIndex, debugText: debugText)
+        }
+    }
+
+    // MARK: - UpdateFabricLabelRequest
+
+    public struct UpdateFabricLabelRequest: TLVCodable, Equatable {
+        public var label: String
+
+        public init(
+            label: String
+        ) {
+            self.label = label
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .utf8String(label)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateFabricLabelRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_label = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Label", tag: UInt8(0))
+            }
+            let label = raw_label.stringValue ?? ""
+            return UpdateFabricLabelRequest(label: label)
+        }
+    }
+
+    // MARK: - RemoveFabricRequest
+
+    public struct RemoveFabricRequest: TLVCodable, Equatable {
+        public var fabricIndex: TLVElement
+
+        public init(
+            fabricIndex: TLVElement
+        ) {
+            self.fabricIndex = fabricIndex
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: fabricIndex))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveFabricRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_fabricIndex = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "FabricIndex", tag: UInt8(0))
+            }
+            let fabricIndex = raw_fabricIndex
+            return RemoveFabricRequest(fabricIndex: fabricIndex)
+        }
+    }
+
+    // MARK: - AddTrustedRootCertificateRequest
+
+    public struct AddTrustedRootCertificateRequest: TLVCodable, Equatable {
+        public var rootCACertificate: Data
+
+        public init(
+            rootCACertificate: Data
+        ) {
+            self.rootCACertificate = rootCACertificate
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .octetString(rootCACertificate)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddTrustedRootCertificateRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_rootCACertificate = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "RootCACertificate", tag: UInt8(0))
+            }
+            let rootCACertificate = raw_rootCACertificate.dataValue ?? Data()
+            return AddTrustedRootCertificateRequest(rootCACertificate: rootCACertificate)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -85,14 +682,14 @@ extension NodeOperationalCredentialsCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "CurrentFabricIndex", conformance: .mandatory, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AttestationRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "CertificateChainRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "CSRRequest", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "AddNOC", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "UpdateNOC", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0009), name: "UpdateFabricLabel", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000A), name: "RemoveFabric", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000B), name: "AddTrustedRootCertificate", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AttestationRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "AttestationNonce", type: .octstr, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "CertificateChainRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "CertificateType", type: .uint8, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "CSRRequest", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "CSRNonce", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "IsForUpdateNOC", type: .bool, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0005)),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "AddNOC", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NOCValue", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ICACValue", type: .octstr, isOptional: true, isNullable: false), FieldSpec(id: 2, name: "IPKValue", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "CaseAdminSubject", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "AdminVendorId", type: .unknown, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0008)),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "UpdateNOC", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NOCValue", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ICACValue", type: .octstr, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0008)),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "UpdateFabricLabel", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Label", type: .string, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0008)),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "RemoveFabric", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "FabricIndex", type: .unknown, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0008)),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "AddTrustedRootCertificate", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "RootCACertificate", type: .octstr, isOptional: false, isNullable: false)]),
         ]
     )
 }

@@ -108,6 +108,8 @@ struct FieldDefinition {
     let isNullable: Bool
     let isOptional: Bool
     let conformance: Conformance
+    /// For `list` typed fields, the element type from the `<entry type="..."/>` child element.
+    let listElementType: String?
 }
 
 /// A parsed device type definition.

@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Boolean State Configuration Cluster (0x0080), revision 1
@@ -76,6 +77,68 @@ public enum BooleanStateConfigurationCluster {
         public init(rawValue: UInt8) { self.rawValue = rawValue }
         public static let generalFault = SensorFaultBitmap(rawValue: 1 << 0)
     }
+
+    // MARK: - SuppressAlarmRequest
+
+    public struct SuppressAlarmRequest: TLVCodable, Equatable {
+        public var alarmsToSuppress: UInt8
+
+        public init(
+            alarmsToSuppress: UInt8
+        ) {
+            self.alarmsToSuppress = alarmsToSuppress
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(alarmsToSuppress))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SuppressAlarmRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_alarmsToSuppress = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AlarmsToSuppress", tag: UInt8(0))
+            }
+            let alarmsToSuppress = UInt8(raw_alarmsToSuppress.uintValue ?? 0)
+            return SuppressAlarmRequest(alarmsToSuppress: alarmsToSuppress)
+        }
+    }
+
+    // MARK: - EnableDisableAlarmRequest
+
+    public struct EnableDisableAlarmRequest: TLVCodable, Equatable {
+        public var alarmsToEnableDisable: UInt8
+
+        public init(
+            alarmsToEnableDisable: UInt8
+        ) {
+            self.alarmsToEnableDisable = alarmsToEnableDisable
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(alarmsToEnableDisable))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> EnableDisableAlarmRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_alarmsToEnableDisable = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AlarmsToEnableDisable", tag: UInt8(0))
+            }
+            let alarmsToEnableDisable = UInt8(raw_alarmsToEnableDisable.uintValue ?? 0)
+            return EnableDisableAlarmRequest(alarmsToEnableDisable: alarmsToEnableDisable)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -96,8 +159,8 @@ extension BooleanStateConfigurationCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0007), name: "SensorFault", conformance: .optional, type: .uint8, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SuppressAlarm", conformance: .mandatoryIf(.feature(1 << 2))),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "EnableDisableAlarm", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SuppressAlarm", conformance: .mandatoryIf(.feature(1 << 2)), fields: [FieldSpec(id: 0, name: "AlarmsToSuppress", type: .uint8, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "EnableDisableAlarm", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "AlarmsToEnableDisable", type: .uint8, isOptional: false, isNullable: false)]),
         ]
     )
 }

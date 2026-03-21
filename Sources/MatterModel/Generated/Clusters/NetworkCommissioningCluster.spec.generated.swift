@@ -26,12 +26,12 @@ extension NetworkCommissioningCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x000A), name: "ThreadVersion", conformance: .mandatoryIf(.feature(1 << 1)), type: .uint16, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ScanNetworks", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "AddOrUpdateWiFiNetwork", conformance: .mandatoryIf(.feature(1 << 0))),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "AddOrUpdateThreadNetwork", conformance: .mandatoryIf(.feature(1 << 1))),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "RemoveNetwork", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "ConnectNetwork", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
-            CommandSpec(id: CommandID(rawValue: 0x0008), name: "ReorderNetwork", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)]))),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "ScanNetworks", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "SSID", type: .octstr, isOptional: true, isNullable: true), FieldSpec(id: 1, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0001)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "AddOrUpdateWiFiNetwork", conformance: .mandatoryIf(.feature(1 << 0)), fields: [FieldSpec(id: 0, name: "SSID", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Credentials", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0005)),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "AddOrUpdateThreadNetwork", conformance: .mandatoryIf(.feature(1 << 1)), fields: [FieldSpec(id: 0, name: "OperationalDataset", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0005)),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "RemoveNetwork", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "NetworkID", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0005)),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "ConnectNetwork", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "NetworkID", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0007)),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "ReorderNetwork", conformance: .mandatoryIf(.or([.feature(1 << 0), .feature(1 << 1)])), fields: [FieldSpec(id: 0, name: "NetworkID", type: .octstr, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "NetworkIndex", type: .uint8, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Breadcrumb", type: .uint64, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0005)),
         ]
     )
 }

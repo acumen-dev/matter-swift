@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Joint Fabric Datastore Cluster (0x0752), revision 1
@@ -83,6 +84,1329 @@ public enum JointFabricDatastoreCluster {
         case committed = 1
         case deletePending = 2
     }
+
+    // MARK: - DatastoreACLEntry
+
+    public struct DatastoreACLEntry: TLVCodable, Equatable {
+        public var listID: UInt16
+        public var aclEntry: TLVElement
+        public var statusEntry: DatastoreStatusEntry
+
+        public init(
+            listID: UInt16,
+            aclEntry: TLVElement,
+            statusEntry: DatastoreStatusEntry
+        ) {
+            self.listID = listID
+            self.aclEntry = aclEntry
+            self.statusEntry = statusEntry
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(listID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: aclEntry))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: statusEntry.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreACLEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_listID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ListID", tag: UInt8(0))
+            }
+            let listID = UInt16(raw_listID.uintValue ?? 0)
+            guard let raw_aclEntry = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ACLEntry", tag: UInt8(1))
+            }
+            let aclEntry = raw_aclEntry
+            guard let raw_statusEntry = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "StatusEntry", tag: UInt8(2))
+            }
+            let statusEntry = try DatastoreStatusEntry.fromTLVElement(raw_statusEntry)
+            return DatastoreACLEntry(listID: listID, aclEntry: aclEntry, statusEntry: statusEntry)
+        }
+    }
+
+    // MARK: - DatastoreAdministratorInformationEntry
+
+    public struct DatastoreAdministratorInformationEntry: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var friendlyName: String
+        public var vendorID: TLVElement
+        public var icac: Data
+
+        public init(
+            nodeID: TLVElement,
+            friendlyName: String,
+            vendorID: TLVElement,
+            icac: Data
+        ) {
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+            self.vendorID = vendorID
+            self.icac = icac
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(friendlyName)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: vendorID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .octetString(icac)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreAdministratorInformationEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_friendlyName = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(2))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            guard let raw_vendorID = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "VendorID", tag: UInt8(3))
+            }
+            let vendorID = raw_vendorID
+            guard let raw_icac = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "ICAC", tag: UInt8(4))
+            }
+            let icac = raw_icac.dataValue ?? Data()
+            return DatastoreAdministratorInformationEntry(nodeID: nodeID, friendlyName: friendlyName, vendorID: vendorID, icac: icac)
+        }
+    }
+
+    // MARK: - DatastoreEndpointEntry
+
+    public struct DatastoreEndpointEntry: TLVCodable, Equatable {
+        public var endpointID: TLVElement
+        public var nodeID: TLVElement
+        public var friendlyName: String
+        public var statusEntry: DatastoreStatusEntry
+        public var groupIDList: TLVElement
+        public var bindingList: TLVElement
+
+        public init(
+            endpointID: TLVElement,
+            nodeID: TLVElement,
+            friendlyName: String,
+            statusEntry: DatastoreStatusEntry,
+            groupIDList: TLVElement,
+            bindingList: TLVElement
+        ) {
+            self.endpointID = endpointID
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+            self.statusEntry = statusEntry
+            self.groupIDList = groupIDList
+            self.bindingList = bindingList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: endpointID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(friendlyName)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: statusEntry.toTLVElement()))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: groupIDList))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: bindingList))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreEndpointEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_endpointID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EndpointID", tag: UInt8(0))
+            }
+            let endpointID = raw_endpointID
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_friendlyName = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(2))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            guard let raw_statusEntry = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "StatusEntry", tag: UInt8(3))
+            }
+            let statusEntry = try DatastoreStatusEntry.fromTLVElement(raw_statusEntry)
+            guard let raw_groupIDList = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "GroupIDList", tag: UInt8(4))
+            }
+            let groupIDList = raw_groupIDList
+            guard let raw_bindingList = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "BindingList", tag: UInt8(5))
+            }
+            let bindingList = raw_bindingList
+            return DatastoreEndpointEntry(endpointID: endpointID, nodeID: nodeID, friendlyName: friendlyName, statusEntry: statusEntry, groupIDList: groupIDList, bindingList: bindingList)
+        }
+    }
+
+    // MARK: - DatastoreGroupIDEntry
+
+    public struct DatastoreGroupIDEntry: TLVCodable, Equatable {
+        public var groupID: TLVElement
+        public var statusEntry: DatastoreStatusEntry
+
+        public init(
+            groupID: TLVElement,
+            statusEntry: DatastoreStatusEntry
+        ) {
+            self.groupID = groupID
+            self.statusEntry = statusEntry
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: statusEntry.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreGroupIDEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            guard let raw_statusEntry = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StatusEntry", tag: UInt8(1))
+            }
+            let statusEntry = try DatastoreStatusEntry.fromTLVElement(raw_statusEntry)
+            return DatastoreGroupIDEntry(groupID: groupID, statusEntry: statusEntry)
+        }
+    }
+
+    // MARK: - DatastoreGroupInformationEntry
+
+    public struct DatastoreGroupInformationEntry: TLVCodable, Equatable {
+        public var groupID: UInt64
+        public var friendlyName: String
+        public var groupKeySetID: UInt16
+        public var groupCAT: UInt16
+        public var groupCATVersion: UInt16
+        public var groupPermission: TLVElement
+
+        public init(
+            groupID: UInt64,
+            friendlyName: String,
+            groupKeySetID: UInt16,
+            groupCAT: UInt16,
+            groupCATVersion: UInt16,
+            groupPermission: TLVElement
+        ) {
+            self.groupID = groupID
+            self.friendlyName = friendlyName
+            self.groupKeySetID = groupKeySetID
+            self.groupCAT = groupCAT
+            self.groupCATVersion = groupCATVersion
+            self.groupPermission = groupPermission
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(groupID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(friendlyName)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(groupKeySetID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(groupCAT))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(groupCATVersion))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: groupPermission))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreGroupInformationEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = UInt64(raw_groupID.uintValue ?? 0)
+            guard let raw_friendlyName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(1))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            guard let raw_groupKeySetID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySetID", tag: UInt8(2))
+            }
+            let groupKeySetID = UInt16(raw_groupKeySetID.uintValue ?? 0)
+            guard let raw_groupCAT = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "GroupCAT", tag: UInt8(3))
+            }
+            let groupCAT = UInt16(raw_groupCAT.uintValue ?? 0)
+            guard let raw_groupCATVersion = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "GroupCATVersion", tag: UInt8(4))
+            }
+            let groupCATVersion = UInt16(raw_groupCATVersion.uintValue ?? 0)
+            guard let raw_groupPermission = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "GroupPermission", tag: UInt8(5))
+            }
+            let groupPermission = raw_groupPermission
+            return DatastoreGroupInformationEntry(groupID: groupID, friendlyName: friendlyName, groupKeySetID: groupKeySetID, groupCAT: groupCAT, groupCATVersion: groupCATVersion, groupPermission: groupPermission)
+        }
+    }
+
+    // MARK: - DatastoreNodeInformationEntry
+
+    public struct DatastoreNodeInformationEntry: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var friendlyName: String
+        public var commissioningStatusEntry: DatastoreStatusEntry
+        public var nodeKeySetList: TLVElement
+        public var aclList: [DatastoreACLEntry]
+        public var endpointList: TLVElement
+
+        public init(
+            nodeID: TLVElement,
+            friendlyName: String,
+            commissioningStatusEntry: DatastoreStatusEntry,
+            nodeKeySetList: TLVElement,
+            aclList: [DatastoreACLEntry],
+            endpointList: TLVElement
+        ) {
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+            self.commissioningStatusEntry = commissioningStatusEntry
+            self.nodeKeySetList = nodeKeySetList
+            self.aclList = aclList
+            self.endpointList = endpointList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(friendlyName)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: commissioningStatusEntry.toTLVElement()))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: nodeKeySetList))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: .array(aclList.map { $0.toTLVElement() })))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: endpointList))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreNodeInformationEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_friendlyName = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(2))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            guard let raw_commissioningStatusEntry = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "CommissioningStatusEntry", tag: UInt8(3))
+            }
+            let commissioningStatusEntry = try DatastoreStatusEntry.fromTLVElement(raw_commissioningStatusEntry)
+            guard let raw_nodeKeySetList = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "NodeKeySetList", tag: UInt8(4))
+            }
+            let nodeKeySetList = raw_nodeKeySetList
+            guard let raw_aclList = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "ACLList", tag: UInt8(5))
+            }
+            let aclList = (raw_aclList.arrayElements ?? []).compactMap { try? DatastoreACLEntry.fromTLVElement($0) }
+            guard let raw_endpointList = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "EndpointList", tag: UInt8(6))
+            }
+            let endpointList = raw_endpointList
+            return DatastoreNodeInformationEntry(nodeID: nodeID, friendlyName: friendlyName, commissioningStatusEntry: commissioningStatusEntry, nodeKeySetList: nodeKeySetList, aclList: aclList, endpointList: endpointList)
+        }
+    }
+
+    // MARK: - DatastoreNodeKeyEntry
+
+    public struct DatastoreNodeKeyEntry: TLVCodable, Equatable {
+        public var groupKeySetID: UInt16
+        public var statusEntry: DatastoreStatusEntry
+
+        public init(
+            groupKeySetID: UInt16,
+            statusEntry: DatastoreStatusEntry
+        ) {
+            self.groupKeySetID = groupKeySetID
+            self.statusEntry = statusEntry
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(groupKeySetID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: statusEntry.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreNodeKeyEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupKeySetID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySetID", tag: UInt8(0))
+            }
+            let groupKeySetID = UInt16(raw_groupKeySetID.uintValue ?? 0)
+            guard let raw_statusEntry = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "StatusEntry", tag: UInt8(1))
+            }
+            let statusEntry = try DatastoreStatusEntry.fromTLVElement(raw_statusEntry)
+            return DatastoreNodeKeyEntry(groupKeySetID: groupKeySetID, statusEntry: statusEntry)
+        }
+    }
+
+    // MARK: - DatastoreStatusEntry
+
+    public struct DatastoreStatusEntry: TLVCodable, Equatable {
+        public var state: UInt8
+        public var updateTimestamp: UInt32
+
+        public init(
+            state: UInt8,
+            updateTimestamp: UInt32
+        ) {
+            self.state = state
+            self.updateTimestamp = updateTimestamp
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(state))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(updateTimestamp))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> DatastoreStatusEntry {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_state = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "State", tag: UInt8(0))
+            }
+            let state = UInt8(raw_state.uintValue ?? 0)
+            guard let raw_updateTimestamp = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "UpdateTimestamp", tag: UInt8(1))
+            }
+            let updateTimestamp = UInt32(raw_updateTimestamp.uintValue ?? 0)
+            return DatastoreStatusEntry(state: state, updateTimestamp: updateTimestamp)
+        }
+    }
+
+    // MARK: - AddKeySetCommandRequest
+
+    public struct AddKeySetCommandRequest: TLVCodable, Equatable {
+        public var groupKeySet: TLVElement
+
+        public init(
+            groupKeySet: TLVElement
+        ) {
+            self.groupKeySet = groupKeySet
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupKeySet))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddKeySetCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupKeySet = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySet", tag: UInt8(0))
+            }
+            let groupKeySet = raw_groupKeySet
+            return AddKeySetCommandRequest(groupKeySet: groupKeySet)
+        }
+    }
+
+    // MARK: - UpdateKeySetCommandRequest
+
+    public struct UpdateKeySetCommandRequest: TLVCodable, Equatable {
+        public var groupKeySet: TLVElement
+
+        public init(
+            groupKeySet: TLVElement
+        ) {
+            self.groupKeySet = groupKeySet
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupKeySet))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateKeySetCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupKeySet = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySet", tag: UInt8(0))
+            }
+            let groupKeySet = raw_groupKeySet
+            return UpdateKeySetCommandRequest(groupKeySet: groupKeySet)
+        }
+    }
+
+    // MARK: - RemoveKeySetCommandRequest
+
+    public struct RemoveKeySetCommandRequest: TLVCodable, Equatable {
+        public var groupKeySetID: UInt16
+
+        public init(
+            groupKeySetID: UInt16
+        ) {
+            self.groupKeySetID = groupKeySetID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(groupKeySetID))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveKeySetCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupKeySetID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySetID", tag: UInt8(0))
+            }
+            let groupKeySetID = UInt16(raw_groupKeySetID.uintValue ?? 0)
+            return RemoveKeySetCommandRequest(groupKeySetID: groupKeySetID)
+        }
+    }
+
+    // MARK: - AddGroupCommandRequest
+
+    public struct AddGroupCommandRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+        public var friendlyName: String
+        public var groupKeySetID: UInt16
+        public var groupCAT: UInt16
+        public var groupCATVersion: UInt16
+        public var groupPermission: TLVElement
+
+        public init(
+            groupID: TLVElement,
+            friendlyName: String,
+            groupKeySetID: UInt16,
+            groupCAT: UInt16,
+            groupCATVersion: UInt16,
+            groupPermission: TLVElement
+        ) {
+            self.groupID = groupID
+            self.friendlyName = friendlyName
+            self.groupKeySetID = groupKeySetID
+            self.groupCAT = groupCAT
+            self.groupCATVersion = groupCATVersion
+            self.groupPermission = groupPermission
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(friendlyName)))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(groupKeySetID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(groupCAT))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(groupCATVersion))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: groupPermission))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddGroupCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            guard let raw_friendlyName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(1))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            guard let raw_groupKeySetID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySetID", tag: UInt8(2))
+            }
+            let groupKeySetID = UInt16(raw_groupKeySetID.uintValue ?? 0)
+            guard let raw_groupCAT = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "GroupCAT", tag: UInt8(3))
+            }
+            let groupCAT = UInt16(raw_groupCAT.uintValue ?? 0)
+            guard let raw_groupCATVersion = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "GroupCATVersion", tag: UInt8(4))
+            }
+            let groupCATVersion = UInt16(raw_groupCATVersion.uintValue ?? 0)
+            guard let raw_groupPermission = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "GroupPermission", tag: UInt8(5))
+            }
+            let groupPermission = raw_groupPermission
+            return AddGroupCommandRequest(groupID: groupID, friendlyName: friendlyName, groupKeySetID: groupKeySetID, groupCAT: groupCAT, groupCATVersion: groupCATVersion, groupPermission: groupPermission)
+        }
+    }
+
+    // MARK: - UpdateGroupCommandRequest
+
+    public struct UpdateGroupCommandRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+        public var friendlyName: String?
+        public var groupKeySetID: UInt16?
+        public var groupCAT: UInt16?
+        public var groupCATVersion: UInt16?
+        public var groupPermission: TLVElement
+
+        public init(
+            groupID: TLVElement,
+            friendlyName: String? = nil,
+            groupKeySetID: UInt16? = nil,
+            groupCAT: UInt16? = nil,
+            groupCATVersion: UInt16? = nil,
+            groupPermission: TLVElement
+        ) {
+            self.groupID = groupID
+            self.friendlyName = friendlyName
+            self.groupKeySetID = groupKeySetID
+            self.groupCAT = groupCAT
+            self.groupCATVersion = groupCATVersion
+            self.groupPermission = groupPermission
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            if let val = friendlyName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = groupKeySetID {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            if let val = groupCAT {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: .null))
+            }
+            if let val = groupCATVersion {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .unsignedInt(UInt64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: .null))
+            }
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: groupPermission))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateGroupCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            guard let raw_friendlyName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(1))
+            }
+            let friendlyName: String?
+            if raw_friendlyName.isNull {
+                friendlyName = nil
+            } else {
+                friendlyName = raw_friendlyName.stringValue ?? ""
+            }
+            guard let raw_groupKeySetID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupKeySetID", tag: UInt8(2))
+            }
+            let groupKeySetID: UInt16?
+            if raw_groupKeySetID.isNull {
+                groupKeySetID = nil
+            } else {
+                groupKeySetID = UInt16(raw_groupKeySetID.uintValue ?? 0)
+            }
+            guard let raw_groupCAT = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "GroupCAT", tag: UInt8(3))
+            }
+            let groupCAT: UInt16?
+            if raw_groupCAT.isNull {
+                groupCAT = nil
+            } else {
+                groupCAT = UInt16(raw_groupCAT.uintValue ?? 0)
+            }
+            guard let raw_groupCATVersion = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "GroupCATVersion", tag: UInt8(4))
+            }
+            let groupCATVersion: UInt16?
+            if raw_groupCATVersion.isNull {
+                groupCATVersion = nil
+            } else {
+                groupCATVersion = UInt16(raw_groupCATVersion.uintValue ?? 0)
+            }
+            guard let raw_groupPermission = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "GroupPermission", tag: UInt8(5))
+            }
+            let groupPermission = raw_groupPermission
+            return UpdateGroupCommandRequest(groupID: groupID, friendlyName: friendlyName, groupKeySetID: groupKeySetID, groupCAT: groupCAT, groupCATVersion: groupCATVersion, groupPermission: groupPermission)
+        }
+    }
+
+    // MARK: - RemoveGroupCommandRequest
+
+    public struct RemoveGroupCommandRequest: TLVCodable, Equatable {
+        public var groupID: TLVElement
+
+        public init(
+            groupID: TLVElement
+        ) {
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveGroupCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_groupID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(0))
+            }
+            let groupID = raw_groupID
+            return RemoveGroupCommandRequest(groupID: groupID)
+        }
+    }
+
+    // MARK: - AddAdminCommandRequest
+
+    public struct AddAdminCommandRequest: TLVCodable, Equatable {
+        public var adminInformationEntry: DatastoreAdministratorInformationEntry
+
+        public init(
+            adminInformationEntry: DatastoreAdministratorInformationEntry
+        ) {
+            self.adminInformationEntry = adminInformationEntry
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: adminInformationEntry.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddAdminCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_adminInformationEntry = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "AdminInformationEntry", tag: UInt8(0))
+            }
+            let adminInformationEntry = try DatastoreAdministratorInformationEntry.fromTLVElement(raw_adminInformationEntry)
+            return AddAdminCommandRequest(adminInformationEntry: adminInformationEntry)
+        }
+    }
+
+    // MARK: - UpdateAdminCommandRequest
+
+    public struct UpdateAdminCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement?
+        public var friendlyName: String?
+        public var icac: Data?
+
+        public init(
+            nodeID: TLVElement? = nil,
+            friendlyName: String? = nil,
+            icac: Data? = nil
+        ) {
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+            self.icac = icac
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            if let val = nodeID {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: val))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .null))
+            }
+            if let val = friendlyName {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            if let val = icac {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .octetString(val)))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateAdminCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID: TLVElement?
+            if raw_nodeID.isNull {
+                nodeID = nil
+            } else {
+                nodeID = raw_nodeID
+            }
+            guard let raw_friendlyName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(1))
+            }
+            let friendlyName: String?
+            if raw_friendlyName.isNull {
+                friendlyName = nil
+            } else {
+                friendlyName = raw_friendlyName.stringValue ?? ""
+            }
+            guard let raw_icac = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "ICAC", tag: UInt8(2))
+            }
+            let icac: Data?
+            if raw_icac.isNull {
+                icac = nil
+            } else {
+                icac = raw_icac.dataValue ?? Data()
+            }
+            return UpdateAdminCommandRequest(nodeID: nodeID, friendlyName: friendlyName, icac: icac)
+        }
+    }
+
+    // MARK: - RemoveAdminCommandRequest
+
+    public struct RemoveAdminCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+
+        public init(
+            nodeID: TLVElement
+        ) {
+            self.nodeID = nodeID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveAdminCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            return RemoveAdminCommandRequest(nodeID: nodeID)
+        }
+    }
+
+    // MARK: - AddPendingNodeCommandRequest
+
+    public struct AddPendingNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var friendlyName: String
+
+        public init(
+            nodeID: TLVElement,
+            friendlyName: String
+        ) {
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(friendlyName)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddPendingNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_friendlyName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(1))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            return AddPendingNodeCommandRequest(nodeID: nodeID, friendlyName: friendlyName)
+        }
+    }
+
+    // MARK: - RefreshNodeCommandRequest
+
+    public struct RefreshNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+
+        public init(
+            nodeID: TLVElement
+        ) {
+            self.nodeID = nodeID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RefreshNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            return RefreshNodeCommandRequest(nodeID: nodeID)
+        }
+    }
+
+    // MARK: - UpdateNodeCommandRequest
+
+    public struct UpdateNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var friendlyName: String
+
+        public init(
+            nodeID: TLVElement,
+            friendlyName: String
+        ) {
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(friendlyName)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_friendlyName = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(1))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            return UpdateNodeCommandRequest(nodeID: nodeID, friendlyName: friendlyName)
+        }
+    }
+
+    // MARK: - RemoveNodeCommandRequest
+
+    public struct RemoveNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+
+        public init(
+            nodeID: TLVElement
+        ) {
+            self.nodeID = nodeID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            return RemoveNodeCommandRequest(nodeID: nodeID)
+        }
+    }
+
+    // MARK: - UpdateEndpointForNodeCommandRequest
+
+    public struct UpdateEndpointForNodeCommandRequest: TLVCodable, Equatable {
+        public var endpointID: TLVElement
+        public var nodeID: TLVElement
+        public var friendlyName: String
+
+        public init(
+            endpointID: TLVElement,
+            nodeID: TLVElement,
+            friendlyName: String
+        ) {
+            self.endpointID = endpointID
+            self.nodeID = nodeID
+            self.friendlyName = friendlyName
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: endpointID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .utf8String(friendlyName)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> UpdateEndpointForNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_endpointID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "EndpointID", tag: UInt8(0))
+            }
+            let endpointID = raw_endpointID
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_friendlyName = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "FriendlyName", tag: UInt8(2))
+            }
+            let friendlyName = raw_friendlyName.stringValue ?? ""
+            return UpdateEndpointForNodeCommandRequest(endpointID: endpointID, nodeID: nodeID, friendlyName: friendlyName)
+        }
+    }
+
+    // MARK: - AddGroupIDToEndpointForNodeCommandRequest
+
+    public struct AddGroupIDToEndpointForNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var endpointID: TLVElement
+        public var groupID: TLVElement
+
+        public init(
+            nodeID: TLVElement,
+            endpointID: TLVElement,
+            groupID: TLVElement
+        ) {
+            self.nodeID = nodeID
+            self.endpointID = endpointID
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: endpointID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddGroupIDToEndpointForNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_endpointID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EndpointID", tag: UInt8(1))
+            }
+            let endpointID = raw_endpointID
+            guard let raw_groupID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(2))
+            }
+            let groupID = raw_groupID
+            return AddGroupIDToEndpointForNodeCommandRequest(nodeID: nodeID, endpointID: endpointID, groupID: groupID)
+        }
+    }
+
+    // MARK: - RemoveGroupIDFromEndpointForNodeCommandRequest
+
+    public struct RemoveGroupIDFromEndpointForNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var endpointID: TLVElement
+        public var groupID: TLVElement
+
+        public init(
+            nodeID: TLVElement,
+            endpointID: TLVElement,
+            groupID: TLVElement
+        ) {
+            self.nodeID = nodeID
+            self.endpointID = endpointID
+            self.groupID = groupID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: endpointID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: groupID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveGroupIDFromEndpointForNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_endpointID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EndpointID", tag: UInt8(1))
+            }
+            let endpointID = raw_endpointID
+            guard let raw_groupID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "GroupID", tag: UInt8(2))
+            }
+            let groupID = raw_groupID
+            return RemoveGroupIDFromEndpointForNodeCommandRequest(nodeID: nodeID, endpointID: endpointID, groupID: groupID)
+        }
+    }
+
+    // MARK: - AddBindingToEndpointForNodeCommandRequest
+
+    public struct AddBindingToEndpointForNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var endpointID: TLVElement
+        public var binding: TLVElement
+
+        public init(
+            nodeID: TLVElement,
+            endpointID: TLVElement,
+            binding: TLVElement
+        ) {
+            self.nodeID = nodeID
+            self.endpointID = endpointID
+            self.binding = binding
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: endpointID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: binding))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddBindingToEndpointForNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_endpointID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EndpointID", tag: UInt8(1))
+            }
+            let endpointID = raw_endpointID
+            guard let raw_binding = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Binding", tag: UInt8(2))
+            }
+            let binding = raw_binding
+            return AddBindingToEndpointForNodeCommandRequest(nodeID: nodeID, endpointID: endpointID, binding: binding)
+        }
+    }
+
+    // MARK: - RemoveBindingFromEndpointForNodeCommandRequest
+
+    public struct RemoveBindingFromEndpointForNodeCommandRequest: TLVCodable, Equatable {
+        public var listID: UInt16
+        public var endpointID: TLVElement
+        public var nodeID: TLVElement
+
+        public init(
+            listID: UInt16,
+            endpointID: TLVElement,
+            nodeID: TLVElement
+        ) {
+            self.listID = listID
+            self.endpointID = endpointID
+            self.nodeID = nodeID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(listID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: endpointID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: nodeID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveBindingFromEndpointForNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_listID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ListID", tag: UInt8(0))
+            }
+            let listID = UInt16(raw_listID.uintValue ?? 0)
+            guard let raw_endpointID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "EndpointID", tag: UInt8(1))
+            }
+            let endpointID = raw_endpointID
+            guard let raw_nodeID = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(2))
+            }
+            let nodeID = raw_nodeID
+            return RemoveBindingFromEndpointForNodeCommandRequest(listID: listID, endpointID: endpointID, nodeID: nodeID)
+        }
+    }
+
+    // MARK: - AddACLToNodeCommandRequest
+
+    public struct AddACLToNodeCommandRequest: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+        public var aclEntry: TLVElement
+
+        public init(
+            nodeID: TLVElement,
+            aclEntry: TLVElement
+        ) {
+            self.nodeID = nodeID
+            self.aclEntry = aclEntry
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: nodeID))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: aclEntry))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> AddACLToNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(0))
+            }
+            let nodeID = raw_nodeID
+            guard let raw_aclEntry = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ACLEntry", tag: UInt8(1))
+            }
+            let aclEntry = raw_aclEntry
+            return AddACLToNodeCommandRequest(nodeID: nodeID, aclEntry: aclEntry)
+        }
+    }
+
+    // MARK: - RemoveACLFromNodeCommandRequest
+
+    public struct RemoveACLFromNodeCommandRequest: TLVCodable, Equatable {
+        public var listID: UInt16
+        public var nodeID: TLVElement
+
+        public init(
+            listID: UInt16,
+            nodeID: TLVElement
+        ) {
+            self.listID = listID
+            self.nodeID = nodeID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(listID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> RemoveACLFromNodeCommandRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_listID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ListID", tag: UInt8(0))
+            }
+            let listID = UInt16(raw_listID.uintValue ?? 0)
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            return RemoveACLFromNodeCommandRequest(listID: listID, nodeID: nodeID)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -104,26 +1428,26 @@ extension JointFabricDatastoreCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0008), name: "StatusEntry", conformance: .mandatory, type: .structure, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddKeySet Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "UpdateKeySet Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "RemoveKeySet Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0003), name: "AddGroup Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0004), name: "UpdateGroup Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0005), name: "RemoveGroup Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0006), name: "AddAdmin Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0007), name: "UpdateAdmin Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0008), name: "RemoveAdmin Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0009), name: "AddPendingNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000A), name: "RefreshNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000B), name: "UpdateNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000C), name: "RemoveNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000D), name: "UpdateEndpointForNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000E), name: "AddGroupIDToEndpointForNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x000F), name: "RemoveGroupIDFromEndpointForNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0010), name: "AddBindingToEndpointForNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0011), name: "RemoveBindingFromEndpointForNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0012), name: "AddACLToNode Command", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0013), name: "RemoveACLFromNode Command", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "AddKeySet Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupKeySet", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "UpdateKeySet Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupKeySet", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "RemoveKeySet Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupKeySetID", type: .uint16, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0003), name: "AddGroup Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "FriendlyName", type: .string, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "GroupKeySetID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 3, name: "GroupCAT", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 4, name: "GroupCATVersion", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 5, name: "GroupPermission", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0004), name: "UpdateGroup Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "FriendlyName", type: .string, isOptional: false, isNullable: true), FieldSpec(id: 2, name: "GroupKeySetID", type: .uint16, isOptional: false, isNullable: true), FieldSpec(id: 3, name: "GroupCAT", type: .uint16, isOptional: false, isNullable: true), FieldSpec(id: 4, name: "GroupCATVersion", type: .uint16, isOptional: false, isNullable: true), FieldSpec(id: 5, name: "GroupPermission", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0005), name: "RemoveGroup Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "GroupID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0006), name: "AddAdmin Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "AdminInformationEntry", type: .structure, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0007), name: "UpdateAdmin Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: true), FieldSpec(id: 1, name: "FriendlyName", type: .string, isOptional: false, isNullable: true), FieldSpec(id: 2, name: "ICAC", type: .octstr, isOptional: false, isNullable: true)]),
+            CommandSpec(id: CommandID(rawValue: 0x0008), name: "RemoveAdmin Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0009), name: "AddPendingNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "FriendlyName", type: .string, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000A), name: "RefreshNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000B), name: "UpdateNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "FriendlyName", type: .string, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000C), name: "RemoveNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000D), name: "UpdateEndpointForNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "EndpointID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "FriendlyName", type: .string, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000E), name: "AddGroupIDToEndpointForNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EndpointID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "GroupID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x000F), name: "RemoveGroupIDFromEndpointForNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EndpointID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "GroupID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0010), name: "AddBindingToEndpointForNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EndpointID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "Binding", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0011), name: "RemoveBindingFromEndpointForNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ListID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "EndpointID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 2, name: "NodeID", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0012), name: "AddACLToNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "NodeID", type: .unknown, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "ACLEntry", type: .unknown, isOptional: false, isNullable: false)]),
+            CommandSpec(id: CommandID(rawValue: 0x0013), name: "RemoveACLFromNode Command", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "ListID", type: .uint16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "NodeID", type: .unknown, isOptional: false, isNullable: false)]),
         ]
     )
 }

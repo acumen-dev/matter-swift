@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Valid Proxies Cluster (0x0044), revision 1
@@ -23,6 +24,75 @@ public enum ValidProxiesCluster {
         /// GetValidProxiesRequest, mandatory
         public static let getValidProxiesRequest = CommandID(rawValue: 0x0000)
     }
+
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// GetValidProxiesResponse
+        public static let getValidProxiesResponse = CommandID(rawValue: 0x0001)
+    }
+
+    // MARK: - ValidProxyStruct
+
+    public struct ValidProxyStruct: TLVCodable, Equatable {
+        public var nodeID: TLVElement
+
+        public init(
+            nodeID: TLVElement
+        ) {
+            self.nodeID = nodeID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: nodeID))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ValidProxyStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_nodeID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "NodeID", tag: UInt8(1))
+            }
+            let nodeID = raw_nodeID
+            return ValidProxyStruct(nodeID: nodeID)
+        }
+    }
+
+    // MARK: - GetValidProxiesResponse
+
+    public struct GetValidProxiesResponse: TLVCodable, Equatable {
+        public var proxyNodeIdList: [TLVElement]
+
+        public init(
+            proxyNodeIdList: [TLVElement]
+        ) {
+            self.proxyNodeIdList = proxyNodeIdList
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .array(proxyNodeIdList)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> GetValidProxiesResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_proxyNodeIdList = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "ProxyNodeIdList", tag: UInt8(0))
+            }
+            let proxyNodeIdList = (raw_proxyNodeIdList.arrayElements ?? []).map { $0 }
+            return GetValidProxiesResponse(proxyNodeIdList: proxyNodeIdList)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -36,7 +106,7 @@ extension ValidProxiesCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0000), name: "ValidProxyList", conformance: .mandatory, type: .list, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetValidProxiesRequest", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "GetValidProxiesRequest", conformance: .mandatory, responseID: CommandID(rawValue: 0x0001)),
         ]
     )
 }

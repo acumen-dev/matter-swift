@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Application Launcher Cluster (0x050C), revision 2
@@ -39,6 +40,13 @@ public enum ApplicationLauncherCluster {
         public static let hideApp = CommandID(rawValue: 0x0002)
     }
 
+    // MARK: - Response Commands
+
+    public enum ResponseCommand {
+        /// LauncherResponse
+        public static let launcherResponse = CommandID(rawValue: 0x0003)
+    }
+
     public enum StatusEnum: UInt8, Sendable, Equatable {
         case success = 0
         case appNotAvailable = 1
@@ -46,6 +54,236 @@ public enum ApplicationLauncherCluster {
         case pendingUserApproval = 3
         case downloading = 4
         case installing = 5
+    }
+
+    // MARK: - ApplicationEPStruct
+
+    public struct ApplicationEPStruct: TLVCodable, Equatable {
+        public var application: ApplicationStruct
+        public var endpoint: TLVElement?
+
+        public init(
+            application: ApplicationStruct,
+            endpoint: TLVElement? = nil
+        ) {
+            self.application = application
+            self.endpoint = endpoint
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: application.toTLVElement()))
+            if let val = endpoint {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: val))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ApplicationEPStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_application = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Application", tag: UInt8(0))
+            }
+            let application = try ApplicationStruct.fromTLVElement(raw_application)
+            let endpoint: TLVElement?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                endpoint = fieldValue
+            } else {
+                endpoint = nil
+            }
+            return ApplicationEPStruct(application: application, endpoint: endpoint)
+        }
+    }
+
+    // MARK: - ApplicationStruct
+
+    public struct ApplicationStruct: TLVCodable, Equatable {
+        public var catalogVendorID: UInt16
+        public var applicationID: String
+
+        public init(
+            catalogVendorID: UInt16,
+            applicationID: String
+        ) {
+            self.catalogVendorID = catalogVendorID
+            self.applicationID = applicationID
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(catalogVendorID))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .utf8String(applicationID)))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> ApplicationStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_catalogVendorID = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "CatalogVendorID", tag: UInt8(0))
+            }
+            let catalogVendorID = UInt16(raw_catalogVendorID.uintValue ?? 0)
+            guard let raw_applicationID = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "ApplicationID", tag: UInt8(1))
+            }
+            let applicationID = raw_applicationID.stringValue ?? ""
+            return ApplicationStruct(catalogVendorID: catalogVendorID, applicationID: applicationID)
+        }
+    }
+
+    // MARK: - LaunchAppRequest
+
+    public struct LaunchAppRequest: TLVCodable, Equatable {
+        public var application: ApplicationStruct
+        public var data: Data?
+
+        public init(
+            application: ApplicationStruct,
+            data: Data? = nil
+        ) {
+            self.application = application
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: application.toTLVElement()))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> LaunchAppRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_application = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Application", tag: UInt8(0))
+            }
+            let application = try ApplicationStruct.fromTLVElement(raw_application)
+            let data: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.dataValue ?? Data()
+            } else {
+                data = nil
+            }
+            return LaunchAppRequest(application: application, data: data)
+        }
+    }
+
+    // MARK: - StopAppRequest
+
+    public struct StopAppRequest: TLVCodable, Equatable {
+        public var application: ApplicationStruct
+
+        public init(
+            application: ApplicationStruct
+        ) {
+            self.application = application
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: application.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> StopAppRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_application = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Application", tag: UInt8(0))
+            }
+            let application = try ApplicationStruct.fromTLVElement(raw_application)
+            return StopAppRequest(application: application)
+        }
+    }
+
+    // MARK: - HideAppRequest
+
+    public struct HideAppRequest: TLVCodable, Equatable {
+        public var application: ApplicationStruct
+
+        public init(
+            application: ApplicationStruct
+        ) {
+            self.application = application
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: application.toTLVElement()))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> HideAppRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_application = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Application", tag: UInt8(0))
+            }
+            let application = try ApplicationStruct.fromTLVElement(raw_application)
+            return HideAppRequest(application: application)
+        }
+    }
+
+    // MARK: - LauncherResponse
+
+    public struct LauncherResponse: TLVCodable, Equatable {
+        public var status: UInt8
+        public var data: Data?
+
+        public init(
+            status: UInt8,
+            data: Data? = nil
+        ) {
+            self.status = status
+            self.data = data
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(status))))
+            if let val = data {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .octetString(val)))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> LauncherResponse {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_status = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Status", tag: UInt8(0))
+            }
+            let status = UInt8(raw_status.uintValue ?? 0)
+            let data: Data?
+            if let fieldValue = element[contextTag: UInt8(1)] {
+                data = fieldValue.dataValue ?? Data()
+            } else {
+                data = nil
+            }
+            return LauncherResponse(status: status, data: data)
+        }
     }
 }
 
@@ -61,9 +299,9 @@ extension ApplicationLauncherCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0001), name: "CurrentApp", conformance: .optional, type: .structure, isNullable: true),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "LaunchApp", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0001), name: "StopApp", conformance: .mandatory),
-            CommandSpec(id: CommandID(rawValue: 0x0002), name: "HideApp", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "LaunchApp", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Application", type: .structure, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "Data", type: .octstr, isOptional: true, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
+            CommandSpec(id: CommandID(rawValue: 0x0001), name: "StopApp", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Application", type: .structure, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
+            CommandSpec(id: CommandID(rawValue: 0x0002), name: "HideApp", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "Application", type: .structure, isOptional: false, isNullable: false)], responseID: CommandID(rawValue: 0x0003)),
         ]
     )
 }

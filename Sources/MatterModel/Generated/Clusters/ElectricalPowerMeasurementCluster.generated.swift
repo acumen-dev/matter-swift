@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Electrical Power Measurement Cluster (0x0090), revision 1
@@ -81,6 +82,165 @@ public enum ElectricalPowerMeasurementCluster {
         case unknown = 0
         case dc = 1
         case ac = 2
+    }
+
+    // MARK: - HarmonicMeasurementStruct
+
+    public struct HarmonicMeasurementStruct: TLVCodable, Equatable {
+        public var order: UInt8
+        public var measurement: Int64?
+
+        public init(
+            order: UInt8,
+            measurement: Int64? = nil
+        ) {
+            self.order = order
+            self.measurement = measurement
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(UInt64(order))))
+            if let val = measurement {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .signedInt(Int64(val))))
+            } else {
+                fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .null))
+            }
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> HarmonicMeasurementStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_order = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "Order", tag: UInt8(0))
+            }
+            let order = UInt8(raw_order.uintValue ?? 0)
+            guard let raw_measurement = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Measurement", tag: UInt8(1))
+            }
+            let measurement: Int64?
+            if raw_measurement.isNull {
+                measurement = nil
+            } else {
+                measurement = Int64(raw_measurement.intValue ?? 0)
+            }
+            return HarmonicMeasurementStruct(order: order, measurement: measurement)
+        }
+    }
+
+    // MARK: - MeasurementRangeStruct
+
+    public struct MeasurementRangeStruct: TLVCodable, Equatable {
+        public var measurementType: TLVElement
+        public var min: Int64
+        public var max: Int64
+        public var startTimestamp: TLVElement
+        public var endTimestamp: TLVElement
+        public var minTimestamp: TLVElement
+        public var maxTimestamp: TLVElement
+        public var startSystime: TLVElement
+        public var endSystime: TLVElement
+        public var minSystime: TLVElement
+        public var maxSystime: TLVElement
+
+        public init(
+            measurementType: TLVElement,
+            min: Int64,
+            max: Int64,
+            startTimestamp: TLVElement,
+            endTimestamp: TLVElement,
+            minTimestamp: TLVElement,
+            maxTimestamp: TLVElement,
+            startSystime: TLVElement,
+            endSystime: TLVElement,
+            minSystime: TLVElement,
+            maxSystime: TLVElement
+        ) {
+            self.measurementType = measurementType
+            self.min = min
+            self.max = max
+            self.startTimestamp = startTimestamp
+            self.endTimestamp = endTimestamp
+            self.minTimestamp = minTimestamp
+            self.maxTimestamp = maxTimestamp
+            self.startSystime = startSystime
+            self.endSystime = endSystime
+            self.minSystime = minSystime
+            self.maxSystime = maxSystime
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: measurementType))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .signedInt(Int64(min))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(2), value: .signedInt(Int64(max))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(3), value: startTimestamp))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(4), value: endTimestamp))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(5), value: minTimestamp))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(6), value: maxTimestamp))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(7), value: startSystime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(8), value: endSystime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(9), value: minSystime))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(10), value: maxSystime))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> MeasurementRangeStruct {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_measurementType = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "MeasurementType", tag: UInt8(0))
+            }
+            let measurementType = raw_measurementType
+            guard let raw_min = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "Min", tag: UInt8(1))
+            }
+            let min = Int64(raw_min.intValue ?? 0)
+            guard let raw_max = element[contextTag: UInt8(2)] else {
+                throw TLVDecodingError.missingField(name: "Max", tag: UInt8(2))
+            }
+            let max = Int64(raw_max.intValue ?? 0)
+            guard let raw_startTimestamp = element[contextTag: UInt8(3)] else {
+                throw TLVDecodingError.missingField(name: "StartTimestamp", tag: UInt8(3))
+            }
+            let startTimestamp = raw_startTimestamp
+            guard let raw_endTimestamp = element[contextTag: UInt8(4)] else {
+                throw TLVDecodingError.missingField(name: "EndTimestamp", tag: UInt8(4))
+            }
+            let endTimestamp = raw_endTimestamp
+            guard let raw_minTimestamp = element[contextTag: UInt8(5)] else {
+                throw TLVDecodingError.missingField(name: "MinTimestamp", tag: UInt8(5))
+            }
+            let minTimestamp = raw_minTimestamp
+            guard let raw_maxTimestamp = element[contextTag: UInt8(6)] else {
+                throw TLVDecodingError.missingField(name: "MaxTimestamp", tag: UInt8(6))
+            }
+            let maxTimestamp = raw_maxTimestamp
+            guard let raw_startSystime = element[contextTag: UInt8(7)] else {
+                throw TLVDecodingError.missingField(name: "StartSystime", tag: UInt8(7))
+            }
+            let startSystime = raw_startSystime
+            guard let raw_endSystime = element[contextTag: UInt8(8)] else {
+                throw TLVDecodingError.missingField(name: "EndSystime", tag: UInt8(8))
+            }
+            let endSystime = raw_endSystime
+            guard let raw_minSystime = element[contextTag: UInt8(9)] else {
+                throw TLVDecodingError.missingField(name: "MinSystime", tag: UInt8(9))
+            }
+            let minSystime = raw_minSystime
+            guard let raw_maxSystime = element[contextTag: UInt8(10)] else {
+                throw TLVDecodingError.missingField(name: "MaxSystime", tag: UInt8(10))
+            }
+            let maxSystime = raw_maxSystime
+            return MeasurementRangeStruct(measurementType: measurementType, min: min, max: max, startTimestamp: startTimestamp, endTimestamp: endTimestamp, minTimestamp: minTimestamp, maxTimestamp: maxTimestamp, startSystime: startSystime, endSystime: endSystime, minSystime: minSystime, maxSystime: maxSystime)
+        }
     }
 }
 

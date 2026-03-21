@@ -3,6 +3,7 @@
 // Source: connectedhomeip data_model/1.4
 // Copyright 2026 Monagle Pty Ltd
 
+import Foundation
 import MatterTypes
 
 /// Temperature Control Cluster (0x0056), revision 1
@@ -46,6 +47,45 @@ public enum TemperatureControlCluster {
         /// SetTemperature, mandatory
         public static let setTemperature = CommandID(rawValue: 0x0000)
     }
+
+    // MARK: - SetTemperatureRequest
+
+    public struct SetTemperatureRequest: TLVCodable, Equatable {
+        public var targetTemperature: Int16
+        public var targetTemperatureLevel: UInt8
+
+        public init(
+            targetTemperature: Int16,
+            targetTemperatureLevel: UInt8
+        ) {
+            self.targetTemperature = targetTemperature
+            self.targetTemperatureLevel = targetTemperatureLevel
+        }
+
+        public func toTLVElement() -> TLVElement {
+            var fields: [TLVElement.TLVField] = []
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(0), value: .signedInt(Int64(targetTemperature))))
+            fields.append(TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(UInt64(targetTemperatureLevel))))
+            return .structure(fields)
+        }
+
+        public static func fromTLVElement(_ element: TLVElement) throws -> SetTemperatureRequest {
+            // Accept both structure and list (matter.js vs CHIP SDK)
+            switch element {
+            case .structure, .list: break
+            default: throw TLVDecodingError.invalidStructure
+            }
+            guard let raw_targetTemperature = element[contextTag: UInt8(0)] else {
+                throw TLVDecodingError.missingField(name: "TargetTemperature", tag: UInt8(0))
+            }
+            let targetTemperature = Int16(raw_targetTemperature.intValue ?? 0)
+            guard let raw_targetTemperatureLevel = element[contextTag: UInt8(1)] else {
+                throw TLVDecodingError.missingField(name: "TargetTemperatureLevel", tag: UInt8(1))
+            }
+            let targetTemperatureLevel = UInt8(raw_targetTemperatureLevel.uintValue ?? 0)
+            return SetTemperatureRequest(targetTemperature: targetTemperature, targetTemperatureLevel: targetTemperatureLevel)
+        }
+    }
 }
 
 // MARK: - Spec Metadata
@@ -64,7 +104,7 @@ extension TemperatureControlCluster {
             AttributeSpec(id: AttributeID(rawValue: 0x0005), name: "SupportedTemperatureLevels", conformance: .mandatoryIf(.feature(1 << 1)), type: .list, isNullable: false),
         ],
         commands: [
-            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetTemperature", conformance: .mandatory),
+            CommandSpec(id: CommandID(rawValue: 0x0000), name: "SetTemperature", conformance: .mandatory, fields: [FieldSpec(id: 0, name: "TargetTemperature", type: .int16, isOptional: false, isNullable: false), FieldSpec(id: 1, name: "TargetTemperatureLevel", type: .uint8, isOptional: false, isNullable: false)]),
         ]
     )
 }
