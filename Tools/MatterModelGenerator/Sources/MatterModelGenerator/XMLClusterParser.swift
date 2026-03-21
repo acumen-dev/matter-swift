@@ -2,6 +2,9 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// Parses a CHIP spec XML cluster file into a `ClusterDefinition`.
 final class XMLClusterParser: NSObject, XMLParserDelegate {

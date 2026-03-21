@@ -2,6 +2,9 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// Parses a CHIP spec XML device type file into a `DeviceTypeDefinition`.
 final class XMLDeviceTypeParser: NSObject, XMLParserDelegate {
