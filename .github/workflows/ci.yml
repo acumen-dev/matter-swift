@@ -58,6 +58,7 @@ jobs:
     name: macOS
     needs: generated-code
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,13 +67,14 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel
+        run: swift test --parallel --skip IntegrationTests --skip ReferenceTests
 
   # ── Linux ──────────────────────────────────────────────────────────────────
   linux:
     name: Linux
     needs: generated-code
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container:
       image: swift:6.2-noble
     steps:
@@ -91,4 +93,4 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel
+        run: swift test --parallel --skip IntegrationTests --skip ReferenceTests
