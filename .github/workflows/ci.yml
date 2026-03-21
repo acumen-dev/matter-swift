@@ -51,3 +51,37 @@ jobs:
 
       - name: Test
         run: swift test --parallel
+
+  # ── Generated code freshness ─────────────────────────────────────────────
+  generated-code:
+    name: Generated code freshness
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.2-noble
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch CHIP spec XML (sparse checkout)
+        run: |
+          CHIP_VERSION=$(cat Tools/RefImpl/CONNECTEDHOMEIP_VERSION)
+          git clone --depth 1 --branch "$CHIP_VERSION" --filter=blob:none --sparse \
+            https://github.com/project-chip/connectedhomeip.git /tmp/connectedhomeip
+          cd /tmp/connectedhomeip
+          git sparse-checkout set data_model
+
+      - name: Run generator
+        run: |
+          cd Tools/MatterModelGenerator
+          swift run MatterModelGenerator \
+            --input /tmp/connectedhomeip/data_model/1.4 \
+            --output ../../Sources/MatterModel/Generated
+
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git diff --name-only Sources/MatterModel/Generated/)" ]; then
+            echo "::error::Generated code is out of date. Run 'make generate-model' and commit the results."
+            git diff --stat Sources/MatterModel/Generated/
+            exit 1
+          fi
+          echo "Generated code is up to date."
