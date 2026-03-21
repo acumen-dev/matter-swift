@@ -22,8 +22,11 @@ final class XMLDeviceTypeParser: NSObject, XMLParserDelegate {
     private var currentClusterSide = ""
     private var inCluster = false
 
-    // Conformance
-    private var conformanceStack: [SimpleConformanceBuilder] = []
+    // Conformance — only set from direct children of <cluster>
+    private var clusterConformance: SimpleConformanceBuilder?
+    /// Tracks whether the conformance has been set at the cluster level.
+    /// Once set, nested conformance tags (inside features/attributes) are ignored.
+    private var clusterConformanceSet = false
 
     // MARK: - Public API
 
@@ -64,13 +67,37 @@ final class XMLDeviceTypeParser: NSObject, XMLParserDelegate {
                 currentClusterID = parseHexOrDecimal(attrs["id"] ?? "0")
                 currentClusterName = attrs["name"] ?? ""
                 currentClusterSide = attrs["side"] ?? "server"
-                conformanceStack.append(SimpleConformanceBuilder())
+                clusterConformance = SimpleConformanceBuilder()
+                clusterConformanceSet = false
             }
 
         case "mandatoryConform":
-            conformanceStack.last?.type = .mandatory
+            // Only set cluster conformance for direct children of <cluster>
+            if parentElement == "cluster" && !clusterConformanceSet {
+                clusterConformance?.type = .mandatory
+                clusterConformanceSet = true
+            }
         case "optionalConform":
-            conformanceStack.last?.type = .optional
+            if parentElement == "cluster" && !clusterConformanceSet {
+                clusterConformance?.type = .optional
+                clusterConformanceSet = true
+            }
+        case "disallowConform":
+            if parentElement == "cluster" && !clusterConformanceSet {
+                clusterConformance?.type = .disallowed
+                clusterConformanceSet = true
+            }
+        case "otherwiseConform":
+            // otherwiseConform (e.g., provisional + optional) — treat as optional
+            if parentElement == "cluster" && !clusterConformanceSet {
+                clusterConformance?.type = .optional
+                clusterConformanceSet = true
+            }
+        case "provisionalConform":
+            if parentElement == "cluster" && !clusterConformanceSet {
+                clusterConformance?.type = .optional
+                clusterConformanceSet = true
+            }
 
         default:
             break
@@ -94,13 +121,15 @@ final class XMLDeviceTypeParser: NSObject, XMLParserDelegate {
 
         case "cluster":
             if inCluster, parentElement == "clusters" {
-                let conf = conformanceStack.popLast()?.build() ?? .unknown
+                let conf = clusterConformance?.build() ?? .unknown
                 requiredClusters.append(DeviceTypeCluster(
                     id: currentClusterID,
                     name: currentClusterName,
                     side: currentClusterSide,
                     conformance: conf
                 ))
+                clusterConformance = nil
+                clusterConformanceSet = false
                 inCluster = false
             }
 
@@ -127,13 +156,14 @@ final class XMLDeviceTypeParser: NSObject, XMLParserDelegate {
 // MARK: - Simple Conformance Builder
 
 private class SimpleConformanceBuilder {
-    enum ConformanceType { case mandatory, optional, unknown }
+    enum ConformanceType { case mandatory, optional, disallowed, unknown }
     var type: ConformanceType = .unknown
 
     func build() -> Conformance {
         switch type {
         case .mandatory: return .mandatory
         case .optional: return .optional
+        case .disallowed: return .disallowed
         case .unknown: return .unknown
         }
     }

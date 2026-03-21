@@ -141,4 +141,7 @@ let generatedCount = generatedFiles.count
 
 print("  Generated \(generatedCount) cluster files (skipped \(skippedCount) hand-written clusters)")
 print("  Generated ClusterDefinitions.generated.swift (\(clusters.count) cluster IDs, \(deviceTypes.count) device type IDs)")
+if !deviceTypes.isEmpty {
+    print("  Generated DeviceTypeRegistry.generated.swift (\(deviceTypes.count) device types)")
+}
 print("Done.")
