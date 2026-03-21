@@ -7,7 +7,16 @@ DerivedData/
 .netrc
 Package.resolved
 
+# Generator build artifacts
+Tools/MatterModelGenerator/.build/
+
 # Reference implementation tools (built locally, not committed)
 Tools/RefImpl/bin/
 Tools/RefImpl/connectedhomeip/
 Tools/RefImpl/matter-js/node_modules/
+
+# Local tooling
+.matter-js-ref/
+
+# Claude Code
+.claude/

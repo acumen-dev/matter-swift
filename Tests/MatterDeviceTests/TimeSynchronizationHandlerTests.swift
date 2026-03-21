@@ -66,7 +66,7 @@ struct TimeSynchronizationHandlerTests {
         #expect(utcAttr?.uintValue == testTime)
 
         let granAttr = store.get(endpoint: ep0, cluster: handler.clusterID, attribute: TimeSynchronizationCluster.Attribute.granularity)
-        #expect(granAttr?.uintValue == UInt64(TimeSynchronizationCluster.Granularity.secondsGranularity.rawValue))
+        #expect(granAttr?.uintValue == UInt64(TimeSynchronizationCluster.GranularityEnum.secondsGranularity.rawValue))
     }
 
     @Test("SetUTCTime with optional timeSource writes timeSource attribute")
@@ -89,14 +89,14 @@ struct TimeSynchronizationHandlerTests {
         )
 
         let sourceAttr = store.get(endpoint: ep0, cluster: handler.clusterID, attribute: TimeSynchronizationCluster.Attribute.timeSource)
-        #expect(sourceAttr?.uintValue == UInt64(TimeSynchronizationCluster.TimeSource.admin.rawValue))
+        #expect(sourceAttr?.uintValue == UInt64(TimeSynchronizationCluster.TimeSourceEnum.admin.rawValue))
     }
 
     @Test("featureMap is zero (no special features)")
     func featureMap() {
         let handler = TimeSynchronizationHandler()
         let attrs = handler.initialAttributes()
-        let attr = attrs.first { $0.0 == TimeSynchronizationCluster.Attribute.featureMap }
+        let attr = attrs.first { $0.0 == AttributeID.featureMap }
         #expect(attr?.1 == .unsignedInt(0))
     }
 
@@ -104,7 +104,7 @@ struct TimeSynchronizationHandlerTests {
     func clusterRevision() {
         let handler = TimeSynchronizationHandler()
         let attrs = handler.initialAttributes()
-        let attr = attrs.first { $0.0 == TimeSynchronizationCluster.Attribute.clusterRevision }
+        let attr = attrs.first { $0.0 == AttributeID.clusterRevision }
         #expect(attr?.1 != nil)
     }
 

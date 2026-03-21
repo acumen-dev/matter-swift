@@ -6,6 +6,7 @@ PROJECT_NAME  = swiftmatter
 PROJECT_DIR   = $(shell pwd)
 
 .PHONY: build test release clean \
+        generate-model \
         ref-setup ref-setup-cert ref-setup-tool ref-test ref-all ref-clean \
         linux-build linux-test linux-shell \
         help
@@ -27,6 +28,19 @@ release:
 ## clean          Remove build artefacts
 clean:
 	rm -rf .build
+
+## ── Code Generation ─────────────────────────────────────────────────────────
+
+CHIP_VERSION := $(shell cat Tools/RefImpl/CONNECTEDHOMEIP_VERSION)
+CHIP_DIR     := /tmp/swift-matter-refimpl/connectedhomeip-$(CHIP_VERSION)
+
+## generate-model  Regenerate MatterModel from CHIP spec XML
+generate-model:
+	@test -d $(CHIP_DIR)/data_model || (echo "Run 'make ref-setup' first" && exit 1)
+	cd Tools/MatterModelGenerator && swift run MatterModelGenerator \
+		--input $(CHIP_DIR)/data_model/1.4 \
+		--output ../../Sources/MatterModel/Generated
+
 
 ## ── Reference Tests ──────────────────────────────────────────────────────────
 

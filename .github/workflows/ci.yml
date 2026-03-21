@@ -14,10 +14,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── Generated code freshness ─────────────────────────────────────────────
+  generated-code:
+    name: Generated code freshness
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.2-noble
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch CHIP spec XML (sparse checkout)
+        run: |
+          CHIP_VERSION=$(cat Tools/RefImpl/CONNECTEDHOMEIP_VERSION)
+          git clone --depth 1 --branch "$CHIP_VERSION" --filter=blob:none --sparse \
+            https://github.com/project-chip/connectedhomeip.git /tmp/connectedhomeip
+          cd /tmp/connectedhomeip
+          git sparse-checkout set data_model
+
+      - name: Snapshot committed generated code
+        run: cp -r Sources/MatterModel/Generated /tmp/generated-before
+
+      - name: Run generator
+        run: |
+          cd Tools/MatterModelGenerator
+          swift run MatterModelGenerator \
+            --input /tmp/connectedhomeip/data_model/1.4 \
+            --output ../../Sources/MatterModel/Generated
+
+      - name: Compare generated output to committed code
+        run: |
+          if ! diff -rq /tmp/generated-before Sources/MatterModel/Generated; then
+            echo ""
+            echo "::error::Generated code is out of date. Run 'make generate-model' and commit the results."
+            echo ""
+            diff -ru /tmp/generated-before Sources/MatterModel/Generated || true
+            exit 1
+          fi
+          echo "Generated code is up to date."
+
   # ── macOS ──────────────────────────────────────────────────────────────────
   macos:
     name: macOS
+    needs: generated-code
     runs-on: macos-15
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,12 +67,14 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel
+        run: swift test --parallel --skip IntegrationTests --skip ReferenceTests
 
   # ── Linux ──────────────────────────────────────────────────────────────────
   linux:
     name: Linux
+    needs: generated-code
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container:
       image: swift:6.2-noble
     steps:
@@ -50,4 +93,4 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel
+        run: swift test --parallel --skip IntegrationTests --skip ReferenceTests

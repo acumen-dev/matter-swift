@@ -23,12 +23,12 @@ public struct TimeSynchronizationHandler: ClusterHandler {
     public func initialAttributes() -> [(AttributeID, TLVElement)] {
         [
             (TimeSynchronizationCluster.Attribute.utcTime, .null),
-            (TimeSynchronizationCluster.Attribute.granularity, .unsignedInt(UInt64(TimeSynchronizationCluster.Granularity.noTimeGranularity.rawValue))),
-            (TimeSynchronizationCluster.Attribute.timeSource, .unsignedInt(UInt64(TimeSynchronizationCluster.TimeSource.none.rawValue))),
+            (TimeSynchronizationCluster.Attribute.granularity, .unsignedInt(UInt64(TimeSynchronizationCluster.GranularityEnum.noTimeGranularity.rawValue))),
+            (TimeSynchronizationCluster.Attribute.timeSource, .unsignedInt(UInt64(TimeSynchronizationCluster.TimeSourceEnum.`none`.rawValue))),
             (TimeSynchronizationCluster.Attribute.trustedTimeSource, .null),
             (TimeSynchronizationCluster.Attribute.defaultNTP, .null),
-            (TimeSynchronizationCluster.Attribute.featureMap, .unsignedInt(0)),
-            (TimeSynchronizationCluster.Attribute.clusterRevision, .unsignedInt(2)),
+            (AttributeID.featureMap, .unsignedInt(0)),
+            (AttributeID.clusterRevision, .unsignedInt(2)),
         ]
     }
 

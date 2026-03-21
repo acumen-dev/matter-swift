@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterModel
 import MatterProtocol
@@ -17,6 +18,7 @@ public final class EndpointManager: @unchecked Sendable {
     private var endpoints: [EndpointID: EndpointConfig] = [:]
     private let store: AttributeStore
     private var nextDynamicEndpointRaw: UInt16 = 3  // 0=root, 1=aggregator, 2=reserved
+    private let logger = Logger(label: "matter.endpoint-manager")
 
     /// The aggregator endpoint ID (manages PartsList of dynamic endpoints).
     public static let aggregatorEndpoint = EndpointID(rawValue: 1)
@@ -25,6 +27,10 @@ public final class EndpointManager: @unchecked Sendable {
     ///
     /// Set this after initialisation to enable event recording when commands are handled.
     public var eventStore: EventStore?
+
+    /// When `true`, command field validation returns error statuses for missing required fields.
+    /// When `false` (default), validation only logs warnings.
+    public var strictCommandValidation: Bool = false
 
     public init(store: AttributeStore) {
         self.store = store
@@ -63,6 +69,14 @@ public final class EndpointManager: @unchecked Sendable {
 
             // Auto-populate mandatory global attributes (Matter Core Spec §7.13)
             populateGlobalAttributes(for: handler, on: config.endpointID)
+        }
+
+        // Validate handlers against cluster specs
+        for handler in config.clusterHandlers {
+            let result = ClusterValidator.validate(handler: handler)
+            for error in result.errors {
+                logger.warning("\(error)")
+            }
         }
 
         // Auto-populate the Descriptor serverList from the registered handler cluster IDs.
@@ -269,6 +283,21 @@ public final class EndpointManager: @unchecked Sendable {
                 continue
             }
 
+            // Type pre-check against spec metadata (before calling the handler)
+            if let spec = ClusterSpecRegistry.spec(for: clusterID),
+               let attrSpec = spec.attributes.first(where: { $0.id == attributeID }),
+               attrSpec.type != .unknown {
+                if case .null = write.data {
+                    if !attrSpec.isNullable {
+                        statuses.append(AttributeStatusIB(path: write.path, status: StatusIB(status: 0x87)))
+                        continue
+                    }
+                } else if !attrSpec.type.isCompatible(with: write.data) {
+                    statuses.append(AttributeStatusIB(path: write.path, status: StatusIB(status: 0x87)))
+                    continue
+                }
+            }
+
             // Validate the write
             let validation = handler.validateWrite(attributeID: attributeID, value: write.data)
             switch validation {
@@ -298,6 +327,30 @@ public final class EndpointManager: @unchecked Sendable {
 
         guard let handler = config.clusterHandlers.first(where: { $0.clusterID == path.clusterID }) else {
             return (nil, [])
+        }
+
+        // Validate command fields against spec metadata
+        if let spec = ClusterSpecRegistry.spec(for: path.clusterID),
+           let cmdSpec = spec.commands.first(where: { $0.id == path.commandID }),
+           !cmdSpec.fields.isEmpty {
+            for fieldSpec in cmdSpec.fields where !fieldSpec.isOptional {
+                let fieldPresent: Bool
+                if let fieldData = fields {
+                    fieldPresent = fieldData[contextTag: fieldSpec.id] != nil
+                } else {
+                    fieldPresent = false
+                }
+                if !fieldPresent {
+                    if strictCommandValidation {
+                        logger.warning("Command 0x\(String(format: "%04X", path.commandID.rawValue)) missing required field '\(fieldSpec.name)' (tag \(fieldSpec.id))")
+                        return (.structure([
+                            TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(0x85)) // INVALID_COMMAND
+                        ]), [])
+                    } else {
+                        logger.debug("Command 0x\(String(format: "%04X", path.commandID.rawValue)) missing required field '\(fieldSpec.name)' (tag \(fieldSpec.id))")
+                    }
+                }
+            }
         }
 
         let response = try handler.handleCommand(

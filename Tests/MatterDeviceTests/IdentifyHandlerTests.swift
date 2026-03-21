@@ -72,49 +72,6 @@ struct IdentifyHandlerTests {
         #expect(stored == .unsignedInt(0))
     }
 
-    // MARK: - IdentifyQuery Command
-
-    @Test("IdentifyQuery returns current identifyTime")
-    func identifyQueryReturnsCurrent() throws {
-        let (handler, store) = makeHandler()
-
-        // Set identify time to 30
-        store.set(endpoint: endpoint, cluster: handler.clusterID, attribute: IdentifyCluster.Attribute.identifyTime, value: .unsignedInt(30))
-
-        let result = try handler.handleCommand(
-            commandID: IdentifyCluster.Command.identifyQuery,
-            fields: nil,
-            store: store,
-            endpointID: endpoint
-        )
-
-        guard case .structure(let fields) = result,
-              let timeField = fields.first(where: { $0.tag == .contextSpecific(0) }) else {
-            Issue.record("Expected structure response with context tag 0")
-            return
-        }
-        #expect(timeField.value == .unsignedInt(30))
-    }
-
-    @Test("IdentifyQuery returns 0 when not identifying")
-    func identifyQueryReturnsZeroWhenNotIdentifying() throws {
-        let (handler, store) = makeHandler()
-
-        let result = try handler.handleCommand(
-            commandID: IdentifyCluster.Command.identifyQuery,
-            fields: nil,
-            store: store,
-            endpointID: endpoint
-        )
-
-        guard case .structure(let fields) = result,
-              let timeField = fields.first(where: { $0.tag == .contextSpecific(0) }) else {
-            Issue.record("Expected structure response with context tag 0")
-            return
-        }
-        #expect(timeField.value == .unsignedInt(0))
-    }
-
     // MARK: - Write Validation
 
     @Test("identifyTime is writable with unsigned int")

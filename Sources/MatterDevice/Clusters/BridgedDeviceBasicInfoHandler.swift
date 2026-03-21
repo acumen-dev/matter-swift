@@ -22,6 +22,12 @@ public struct BridgedDeviceBasicInfoHandler: ClusterHandler {
     /// User-visible label for this device.
     public let nodeLabel: String
 
+    /// Unique identifier for this bridged device (mandatory, max 32 chars).
+    ///
+    /// Should be stable across bridge restarts to allow controllers to maintain
+    /// endpoint identity. If empty, the attribute is omitted.
+    public let uniqueID: String
+
     /// Whether the bridged device is currently reachable.
     public let reachable: Bool
 
@@ -29,11 +35,13 @@ public struct BridgedDeviceBasicInfoHandler: ClusterHandler {
         vendorName: String = "",
         productName: String = "",
         nodeLabel: String,
+        uniqueID: String = "",
         reachable: Bool = true
     ) {
         self.vendorName = vendorName
         self.productName = productName
         self.nodeLabel = nodeLabel
+        self.uniqueID = uniqueID
         self.reachable = reachable
     }
 
@@ -49,6 +57,9 @@ public struct BridgedDeviceBasicInfoHandler: ClusterHandler {
         }
         if !productName.isEmpty {
             attrs.append((BridgedDeviceBasicInfoCluster.Attribute.productName, .utf8String(productName)))
+        }
+        if !uniqueID.isEmpty {
+            attrs.append((BridgedDeviceBasicInfoCluster.Attribute.uniqueID, .utf8String(uniqueID)))
         }
         return attrs
     }
