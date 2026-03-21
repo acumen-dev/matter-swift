@@ -14,44 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ── macOS ──────────────────────────────────────────────────────────────────
-  macos:
-    name: macOS
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build
-        run: swift build
-
-      - name: Test
-        run: swift test --parallel
-
-  # ── Linux ──────────────────────────────────────────────────────────────────
-  linux:
-    name: Linux
-    runs-on: ubuntu-latest
-    container:
-      image: swift:6.2-noble
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cache Swift packages
-        uses: actions/cache@v4
-        with:
-          path: .build
-          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-spm-
-
-      - name: Build
-        run: swift build
-
-      - name: Test
-        run: swift test --parallel
-
   # ── Generated code freshness ─────────────────────────────────────────────
   generated-code:
     name: Generated code freshness
@@ -85,3 +47,43 @@ jobs:
             exit 1
           fi
           echo "Generated code is up to date."
+
+  # ── macOS ──────────────────────────────────────────────────────────────────
+  macos:
+    name: macOS
+    needs: generated-code
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test --parallel
+
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  linux:
+    name: Linux
+    needs: generated-code
+    runs-on: ubuntu-latest
+    container:
+      image: swift:6.2-noble
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test --parallel
