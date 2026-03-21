@@ -32,6 +32,9 @@ jobs:
           cd /tmp/connectedhomeip
           git sparse-checkout set data_model
 
+      - name: Snapshot committed generated code
+        run: cp -r Sources/MatterModel/Generated /tmp/generated-before
+
       - name: Run generator
         run: |
           cd Tools/MatterModelGenerator
@@ -39,12 +42,13 @@ jobs:
             --input /tmp/connectedhomeip/data_model/1.4 \
             --output ../../Sources/MatterModel/Generated
 
-      - name: Check for uncommitted changes
-        working-directory: ${{ github.workspace }}
+      - name: Compare generated output to committed code
         run: |
-          if [ -n "$(git diff --name-only -- Sources/MatterModel/Generated/)" ]; then
+          if ! diff -rq /tmp/generated-before Sources/MatterModel/Generated; then
+            echo ""
             echo "::error::Generated code is out of date. Run 'make generate-model' and commit the results."
-            git diff --stat -- Sources/MatterModel/Generated/
+            echo ""
+            diff -ru /tmp/generated-before Sources/MatterModel/Generated || true
             exit 1
           fi
           echo "Generated code is up to date."
