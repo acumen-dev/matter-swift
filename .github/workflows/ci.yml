@@ -22,7 +22,7 @@ jobs:
       image: swift:6.2-noble
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Fetch CHIP spec XML (sparse checkout)
         run: |
@@ -61,7 +61,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Cache Swift packages
         uses: actions/cache@v4
@@ -87,7 +87,7 @@ jobs:
       image: swift:6.2-noble
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Cache Swift packages
         uses: actions/cache@v4
