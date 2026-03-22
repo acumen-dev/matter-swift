@@ -3,7 +3,7 @@
 Tracks gaps between the current implementation and the Matter specification.
 Updated after each phase — completed items move to the bottom.
 
-**Current state:** 737 tests across 110 suites. 28 cluster handlers (added Groups cluster),
+**Current state:** 861 tests across 127 suites. 28 cluster handlers (added Groups cluster),
 full PASE/CASE with session resumption infrastructure
 (ResumptionTicket, ResumptionTicketStore, CASEResumption key derivation, Sigma2ResumeMessage,
 CASESession resumption methods), Identify, Binding, FixedLabel,
