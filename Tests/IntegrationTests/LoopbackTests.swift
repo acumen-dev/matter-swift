@@ -35,7 +35,7 @@ struct LoopbackTests {
         let browser = AppleDiscovery()
 
         let runID = UInt16.random(in: 1000...9999)
-        let serviceName = "SwiftMatter-\(runID)"
+        let serviceName = "MatterSwift-\(runID)"
         let service = MatterServiceRecord(
             name: serviceName,
             serviceType: .commissionable,

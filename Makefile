@@ -1,4 +1,4 @@
-# Makefile — SwiftMatter build and test targets
+# Makefile — MatterSwift build and test targets
 # Copyright 2026 Monagle Pty Ltd
 
 SWIFT_IMAGE  ?= swift:6.2-noble

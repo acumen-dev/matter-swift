@@ -1,4 +1,4 @@
-# SwiftMatter
+# MatterSwift
 
 Native Swift implementation of the Matter smart home protocol. Provides both device/bridge and controller roles for building Matter-compatible applications.
 
@@ -21,7 +21,7 @@ swift test           # Run test suite (Swift Testing)
 | `MatterDevice` | Device/bridge role: endpoint management, attribute storage, subscription reports, commissioning responder | MatterProtocol |
 | `MatterController` | Controller role: commissioning, operational communication, device management | MatterProtocol |
 | `MatterApple` | Apple platform transport: Network.framework for UDP/mDNS, CryptoKit integration | MatterTransport, MatterCrypto |
-| `SwiftMatter` | Convenience re-export of all modules | all |
+| `MatterSwift` | Convenience re-export of all modules | all |
 
 ### Module Dependency Graph
 

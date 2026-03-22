@@ -573,7 +573,7 @@ struct SubscribePrimingReportDiagnosticTests {
         // These match the real BasicInformationHandler.initialAttributes() output
         let basicInfoAttrs: [(UInt32, String, TLVElement)] = [
             (0x0000, "dataModelRevision",    .unsignedInt(17)),
-            (0x0001, "vendorName",           .utf8String("SwiftMatter")),
+            (0x0001, "vendorName",           .utf8String("MatterSwift")),
             (0x0002, "vendorID",             .unsignedInt(0xFFF1)),
             (0x0003, "productName",          .utf8String("Bridge")),
             (0x0004, "productID",            .unsignedInt(0x8000)),
@@ -645,7 +645,7 @@ struct SubscribePrimingReportDiagnosticTests {
                                      0x0012, 0x0013, 0xFFF8, 0xFFF9, 0xFFFB, 0xFFFC, 0xFFFD]
         let basicInfoAttrs: [(UInt32, TLVElement)] = [
             (0x0000, .unsignedInt(17)),
-            (0x0001, .utf8String("SwiftMatter")),
+            (0x0001, .utf8String("MatterSwift")),
             (0x0002, .unsignedInt(0xFFF1)),
             (0x0003, .utf8String("Bridge")),
             (0x0004, .unsignedInt(0x8000)),

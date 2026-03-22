@@ -1,9 +1,9 @@
-// SwiftMatter.swift
+// MatterSwift.swift
 // Copyright 2026 Monagle Pty Ltd
 
-/// Convenience re-export of all SwiftMatter modules.
+/// Convenience re-export of all MatterSwift modules.
 ///
-/// Import `SwiftMatter` for access to the full library.
+/// Import `MatterSwift` for access to the full library.
 /// For finer-grained control, import individual modules:
 /// - `MatterTypes` — core types, TLV, identifiers
 /// - `MatterModel` — cluster definitions, device types

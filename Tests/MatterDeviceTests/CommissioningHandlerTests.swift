@@ -944,7 +944,7 @@ struct MatterBridgeRootEndpointTests {
 
         // BasicInformation attributes should exist
         let vendorName = store.get(endpoint: ep0, cluster: .basicInformation, attribute: BasicInformationCluster.Attribute.vendorName)
-        #expect(vendorName?.stringValue == "SwiftMatter")
+        #expect(vendorName?.stringValue == "MatterSwift")
 
         // GeneralCommissioning attributes should exist
         let breadcrumb = store.get(endpoint: ep0, cluster: .generalCommissioning, attribute: GeneralCommissioningCluster.Attribute.breadcrumb)

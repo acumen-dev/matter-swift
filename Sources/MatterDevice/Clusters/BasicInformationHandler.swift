@@ -36,7 +36,7 @@ public struct BasicInformationHandler: ClusterHandler {
     private let productLabel: String
 
     public init(
-        vendorName: String = "SwiftMatter",
+        vendorName: String = "MatterSwift",
         vendorID: UInt16 = 0xFFF1,
         productName: String = "Bridge",
         productID: UInt16 = 0x8000,

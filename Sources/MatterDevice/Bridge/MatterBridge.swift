@@ -43,7 +43,7 @@ public final class MatterBridge: @unchecked Sendable {
         public let productId: UInt16
 
         public init(
-            vendorName: String = "SwiftMatter",
+            vendorName: String = "MatterSwift",
             productName: String = "Bridge",
             vendorId: UInt16 = 0xFFF1,
             productId: UInt16 = 0x8000

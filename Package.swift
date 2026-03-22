@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "SwiftMatter",
+    name: "MatterSwift",
     platforms: [
         .macOS(.v15),
         .iOS(.v18),
@@ -30,7 +30,7 @@ let package = Package(
         // Linux platform transport (SwiftNIO, pure-Swift mDNS)
         .library(name: "MatterLinux", targets: ["MatterLinux"]),
         // Convenience: re-exports everything for typical use
-        .library(name: "SwiftMatter", targets: ["SwiftMatter"]),
+        .library(name: "MatterSwift", targets: ["MatterSwift"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
@@ -148,7 +148,7 @@ let package = Package(
         // MARK: - Convenience Re-export
 
         .target(
-            name: "SwiftMatter",
+            name: "MatterSwift",
             dependencies: [
                 "MatterTypes",
                 "MatterModel",
