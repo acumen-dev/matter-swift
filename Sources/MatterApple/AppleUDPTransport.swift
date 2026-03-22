@@ -175,7 +175,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
             throw TransportError.invalidAddress(hostStr)
         }
 
-        logger.debug("UDP send: host=\(address.host) port=\(address.port) dataLen=\(data.count) ifIndex=\(ifIndex)")
+        logger.trace("UDP send: host=\(address.host) port=\(address.port) dataLen=\(data.count) ifIndex=\(ifIndex)")
 
         // For link-local destinations the kernel needs an outgoing interface.
         // IPV6_PKTINFO (sendmsg) causes macOS to use an ephemeral source port,
@@ -204,7 +204,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
             throw TransportError.sendFailed(err)
         }
 
-        logger.debug("UDP sent \(sent) bytes → \(address.host):\(address.port) ifIndex=\(ifIndex)")
+        logger.trace("UDP sent \(sent) bytes → \(address.host):\(address.port) ifIndex=\(ifIndex)")
     }
 
     public nonisolated func receive() -> AsyncStream<(Data, MatterAddress)> {
@@ -249,7 +249,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
             throw TransportError.invalidAddress(address.host)
         }
 
-        logger.debug("UDP send (IPv4): host=\(address.host) port=\(address.port) dataLen=\(data.count)")
+        logger.trace("UDP send (IPv4): host=\(address.host) port=\(address.port) dataLen=\(data.count)")
 
         let sent: Int = data.withUnsafeBytes { dataPtr in
             withUnsafeMutablePointer(to: &dest) { destPtr in
@@ -266,7 +266,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
             throw TransportError.sendFailed(err)
         }
 
-        logger.debug("UDP sent \(sent) bytes → \(address.host):\(address.port) (IPv4)")
+        logger.trace("UDP sent \(sent) bytes → \(address.host):\(address.port) (IPv4)")
     }
 
     // MARK: - Receive threads
@@ -331,7 +331,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
             let address = MatterAddress(host: host, port: port)
             let data    = Data(buf[..<n])
 
-            logger.debug("UDP recv: host=\(host) port=\(port) dataLen=\(n)")
+            logger.trace("UDP recv: host=\(host) port=\(port) dataLen=\(n)")
             continuation?.yield((data, address))
         }
 
@@ -373,7 +373,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
             let address = MatterAddress(host: host, port: port)
             let data    = Data(buf[..<n])
 
-            logger.debug("UDP recv (IPv4): host=\(host) port=\(port) dataLen=\(n)")
+            logger.trace("UDP recv (IPv4): host=\(host) port=\(port) dataLen=\(n)")
             continuation?.yield((data, address))
         }
 

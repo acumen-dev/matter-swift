@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "MatterSwift",
+    name: "matter-swift",
     platforms: [
         .macOS(.v15),
         .iOS(.v18),

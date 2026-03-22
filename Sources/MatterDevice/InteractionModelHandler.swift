@@ -222,7 +222,7 @@ public struct InteractionModelHandler: Sendable {
     ) async throws -> IMHandleResult {
         let request = try ReadRequest.fromTLV(payload)
         for attr in request.attributeRequests {
-            logger.debug("  ReadRequest attr: ep=\(attr.endpointID.map { "\($0.rawValue)" } ?? "*") cluster=0x\(String(format: "%04X", attr.clusterID?.rawValue ?? 0xFFFF)) attr=0x\(String(format: "%04X", attr.attributeID?.rawValue ?? 0xFFFF))")
+            logger.trace("  ReadRequest attr: ep=\(attr.endpointID.map { "\($0.rawValue)" } ?? "*") cluster=0x\(String(format: "%04X", attr.clusterID?.rawValue ?? 0xFFFF)) attr=0x\(String(format: "%04X", attr.attributeID?.rawValue ?? 0xFFFF))")
         }
         let fabricIndex = requestContext?.checkerContext.fabricIndex
         let reports = endpoints.readAttributes(
@@ -304,7 +304,7 @@ public struct InteractionModelHandler: Sendable {
         }
 
         for writeReq in request.writeRequests {
-            logger.debug("  WriteRequest: ep=\(writeReq.path.endpointID.map { "\($0.rawValue)" } ?? "*") cluster=0x\(String(format: "%04X", writeReq.path.clusterID?.rawValue ?? 0xFFFF)) attr=0x\(String(format: "%04X", writeReq.path.attributeID?.rawValue ?? 0xFFFF))")
+            logger.trace("  WriteRequest: ep=\(writeReq.path.endpointID.map { "\($0.rawValue)" } ?? "*") cluster=0x\(String(format: "%04X", writeReq.path.clusterID?.rawValue ?? 0xFFFF)) attr=0x\(String(format: "%04X", writeReq.path.attributeID?.rawValue ?? 0xFFFF))")
         }
 
         // Timed interaction window enforcement
@@ -427,7 +427,7 @@ public struct InteractionModelHandler: Sendable {
         }
 
         for cmd in request.invokeRequests {
-            logger.debug("  InvokeRequest: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue))")
+            logger.trace("  InvokeRequest: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue))")
             // ACL check before execution
             if let ctx = requestContext {
                 let decision = ACLChecker.check(
@@ -438,7 +438,7 @@ public struct InteractionModelHandler: Sendable {
                     acls: ctx.acls
                 )
                 if decision == .denied {
-                    logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → ACL DENIED")
+                    logger.trace("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → ACL DENIED")
                     invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
                         commandPath: cmd.commandPath,
                         status: .unsupportedAccess
@@ -464,9 +464,9 @@ public struct InteractionModelHandler: Sendable {
             }
 
             do {
-                logger.debug("  [INVOKE-DIAG] Calling handleCommand for ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue))")
+                logger.trace("  [INVOKE-DIAG] Calling handleCommand for ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue))")
                 let (result, recordedEvents) = try await endpoints.handleCommand(path: cmd.commandPath, fields: cmd.commandFields)
-                logger.debug("  [INVOKE-DIAG] handleCommand returned: hasResult=\(result != nil) events=\(recordedEvents.count)")
+                logger.trace("  [INVOKE-DIAG] handleCommand returned: hasResult=\(result != nil) events=\(recordedEvents.count)")
                 if let responseData = result {
                     // Command returned response data.
                     // Per Matter spec §10.7.14.2, the CommandPath in InvokeResponse MUST use
@@ -482,14 +482,14 @@ public struct InteractionModelHandler: Sendable {
                         clusterID: cmd.commandPath.clusterID,
                         commandID: responseID
                     )
-                    logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", responseID.rawValue)) → responseData(\(responseData))")
+                    logger.trace("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", responseID.rawValue)) → responseData(\(responseData))")
                     invokeResponses.append(InvokeResponseIB(command: CommandDataIB(
                         commandPath: responsePath,
                         commandFields: responseData
                     )))
                 } else {
                     // Success, no response data
-                    logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → success")
+                    logger.trace("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → success")
                     invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
                         commandPath: cmd.commandPath,
                         status: .success
@@ -501,7 +501,7 @@ public struct InteractionModelHandler: Sendable {
                     await subscriptions.eventRecorded(event)
                 }
             } catch {
-                logger.debug("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → ERROR: \(error)")
+                logger.trace("  InvokeResponse: ep=\(cmd.commandPath.endpointID.rawValue) cluster=0x\(String(format: "%04X", cmd.commandPath.clusterID.rawValue)) command=0x\(String(format: "%02X", cmd.commandPath.commandID.rawValue)) → ERROR: \(error)")
                 invokeResponses.append(InvokeResponseIB(status: CommandStatusIB(
                     commandPath: cmd.commandPath,
                     status: .invalidAction
@@ -512,10 +512,10 @@ public struct InteractionModelHandler: Sendable {
         // Notify subscriptions of attribute changes from commands
         let dirty = store.dirtyPaths()
         if !dirty.isEmpty {
-            logger.debug("[INVOKE-SUB] \(dirty.count) dirty paths after invoke: \(dirty.map { "ep\($0.endpointID?.rawValue ?? 0)/0x\(String($0.clusterID?.rawValue ?? 0, radix: 16))/0x\(String($0.attributeID?.rawValue ?? 0, radix: 16))" }.joined(separator: ", "))")
+            logger.trace("[INVOKE-SUB] \(dirty.count) dirty paths after invoke: \(dirty.map { "ep\($0.endpointID?.rawValue ?? 0)/0x\(String($0.clusterID?.rawValue ?? 0, radix: 16))/0x\(String($0.attributeID?.rawValue ?? 0, radix: 16))" }.joined(separator: ", "))")
             await subscriptions.attributesChanged(dirty)
         } else {
-            logger.debug("[INVOKE-SUB] No dirty paths after invoke")
+            logger.trace("[INVOKE-SUB] No dirty paths after invoke")
         }
 
         let response = InvokeResponse(invokeResponses: invokeResponses)
@@ -537,7 +537,7 @@ public struct InteractionModelHandler: Sendable {
         requestContext: IMRequestContext?
     ) async throws -> IMHandleResult {
         let request = try SubscribeRequest.fromTLV(payload)
-        logger.debug("[SUBSCRIBE-DIAG] SubscribeRequest: \(request.attributeRequests.count) attrPaths, \(request.eventRequests.count) eventPaths, \(request.eventFilters.count) eventFilters, keepSubs=\(request.keepSubscriptions), fabricFiltered=\(request.isFabricFiltered), min=\(request.minIntervalFloor), max=\(request.maxIntervalCeiling)")
+        logger.trace("[SUBSCRIBE-DIAG] SubscribeRequest: \(request.attributeRequests.count) attrPaths, \(request.eventRequests.count) eventPaths, \(request.eventFilters.count) eventFilters, keepSubs=\(request.keepSubscriptions), fabricFiltered=\(request.isFabricFiltered), min=\(request.minIntervalFloor), max=\(request.maxIntervalCeiling)")
 
         // Create subscription
         let (subID, maxInterval) = await subscriptions.subscribe(
@@ -579,7 +579,7 @@ public struct InteractionModelHandler: Sendable {
             eventReports = []
         }
 
-        logger.debug("[SUBSCRIBE-DIAG] Priming report: \(filteredReports.count) attrs, \(eventReports.count) events")
+        logger.trace("[SUBSCRIBE-DIAG] Priming report: \(filteredReports.count) attrs, \(eventReports.count) events")
 
         let subResponse = SubscribeResponse(
             subscriptionID: subID,
@@ -622,8 +622,8 @@ public struct InteractionModelHandler: Sendable {
             }
             let chunkTLV = chunk.tlvEncode()
             let fullHex = chunkTLV.map { String(format: "%02x", $0) }.joined(separator: " ")
-            logger.debug("[SUBSCRIBE-DIAG] Chunk \(i+1)/\(chunks.count) (\(chunkTLV.count)B, \(attrSummary.count) attrs): \(attrSummary.joined(separator: ", "))")
-            logger.debug("[SUBSCRIBE-DIAG] Chunk \(i+1) FULL TLV: \(fullHex)")
+            logger.trace("[SUBSCRIBE-DIAG] Chunk \(i+1)/\(chunks.count) (\(chunkTLV.count)B, \(attrSummary.count) attrs): \(attrSummary.joined(separator: ", "))")
+            logger.trace("[SUBSCRIBE-DIAG] Chunk \(i+1) FULL TLV: \(fullHex)")
         }
 
         // Always use ChunkedReportContext, even for single-chunk subscribe reports.

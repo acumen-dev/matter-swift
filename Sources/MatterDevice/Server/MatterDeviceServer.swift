@@ -445,7 +445,7 @@ public actor MatterDeviceServer {
                 if let message = exchange.pendingMessage {
                     do {
                         try await transport.send(message, to: exchange.peerAddress)
-                        logger.debug("MRP retransmit #\(exchange.retransmitCount + 1) on exchange \(exchange.exchangeID) to \(exchange.peerAddress)")
+                        logger.trace("MRP retransmit #\(exchange.retransmitCount + 1) on exchange \(exchange.exchangeID) to \(exchange.peerAddress)")
                     } catch {
                         logger.warning("MRP retransmit failed on exchange \(exchange.exchangeID): \(error)")
                     }
@@ -496,7 +496,7 @@ public actor MatterDeviceServer {
                 logger.warning("Secured message error for session \(header.sessionID) counter=\(header.messageCounter) from \(sender): \(error)")
             }
         } else {
-            logger.debug("Dropping message for unknown session \(header.sessionID)")
+            logger.trace("Dropping message for unknown session \(header.sessionID)")
         }
     }
 
@@ -520,7 +520,7 @@ public actor MatterDeviceServer {
         // would match the group ID to a key set via the GroupKeyMap attribute and derive
         // the operational group key for decryption.
         guard let entry = sessions.values.first(where: { $0.fabricIndex.rawValue != 0 }) else {
-            logger.debug("No CASE session available to decrypt group message for group \(groupID.rawValue)")
+            logger.trace("No CASE session available to decrypt group message for group \(groupID.rawValue)")
             return
         }
 
@@ -531,7 +531,7 @@ public actor MatterDeviceServer {
         )
 
         guard !memberEndpointIDs.isEmpty else {
-            logger.debug("No member endpoints for group \(groupID.rawValue) on fabric \(fabricIndex)")
+            logger.trace("No member endpoints for group \(groupID.rawValue) on fabric \(fabricIndex)")
             return
         }
 
@@ -541,13 +541,13 @@ public actor MatterDeviceServer {
         do {
             (_, exchangeHeader, payload) = try SecureMessageCodec.decode(data: rawData, session: entry.session)
         } catch {
-            logger.debug("Group message decryption failed for group \(groupID.rawValue): \(error)")
+            logger.trace("Group message decryption failed for group \(groupID.rawValue): \(error)")
             return
         }
 
         guard exchangeHeader.protocolID == MatterProtocolID.interactionModel.rawValue,
               let opcode = InteractionModelOpcode(rawValue: exchangeHeader.protocolOpcode) else {
-            logger.debug("Group message is not an IM message for group \(groupID.rawValue)")
+            logger.trace("Group message is not an IM message for group \(groupID.rawValue)")
             return
         }
 
@@ -577,7 +577,7 @@ public actor MatterDeviceServer {
                 exchangeID: exchangeHeader.exchangeID,
                 requestContext: requestContext
             )
-            logger.debug("Dispatched group message to endpoint \(endpointIDRaw) for group \(groupID.rawValue)")
+            logger.trace("Dispatched group message to endpoint \(endpointIDRaw) for group \(groupID.rawValue)")
         }
         // No response sent — group messages are fire-and-forget (spec §4.16.2.1)
     }
@@ -593,22 +593,22 @@ public actor MatterDeviceServer {
         let body = Data(payload.suffix(from: exchConsumed))
 
         guard exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue else {
-            logger.debug("Ignoring unsecured message with protocol \(exchangeHeader.protocolID)")
+            logger.trace("Ignoring unsecured message with protocol \(exchangeHeader.protocolID)")
             return
         }
 
         guard let opcode = SecureChannelOpcode(rawValue: exchangeHeader.protocolOpcode) else {
-            logger.debug("Unknown secure channel opcode: \(exchangeHeader.protocolOpcode) exchange=\(exchangeHeader.exchangeID) ack=\(String(describing: exchangeHeader.acknowledgedMessageCounter))")
+            logger.trace("Unknown secure channel opcode: \(exchangeHeader.protocolOpcode) exchange=\(exchangeHeader.exchangeID) ack=\(String(describing: exchangeHeader.acknowledgedMessageCounter))")
             return
         }
 
         // Process piggybacked ACK — cancel pending retransmission for this exchange
         if let ackedCounter = exchangeHeader.acknowledgedMessageCounter {
             await exchangeManager.recordAcknowledgment(exchangeID: exchangeHeader.exchangeID)
-            logger.debug("MRP ACK received for exchange \(exchangeHeader.exchangeID) counter=\(ackedCounter)")
+            logger.trace("MRP ACK received for exchange \(exchangeHeader.exchangeID) counter=\(ackedCounter)")
         }
 
-        logger.debug("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) bodyLen=\(body.count)")
+        logger.trace("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) bodyLen=\(body.count)")
 
         switch opcode {
         case .pbkdfParamRequest:
@@ -638,7 +638,7 @@ public actor MatterDeviceServer {
                 logger.warning("[CASE] StatusReport on exchange \(exchangeHeader.exchangeID): body=\(body.map { String(format: "%02X", $0) }.joined())")
             }
         default:
-            logger.debug("Ignoring unsecured opcode \(opcode) on exchange \(exchangeHeader.exchangeID)")
+            logger.trace("Ignoring unsecured opcode \(opcode) on exchange \(exchangeHeader.exchangeID)")
         }
     }
 
@@ -662,16 +662,16 @@ public actor MatterDeviceServer {
                 ackMessageCounter: messageCounter,
                 destinationNodeID: existing.initiatorNodeID
             )
-            logger.debug("Resend PBKDFParamResponse exchange=\(exchangeID) counter=\(messageCounter) bytes=\(message.hexDump)")
+            logger.trace("Resend PBKDFParamResponse exchange=\(exchangeID) counter=\(messageCounter) bytes=\(message.hexDump)")
             try await transport.send(message, to: sender)
-            logger.debug("Resent PBKDFParamResponse (duplicate) on exchange \(exchangeID)")
+            logger.trace("Resent PBKDFParamResponse (duplicate) on exchange \(exchangeID)")
             return
         }
 
-        logger.debug("PBKDFParamRequest raw (\(data.count)B): \(data.hexDump)")
+        logger.trace("PBKDFParamRequest raw (\(data.count)B): \(data.hexDump)")
 
         let request = try PASEMessages.PBKDFParamRequest.fromTLV(data)
-        logger.debug("PBKDFParamRequest: exchange=\(exchangeID) hasPBKDFParams=\(request.hasPBKDFParameters) sessID=\(request.initiatorSessionID) passcodeID=\(request.passcodeID) sender=\(sender.host):\(sender.port) counter=\(messageCounter)")
+        logger.trace("PBKDFParamRequest: exchange=\(exchangeID) hasPBKDFParams=\(request.hasPBKDFParameters) sessID=\(request.initiatorSessionID) passcodeID=\(request.passcodeID) sender=\(sender.host):\(sender.port) counter=\(messageCounter)")
 
         let responderSessionID = allocateSessionID()
         var responderRandom = Data(count: 32)
@@ -688,7 +688,7 @@ public actor MatterDeviceServer {
         // (pbkdf_parameters) from the response — including it causes the initiator to reject
         // the response and retransmit indefinitely (observed with Apple Home).
         if request.hasPBKDFParameters {
-            logger.debug("Initiator has cached PBKDF params (hasPBKDFParameters=true) — omitting tag 4")
+            logger.trace("Initiator has cached PBKDF params (hasPBKDFParameters=true) — omitting tag 4")
         }
 
         let response = PASEMessages.PBKDFParamResponse(
@@ -727,9 +727,9 @@ public actor MatterDeviceServer {
             destinationNodeID: initiatorNodeID
         )
 
-        logger.debug("PBKDFParamResponse exchange=\(exchangeID) tlvLen=\(responseTLV.count) includePBKDF=\(!request.hasPBKDFParameters) ackCounter=\(messageCounter) wire(\(message.count)B): \(message.hexDump)")
+        logger.trace("PBKDFParamResponse exchange=\(exchangeID) tlvLen=\(responseTLV.count) includePBKDF=\(!request.hasPBKDFParameters) ackCounter=\(messageCounter) wire(\(message.count)B): \(message.hexDump)")
         try await transport.send(message, to: sender)
-        logger.debug("Sent PBKDFParamResponse on exchange \(exchangeID) to \(sender.host):\(sender.port) includedPBKDFParams=\(!request.hasPBKDFParameters) tlvLen=\(responseTLV.count) msgLen=\(message.count)")
+        logger.trace("Sent PBKDFParamResponse on exchange \(exchangeID) to \(sender.host):\(sender.port) includedPBKDFParams=\(!request.hasPBKDFParameters) tlvLen=\(responseTLV.count) msgLen=\(message.count)")
     }
 
     // MARK: - PASE Step 2: Pake1 → Pake2
@@ -760,7 +760,7 @@ public actor MatterDeviceServer {
                 destinationNodeID: handshake.initiatorNodeID
             )
             try await transport.send(message, to: sender)
-            logger.debug("Resent Pake2 (duplicate Pake1) on exchange \(exchangeID)")
+            logger.trace("Resent Pake2 (duplicate Pake1) on exchange \(exchangeID)")
             return
         }
 
@@ -1259,7 +1259,7 @@ public actor MatterDeviceServer {
                 let _ = try handler.handleSigma1(payload: sigma1Data, responderSessionID: 0)
                 return (info, index)
             } catch {
-                logger.debug("CASE: committed fabric \(index) did not match Sigma1: \(error)")
+                logger.trace("CASE: committed fabric \(index) did not match Sigma1: \(error)")
             }
         }
 
@@ -1308,7 +1308,7 @@ public actor MatterDeviceServer {
         // Route based on protocol ID
         if exchangeHeader.protocolID == MatterProtocolID.interactionModel.rawValue {
             guard let opcode = InteractionModelOpcode(rawValue: exchangeHeader.protocolOpcode) else {
-                logger.debug("Unknown IM opcode: \(exchangeHeader.protocolOpcode)")
+                logger.trace("Unknown IM opcode: \(exchangeHeader.protocolOpcode)")
                 return
             }
 
@@ -1321,7 +1321,7 @@ public actor MatterDeviceServer {
                 && !bridge.commissioningState.stagedACLs.isEmpty {
                 acls = bridge.commissioningState.stagedACLs
             }
-            logger.debug("ACL check: session=\(session.establishment) fabric=\(fabricIndex) committed=\(bridge.commissioningState.committedACLs[fabricIndex]?.count ?? 0) staged=\(bridge.commissioningState.stagedACLs.count) using=\(acls.count) peerNodeID=\(session.peerNodeID.rawValue)")
+            logger.trace("ACL check: session=\(session.establishment) fabric=\(fabricIndex) committed=\(bridge.commissioningState.committedACLs[fabricIndex]?.count ?? 0) staged=\(bridge.commissioningState.stagedACLs.count) using=\(acls.count) peerNodeID=\(session.peerNodeID.rawValue)")
             for (i, ace) in acls.enumerated() {
                 let subDesc = ace.subjects.map { String($0) }.joined(separator: ",")
                 let targDesc: String
@@ -1334,7 +1334,7 @@ public actor MatterDeviceServer {
                 } else {
                     targDesc = "*/*"
                 }
-                logger.debug("ACL[\(i)]: priv=\(ace.privilege) auth=\(ace.authMode) subs=[\(subDesc)] targ=[\(targDesc)] fab=\(ace.fabricIndex)")
+                logger.trace("ACL[\(i)]: priv=\(ace.privilege) auth=\(ace.authMode) subs=[\(subDesc)] targ=[\(targDesc)] fab=\(ace.fabricIndex)")
             }
             let requestContext = IMRequestContext(
                 checkerContext: ACLChecker.RequestContext(
@@ -1352,7 +1352,7 @@ public actor MatterDeviceServer {
             if opcode == .statusResponse, var context = pendingChunkedReports[exchangeHeader.exchangeID] {
                 // Parse StatusResponse to check for errors (matter.js: throwIfErrorStatusMessage)
                 let statusResponse = try IMStatusResponse.fromTLV(payload)
-                logger.debug("[CHUNK-FLOW] StatusResponse on exchange \(exchangeHeader.exchangeID): status=0x\(String(statusResponse.status, radix: 16)) chunkIndex=\(context.nextChunkIndex)/\(context.chunks.count)")
+                logger.trace("[CHUNK-FLOW] StatusResponse on exchange \(exchangeHeader.exchangeID): status=0x\(String(statusResponse.status, radix: 16)) chunkIndex=\(context.nextChunkIndex)/\(context.chunks.count)")
 
                 // Abort chunk delivery if the client rejected a chunk
                 if statusResponse.status != 0x00 {
@@ -1381,7 +1381,7 @@ public actor MatterDeviceServer {
                         session: session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
-                    logger.debug("[CHUNK-FLOW] Sending chunk \(context.nextChunkIndex)/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(nextChunk.tlvEncode().count)B TLV, moreChunked=\(nextChunk.moreChunkedMessages), ackCounter=\(String(describing: ackCounter))")
+                    logger.trace("[CHUNK-FLOW] Sending chunk \(context.nextChunkIndex)/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(nextChunk.tlvEncode().count)B TLV, moreChunked=\(nextChunk.moreChunkedMessages), ackCounter=\(String(describing: ackCounter))")
                     try await transport.send(encrypted, to: address)
                     await trackForRetransmission(
                         exchangeID: exchangeHeader.exchangeID,
@@ -1450,7 +1450,7 @@ public actor MatterDeviceServer {
                             sourceNodeID: NodeID(rawValue: 0)
                         )
                         try await transport.send(encrypted, to: address)
-                        logger.debug("[CHUNK-FLOW] Sent standalone ACK for final StatusResponse on exchange \(exchangeHeader.exchangeID)")
+                        logger.trace("[CHUNK-FLOW] Sent standalone ACK for final StatusResponse on exchange \(exchangeHeader.exchangeID)")
                     }
                 }
                 return
@@ -1531,7 +1531,7 @@ public actor MatterDeviceServer {
                         session: session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
-                    logger.debug("[CHUNK-FLOW] Sending first chunk 1/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(firstChunk.tlvEncode().count)B TLV, moreChunked=\(firstChunk.moreChunkedMessages)")
+                    logger.trace("[CHUNK-FLOW] Sending first chunk 1/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(firstChunk.tlvEncode().count)B TLV, moreChunked=\(firstChunk.moreChunkedMessages)")
                     try await transport.send(encrypted, to: address)
                     await trackForRetransmission(
                         exchangeID: exchangeHeader.exchangeID,
@@ -1551,7 +1551,7 @@ public actor MatterDeviceServer {
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {
             // Handle secure channel messages (e.g., MRP acks, close session)
-            logger.debug("Secure channel message on session \(session.localSessionID): opcode=\(exchangeHeader.protocolOpcode)")
+            logger.trace("Secure channel message on session \(session.localSessionID): opcode=\(exchangeHeader.protocolOpcode)")
 
             // Apple Home sends a StandaloneAck (not StatusResponse) for the final
             // chunk of a subscription priming report. If there are pending trailing
@@ -1575,11 +1575,11 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
                     try await transport.send(encrypted, to: address)
-                    logger.debug("Sent trailing \(trailingOpcode) on exchange \(exchangeHeader.exchangeID) after StandaloneAck")
+                    logger.trace("Sent trailing \(trailingOpcode) on exchange \(exchangeHeader.exchangeID) after StandaloneAck")
                 }
             }
         } else {
-            logger.debug("Unknown protocol \(exchangeHeader.protocolID) on session \(session.localSessionID)")
+            logger.trace("Unknown protocol \(exchangeHeader.protocolID) on session \(session.localSessionID)")
         }
     }
 
