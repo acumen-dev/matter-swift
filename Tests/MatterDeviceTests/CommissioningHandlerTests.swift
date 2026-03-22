@@ -966,7 +966,7 @@ struct MatterBridgeRootEndpointTests {
     @Test("Bridge passes config to BasicInformation handler")
     func bridgeConfigPropagation() {
         let bridge = MatterBridge(config: .init(
-            vendorName: "Acumen",
+            vendorName: "TestVendor",
             productName: "Hub",
             vendorId: 0x1234,
             productId: 0x5678
@@ -974,7 +974,7 @@ struct MatterBridgeRootEndpointTests {
 
         let ep0 = EndpointID(rawValue: 0)
         let vendorName = bridge.store.get(endpoint: ep0, cluster: .basicInformation, attribute: BasicInformationCluster.Attribute.vendorName)
-        #expect(vendorName?.stringValue == "Acumen")
+        #expect(vendorName?.stringValue == "TestVendor")
 
         let productName = bridge.store.get(endpoint: ep0, cluster: .basicInformation, attribute: BasicInformationCluster.Attribute.productName)
         #expect(productName?.stringValue == "Hub")

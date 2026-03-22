@@ -16,7 +16,7 @@ import MatterProtocol
 ///
 /// ```swift
 /// let bridge = MatterBridge(config: .init(
-///     vendorName: "Acumen", productName: "Hub",
+///     vendorName: "MyCompany", productName: "Hub",
 ///     vendorId: 0xFFF1, productId: 0x8000
 /// ))
 ///
