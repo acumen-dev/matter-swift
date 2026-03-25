@@ -25,12 +25,6 @@ import MatterModel
 ///     }
 /// )
 /// ```
-/// Thread-safe box for passing values between sync and async contexts.
-private final class UnsafeBox<T>: @unchecked Sendable {
-    var value: T
-    init(_ value: T) { self.value = value }
-}
-
 public final class MetadataClusterHandler: ClusterHandler, @unchecked Sendable {
 
     // MARK: - Properties
@@ -115,28 +109,8 @@ public final class MetadataClusterHandler: ClusterHandler, @unchecked Sendable {
             return nil
         }
 
-        // The ClusterHandler protocol is synchronous, but our callback is async.
-        // Bridge the gap with a semaphore. In practice, bridge commands should be fast.
-        let resultBox = UnsafeBox<TLVElement?>(nil)
-        let errorBox = UnsafeBox<(any Error)?>(nil)
-
-        let semaphore = DispatchSemaphore(value: 0)
         let cmdFields = fields ?? .structure([])
-
-        Task {
-            do {
-                resultBox.value = try await onCommand(commandID, cmdFields)
-            } catch {
-                errorBox.value = error
-            }
-            semaphore.signal()
-        }
-        semaphore.wait()
-
-        if let error = errorBox.value {
-            throw error
-        }
-        return resultBox.value
+        return try onCommand(commandID, cmdFields)
     }
 
     public func validateWrite(attributeID: AttributeID, value: TLVElement) -> WriteValidation {
@@ -158,17 +132,7 @@ public final class MetadataClusterHandler: ClusterHandler, @unchecked Sendable {
             }
         }
 
-        // Delegate to the bridge callback (synchronous bridge)
-        let acceptedBox = UnsafeBox<Bool>(false)
-        let semaphore = DispatchSemaphore(value: 0)
-
-        Task {
-            acceptedBox.value = await onWrite(attributeID, value)
-            semaphore.signal()
-        }
-        semaphore.wait()
-
-        return acceptedBox.value ? .allowed : .rejected(status: 0x87)
+        return onWrite(attributeID, value) ? .allowed : .rejected(status: 0x87)
     }
 
     public func responseCommandID(for requestCommandID: CommandID) -> CommandID? {
