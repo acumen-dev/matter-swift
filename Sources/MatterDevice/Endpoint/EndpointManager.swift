@@ -12,9 +12,12 @@ import MatterProtocol
 /// Handles endpoint registration, removal, and PartsList maintenance.
 /// Routes incoming IM read/write/invoke requests to the appropriate cluster handlers.
 ///
-/// This class is NOT an actor — it is serialized by its caller (typically the device/bridge actor).
+/// Thread-safe: all access to `endpoints` is serialized by `lock`. The manager is shared
+/// between the `MatterDeviceServer` actor (IM request handling) and bridge-side callers
+/// (endpoint provisioning from different actor contexts).
 public final class EndpointManager: @unchecked Sendable {
 
+    private let lock = NSLock()
     private var endpoints: [EndpointID: EndpointConfig] = [:]
     private let store: AttributeStore
     private var nextDynamicEndpointRaw: UInt16 = 3  // 0=root, 1=aggregator, 2=reserved
@@ -36,6 +39,14 @@ public final class EndpointManager: @unchecked Sendable {
         self.store = store
     }
 
+    // MARK: - Locking
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     // MARK: - Endpoint Registration
 
     /// Register an endpoint. Writes initial attributes from all cluster handlers to the store.
@@ -54,7 +65,7 @@ public final class EndpointManager: @unchecked Sendable {
     /// If this is a dynamic endpoint (not root or aggregator), the aggregator's
     /// Descriptor PartsList is updated to include the new endpoint.
     public func addEndpoint(_ config: EndpointConfig) {
-        endpoints[config.endpointID] = config
+        withLock { endpoints[config.endpointID] = config }
 
         // Write initial attributes from each cluster handler
         for handler in config.clusterHandlers {
@@ -92,33 +103,35 @@ public final class EndpointManager: @unchecked Sendable {
 
     /// Remove an endpoint and update the aggregator's PartsList.
     public func removeEndpoint(_ endpointID: EndpointID) {
-        endpoints.removeValue(forKey: endpointID)
+        withLock { endpoints.removeValue(forKey: endpointID) }
         store.removeEndpoint(endpointID)
         updateAggregatorPartsList()
     }
 
     /// Allocate the next available dynamic endpoint ID.
     public func nextEndpointID() -> EndpointID {
-        let id = EndpointID(rawValue: nextDynamicEndpointRaw)
-        nextDynamicEndpointRaw += 1
-        return id
+        withLock {
+            let id = EndpointID(rawValue: nextDynamicEndpointRaw)
+            nextDynamicEndpointRaw += 1
+            return id
+        }
     }
 
     /// Get an endpoint config by ID.
     public func endpoint(for id: EndpointID) -> EndpointConfig? {
-        endpoints[id]
+        withLock { endpoints[id] }
     }
 
     /// All registered endpoint IDs, sorted ascending.
     public func allEndpointIDs() -> [EndpointID] {
-        Array(endpoints.keys).sorted { $0.rawValue < $1.rawValue }
+        withLock { Array(endpoints.keys).sorted { $0.rawValue < $1.rawValue } }
     }
 
     /// Find the cluster handler for a specific (endpoint, cluster) pair.
     ///
     /// Returns `nil` if the endpoint does not exist or the cluster is not registered.
     public func clusterHandler(endpointID: EndpointID, clusterID: ClusterID) -> (any ClusterHandler)? {
-        endpoints[endpointID]?.clusterHandlers.first(where: { $0.clusterID == clusterID })
+        withLock { endpoints[endpointID]?.clusterHandlers.first(where: { $0.clusterID == clusterID }) }
     }
 
     // MARK: - IM Operations
@@ -147,6 +160,8 @@ public final class EndpointManager: @unchecked Sendable {
         fabricIndex: FabricIndex? = nil,
         dataVersionFilters: [DataVersionFilter] = []
     ) -> [AttributeReportIB] {
+        // Snapshot endpoints under lock — reads use the snapshot, no further locking needed.
+        let eps = withLock { endpoints }
         var reports: [AttributeReportIB] = []
 
         // Track whether the original path contains any wildcard component.
@@ -163,7 +178,7 @@ public final class EndpointManager: @unchecked Sendable {
             }
 
             for endpointID in targetEndpoints {
-                guard endpoints[endpointID] != nil else {
+                guard eps[endpointID] != nil else {
                     if !isWildcard {
                         reports.append(AttributeReportIB(attributeStatus: AttributeStatusIB(
                             path: AttributePath(endpointID: endpointID, clusterID: path.clusterID, attributeID: path.attributeID),
@@ -202,7 +217,7 @@ public final class EndpointManager: @unchecked Sendable {
                     }
 
                     // Resolve the cluster handler once for this (endpoint, cluster) pair — used for fabric filtering.
-                    let clusterHandler = endpoints[endpointID]?.clusterHandlers.first(where: { $0.clusterID == clusterID })
+                    let clusterHandler = eps[endpointID]?.clusterHandlers.first(where: { $0.clusterID == clusterID })
 
                     // Determine target attributes
                     if let attributeID = path.attributeID {
@@ -259,6 +274,7 @@ public final class EndpointManager: @unchecked Sendable {
 
     /// Process write requests. Returns per-attribute status.
     public func writeAttributes(_ writes: [AttributeDataIB]) -> [AttributeStatusIB] {
+        let eps = withLock { endpoints }
         var statuses: [AttributeStatusIB] = []
 
         for write in writes {
@@ -272,7 +288,7 @@ public final class EndpointManager: @unchecked Sendable {
                 continue
             }
 
-            guard let config = endpoints[ep] else {
+            guard let config = eps[ep] else {
                 statuses.append(AttributeStatusIB(path: write.path, status: .unsupportedEndpoint))
                 continue
             }
@@ -321,7 +337,7 @@ public final class EndpointManager: @unchecked Sendable {
     /// Returns `nil` response payload if the endpoint or cluster doesn't exist — the
     /// caller should return an unsupported-endpoint or unsupported-cluster status.
     public func handleCommand(path: CommandPath, fields: TLVElement?) async throws -> (response: TLVElement?, recordedEvents: [StoredEvent]) {
-        guard let config = endpoints[path.endpointID] else {
+        guard let config = withLock({ endpoints[path.endpointID] }) else {
             return (nil, [])
         }
 
