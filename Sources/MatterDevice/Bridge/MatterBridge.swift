@@ -836,6 +836,16 @@ public final class MatterBridge: @unchecked Sendable {
         await subscriptions.expireStale(now: now)
     }
 
+    /// Remove a specific subscription (e.g. after client rejection).
+    public func removeSubscription(id: SubscriptionID) async {
+        await subscriptions.remove(subscriptionID: id)
+    }
+
+    /// Remove all subscriptions for a fabric.
+    public func removeSubscriptions(fabricIndex: FabricIndex) async {
+        await subscriptions.removeAll(fabricIndex: fabricIndex)
+    }
+
     // MARK: - Accessors
 
     /// All currently registered bridged endpoints.
