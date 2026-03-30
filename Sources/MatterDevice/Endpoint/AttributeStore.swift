@@ -12,7 +12,9 @@ import MatterProtocol
 /// attribute value changes. Dirty tracking enables efficient subscription reports — only changed
 /// attributes are reported.
 ///
-/// This class is NOT an actor — it is serialized by its caller (typically the device/bridge actor).
+/// Thread-safe: all access to `storage` is serialized by `lock`. The store is shared between
+/// the `MatterDeviceServer` actor (IM request handling) and `BridgedEndpoint` callers
+/// (bridge-side attribute updates from different actor contexts).
 public final class AttributeStore: @unchecked Sendable {
 
     // MARK: - Per-Cluster Storage
@@ -31,6 +33,7 @@ public final class AttributeStore: @unchecked Sendable {
 
     // MARK: - State
 
+    private let lock = NSLock()
     private var storage: [EndpointID: [ClusterID: ClusterStorage]]
 
     // MARK: - Persistence
@@ -44,45 +47,57 @@ public final class AttributeStore: @unchecked Sendable {
         self.attributeStore = attributeStore
     }
 
+    // MARK: - Locking
+
+    private func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     // MARK: - Read
 
     /// Get an attribute value, or `nil` if not stored.
     public func get(endpoint: EndpointID, cluster: ClusterID, attribute: AttributeID) -> TLVElement? {
-        storage[endpoint]?[cluster]?.attributes[attribute]
+        withLock { storage[endpoint]?[cluster]?.attributes[attribute] }
     }
 
     /// Get the current `DataVersion` for a cluster instance.
     ///
     /// Returns a zero-valued `DataVersion` if the cluster has no storage yet.
     public func dataVersion(endpoint: EndpointID, cluster: ClusterID) -> DataVersion {
-        storage[endpoint]?[cluster]?.dataVersion ?? DataVersion(rawValue: 0)
+        withLock { storage[endpoint]?[cluster]?.dataVersion ?? DataVersion(rawValue: 0) }
     }
 
     /// Get all attributes stored for a cluster instance.
     public func allAttributes(endpoint: EndpointID, cluster: ClusterID) -> [(AttributeID, TLVElement)] {
-        guard let clusterStorage = storage[endpoint]?[cluster] else { return [] }
-        return clusterStorage.attributes.map { ($0.key, $0.value) }
+        withLock {
+            guard let clusterStorage = storage[endpoint]?[cluster] else { return [] }
+            return clusterStorage.attributes.map { ($0.key, $0.value) }
+        }
     }
 
     /// Check if any data exists for the given endpoint.
     public func hasEndpoint(_ endpoint: EndpointID) -> Bool {
-        storage[endpoint] != nil
+        withLock { storage[endpoint] != nil }
     }
 
     /// Check if any data exists for the given cluster on the given endpoint.
     public func hasCluster(endpoint: EndpointID, cluster: ClusterID) -> Bool {
-        storage[endpoint]?[cluster] != nil
+        withLock { storage[endpoint]?[cluster] != nil }
     }
 
     /// All endpoint IDs that have data.
     public func allEndpointIDs() -> [EndpointID] {
-        Array(storage.keys)
+        withLock { Array(storage.keys) }
     }
 
     /// All cluster IDs on an endpoint.
     public func allClusterIDs(endpoint: EndpointID) -> [ClusterID] {
-        guard let clusters = storage[endpoint] else { return [] }
-        return Array(clusters.keys)
+        withLock {
+            guard let clusters = storage[endpoint] else { return [] }
+            return Array(clusters.keys)
+        }
     }
 
     // MARK: - Write
@@ -99,21 +114,23 @@ public final class AttributeStore: @unchecked Sendable {
         attribute: AttributeID,
         value: TLVElement
     ) -> Bool {
-        var endpointStorage = storage[endpoint] ?? [:]
-        var clusterStorage = endpointStorage[cluster] ?? ClusterStorage()
+        withLock {
+            var endpointStorage = storage[endpoint] ?? [:]
+            var clusterStorage = endpointStorage[cluster] ?? ClusterStorage()
 
-        // No-op detection: skip if value is identical
-        if let existing = clusterStorage.attributes[attribute], existing == value {
-            return false
+            // No-op detection: skip if value is identical
+            if let existing = clusterStorage.attributes[attribute], existing == value {
+                return false
+            }
+
+            clusterStorage.attributes[attribute] = value
+            clusterStorage.dataVersion = DataVersion(rawValue: clusterStorage.dataVersion.rawValue &+ 1)
+            clusterStorage.dirtyAttributes.insert(attribute)
+
+            endpointStorage[cluster] = clusterStorage
+            storage[endpoint] = endpointStorage
+            return true
         }
-
-        clusterStorage.attributes[attribute] = value
-        clusterStorage.dataVersion = DataVersion(rawValue: clusterStorage.dataVersion.rawValue &+ 1)
-        clusterStorage.dirtyAttributes.insert(attribute)
-
-        endpointStorage[cluster] = clusterStorage
-        storage[endpoint] = endpointStorage
-        return true
     }
 
     /// Mark an attribute as dirty without changing its value.
@@ -122,21 +139,23 @@ public final class AttributeStore: @unchecked Sendable {
     /// the command sets the same value that's already stored (e.g., "On" when already on).
     /// The controller expects a subscription report to confirm every command.
     public func markDirty(endpoint: EndpointID, cluster: ClusterID, attribute: AttributeID) {
-        guard var endpointStorage = storage[endpoint],
-              var clusterStorage = endpointStorage[cluster] else {
-            #if DEBUG
-            print("[ATTR-STORE] markDirty GUARD FAILED: ep=\(endpoint.rawValue) cluster=0x\(String(format: "%04X", cluster.rawValue)) attr=0x\(String(format: "%04X", attribute.rawValue)) — endpoint/cluster not in storage")
-            #endif
-            return
+        withLock {
+            guard var endpointStorage = storage[endpoint],
+                  var clusterStorage = endpointStorage[cluster] else {
+                #if DEBUG
+                print("[ATTR-STORE] markDirty GUARD FAILED: ep=\(endpoint.rawValue) cluster=0x\(String(format: "%04X", cluster.rawValue)) attr=0x\(String(format: "%04X", attribute.rawValue)) — endpoint/cluster not in storage")
+                #endif
+                return
+            }
+            clusterStorage.dirtyAttributes.insert(attribute)
+            endpointStorage[cluster] = clusterStorage
+            storage[endpoint] = endpointStorage
         }
-        clusterStorage.dirtyAttributes.insert(attribute)
-        endpointStorage[cluster] = clusterStorage
-        storage[endpoint] = endpointStorage
     }
 
     /// Remove all data for an endpoint.
     public func removeEndpoint(_ endpoint: EndpointID) {
-        storage.removeValue(forKey: endpoint)
+        withLock { storage.removeValue(forKey: endpoint) }
     }
 
     // MARK: - Dirty Tracking
@@ -146,33 +165,37 @@ public final class AttributeStore: @unchecked Sendable {
     /// Returns an `AttributePath` for each attribute that has been modified since the last
     /// call to `clearDirty()`.
     public func dirtyPaths() -> [AttributePath] {
-        var paths: [AttributePath] = []
-        for (endpointID, clusters) in storage {
-            for (clusterID, clusterStorage) in clusters {
-                for attributeID in clusterStorage.dirtyAttributes {
-                    paths.append(AttributePath(
-                        endpointID: endpointID,
-                        clusterID: clusterID,
-                        attributeID: attributeID
-                    ))
+        withLock {
+            var paths: [AttributePath] = []
+            for (endpointID, clusters) in storage {
+                for (clusterID, clusterStorage) in clusters {
+                    for attributeID in clusterStorage.dirtyAttributes {
+                        paths.append(AttributePath(
+                            endpointID: endpointID,
+                            clusterID: clusterID,
+                            attributeID: attributeID
+                        ))
+                    }
                 }
             }
+            return paths
         }
-        return paths
     }
 
     /// Clear all dirty flags across all endpoints and clusters.
     public func clearDirty() {
-        for endpointID in storage.keys {
-            for clusterID in storage[endpointID]!.keys {
-                storage[endpointID]![clusterID]!.dirtyAttributes.removeAll()
+        withLock {
+            for endpointID in storage.keys {
+                for clusterID in storage[endpointID]!.keys {
+                    storage[endpointID]![clusterID]!.dirtyAttributes.removeAll()
+                }
             }
         }
     }
 
     /// Clear dirty flags for a specific cluster instance.
     public func clearDirty(endpoint: EndpointID, cluster: ClusterID) {
-        storage[endpoint]?[cluster]?.dirtyAttributes.removeAll()
+        withLock { storage[endpoint]?[cluster]?.dirtyAttributes.removeAll() }
     }
 
     // MARK: - Persistence
@@ -185,23 +208,25 @@ public final class AttributeStore: @unchecked Sendable {
         guard let store = attributeStore else { return }
         guard let stored = try await store.load() else { return }
 
-        for (key, clusterData) in stored.clusters {
-            let endpointID = EndpointID(rawValue: key.endpointID)
-            let clusterID = ClusterID(rawValue: key.clusterID)
+        withLock {
+            for (key, clusterData) in stored.clusters {
+                let endpointID = EndpointID(rawValue: key.endpointID)
+                let clusterID = ClusterID(rawValue: key.clusterID)
 
-            var clusterStorage = ClusterStorage()
-            clusterStorage.dataVersion = DataVersion(rawValue: clusterData.dataVersion)
+                var clusterStorage = ClusterStorage()
+                clusterStorage.dataVersion = DataVersion(rawValue: clusterData.dataVersion)
 
-            for (attrRaw, tlvData) in clusterData.attributes {
-                let attrID = AttributeID(rawValue: attrRaw)
-                if let decoded = try? TLVDecoder.decode(tlvData) {
-                    clusterStorage.attributes[attrID] = decoded.element
+                for (attrRaw, tlvData) in clusterData.attributes {
+                    let attrID = AttributeID(rawValue: attrRaw)
+                    if let decoded = try? TLVDecoder.decode(tlvData) {
+                        clusterStorage.attributes[attrID] = decoded.element
+                    }
                 }
-            }
 
-            var endpointStorage = storage[endpointID] ?? [:]
-            endpointStorage[clusterID] = clusterStorage
-            storage[endpointID] = endpointStorage
+                var endpointStorage = storage[endpointID] ?? [:]
+                endpointStorage[clusterID] = clusterStorage
+                storage[endpointID] = endpointStorage
+            }
         }
     }
 
@@ -212,25 +237,27 @@ public final class AttributeStore: @unchecked Sendable {
     public func saveToStore() async {
         guard let store = attributeStore else { return }
 
-        var clusters: [StoredClusterKey: StoredClusterData] = [:]
+        let clusters: [StoredClusterKey: StoredClusterData] = withLock {
+            var result: [StoredClusterKey: StoredClusterData] = [:]
+            for (endpointID, endpointStorage) in storage {
+                for (clusterID, clusterStorage) in endpointStorage {
+                    let key = StoredClusterKey(
+                        endpointID: endpointID.rawValue,
+                        clusterID: clusterID.rawValue
+                    )
 
-        for (endpointID, endpointStorage) in storage {
-            for (clusterID, clusterStorage) in endpointStorage {
-                let key = StoredClusterKey(
-                    endpointID: endpointID.rawValue,
-                    clusterID: clusterID.rawValue
-                )
+                    var attributes: [UInt32: Data] = [:]
+                    for (attrID, element) in clusterStorage.attributes {
+                        attributes[attrID.rawValue] = TLVEncoder.encode(element)
+                    }
 
-                var attributes: [UInt32: Data] = [:]
-                for (attrID, element) in clusterStorage.attributes {
-                    attributes[attrID.rawValue] = TLVEncoder.encode(element)
+                    result[key] = StoredClusterData(
+                        dataVersion: clusterStorage.dataVersion.rawValue,
+                        attributes: attributes
+                    )
                 }
-
-                clusters[key] = StoredClusterData(
-                    dataVersion: clusterStorage.dataVersion.rawValue,
-                    attributes: attributes
-                )
             }
+            return result
         }
 
         let data = StoredAttributeData(clusters: clusters)

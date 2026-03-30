@@ -68,11 +68,14 @@ public struct ChunkedReportContext: Sendable {
     /// True when the server initiated this exchange (subscription reports).
     /// False when the client initiated (read/subscribe request responses).
     public let isServerInitiated: Bool
+    /// The subscription this report belongs to (nil for client-initiated reads).
+    public let subscriptionID: SubscriptionID?
 
-    public init(chunks: [ReportData], trailingResponses: [(InteractionModelOpcode, Data)] = [], isServerInitiated: Bool = false) {
+    public init(chunks: [ReportData], trailingResponses: [(InteractionModelOpcode, Data)] = [], isServerInitiated: Bool = false, subscriptionID: SubscriptionID? = nil) {
         self.chunks = chunks
         self.trailingResponses = trailingResponses
         self.isServerInitiated = isServerInitiated
+        self.subscriptionID = subscriptionID
     }
 
     /// Return the next chunk and advance the index. Returns nil when exhausted.

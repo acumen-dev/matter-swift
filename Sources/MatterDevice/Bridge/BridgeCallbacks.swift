@@ -14,7 +14,7 @@ import MatterTypes
 ///   - AttributeID: The attribute being written.
 ///   - TLVElement: The new value.
 /// - Returns: `true` if the write is accepted, `false` to reject.
-public typealias AttributeWriteCallback = @Sendable (AttributeID, TLVElement) async -> Bool
+public typealias AttributeWriteCallback = @Sendable (AttributeID, TLVElement) -> Bool
 
 /// Callback invoked when a Matter controller sends a command to the cluster.
 ///
@@ -25,4 +25,4 @@ public typealias AttributeWriteCallback = @Sendable (AttributeID, TLVElement) as
 ///   - CommandID: The command being invoked.
 ///   - TLVElement: The command fields (may be an empty structure).
 /// - Returns: Optional response TLV payload, or `nil` for status-only response.
-public typealias CommandInvokeCallback = @Sendable (CommandID, TLVElement) async throws -> TLVElement?
+public typealias CommandInvokeCallback = @Sendable (CommandID, TLVElement) throws -> TLVElement?
