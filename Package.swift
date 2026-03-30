@@ -39,6 +39,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+        .package(path: "/Volumes/Development/Acumen Project/mdns-swift"),
     ],
     targets: [
         // MARK: - Core Types
@@ -77,6 +78,7 @@ let package = Package(
             dependencies: [
                 "MatterTypes",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "MDNSCore", package: "mdns-swift"),
             ]
         ),
 
@@ -130,6 +132,7 @@ let package = Package(
             dependencies: [
                 "MatterTransport",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "MDNSApple", package: "mdns-swift"),
             ]
         ),
 
@@ -142,6 +145,7 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "MDNSLinux", package: "mdns-swift"),
             ]
         ),
 
@@ -200,7 +204,11 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterLinuxTests",
-            dependencies: ["MatterLinux", "MatterTransport"]
+            dependencies: [
+                "MatterLinux",
+                "MatterTransport",
+                .product(name: "MDNSLinux", package: "mdns-swift"),
+            ]
         ),
         .testTarget(
             name: "IntegrationTests",
