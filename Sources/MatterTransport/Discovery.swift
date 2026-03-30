@@ -2,6 +2,24 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+@_exported import MDNSCore
+
+// MARK: - Type Aliases
+
+/// Platform-agnostic mDNS/DNS-SD discovery protocol.
+///
+/// Matter-specific alias for `ServiceDiscovery` from MDNSCore.
+/// Platform implementations (`MatterApple`, `MatterLinux`) are provided via
+/// `AppleServiceDiscovery` and `LinuxServiceDiscovery` from the shared
+/// `mdns-swift` package, re-exported as `AppleDiscovery` and `LinuxDiscovery`.
+public typealias MatterDiscovery = ServiceDiscovery
+
+/// A discovered or advertised Matter service record.
+///
+/// Matter-specific alias for `ServiceRecord` from MDNSCore.
+public typealias MatterServiceRecord = ServiceRecord
+
+// MARK: - Matter Service Types
 
 /// Matter service types for mDNS/DNS-SD discovery.
 public enum MatterServiceType: String, Sendable {
@@ -13,49 +31,27 @@ public enum MatterServiceType: String, Sendable {
     case commissioner = "_matterd._udp"
 }
 
-/// A discovered or advertised Matter service record.
-public struct MatterServiceRecord: Sendable {
-    public let name: String
-    public let serviceType: MatterServiceType
-    public let host: String
-    public let port: UInt16
-    public let txtRecords: [String: String]
-    /// DNS-SD subtypes to register alongside the primary service type.
-    ///
-    /// For commissionable discovery, pass subtypes like `["_CM", "_L3840", "_S15"]`.
-    /// These are appended to the `regtype` as `_matterc._udp,_CM,_L3840,_S15`, which
-    /// registers under `_CM._sub._matterc._udp` etc. — required for Apple Home to locate
-    /// the device after reading the QR code discriminator.
-    public let subtypes: [String]
-    /// Preferred network interface name hint — advisory only.
-    ///
-    /// May be set to the interface that carried the PASE session (e.g. `"en0"`) as
-    /// a hint for implementations.  `AppleDiscovery` currently ignores this field and
-    /// always registers the operational AAAA record on every active LAN interface
-    /// individually (each with its own link-local IPv6 address and its specific ifIndex).
-    /// Per-interface mDNS registration ensures that a query arriving on any interface
-    /// is answered with the reachable address for that path — no single-interface
-    /// restriction is needed or safe.
-    public let preferredInterface: String?
+// MARK: - ServiceType Extensions
 
-    public init(
-        name: String,
-        serviceType: MatterServiceType,
-        host: String,
-        port: UInt16,
-        txtRecords: [String: String] = [:],
-        subtypes: [String] = [],
-        preferredInterface: String? = nil
-    ) {
-        self.name = name
-        self.serviceType = serviceType
-        self.host = host
-        self.port = port
-        self.txtRecords = txtRecords
-        self.subtypes = subtypes
-        self.preferredInterface = preferredInterface
+extension ServiceType {
+    /// Matter commissionable discovery: `_matterc._udp`
+    public static let commissionable: ServiceType = "_matterc._udp"
+    /// Matter operational discovery: `_matter._tcp`
+    public static let operational: ServiceType = "_matter._tcp"
+    /// Matter commissioner discovery: `_matterd._udp`
+    public static let commissioner: ServiceType = "_matterd._udp"
+}
+
+// MARK: - MatterDiscovery Convenience Extension
+
+extension ServiceDiscovery {
+    /// Browse by `MatterServiceType` — convenience wrapper over `browse(serviceType:)`.
+    public func browse(type: MatterServiceType) -> AsyncStream<ServiceRecord> {
+        browse(serviceType: ServiceType(rawValue: type.rawValue))
     }
 }
+
+// MARK: - OperationalInstanceName
 
 /// Operational instance name for DNS-SD advertisement.
 ///
@@ -106,38 +102,5 @@ public struct OperationalInstanceName: Sendable, Equatable {
             return nil
         }
         return OperationalInstanceName(compressedFabricID: cfid, nodeID: nid)
-    }
-}
-
-/// Platform-agnostic mDNS/DNS-SD discovery protocol.
-///
-/// Implementations provide platform-specific service discovery:
-/// - `MatterApple`: `NWBrowser` / `NWListener`
-/// - `MatterLinux`: avahi or built-in mDNS
-public protocol MatterDiscovery: Sendable {
-    /// Advertise a service on the local network.
-    ///
-    /// Multiple services can be advertised simultaneously (e.g., commissionable + operational).
-    /// Each service is identified by its `name` — advertising a service with the same name
-    /// replaces the previous advertisement.
-    func advertise(service: MatterServiceRecord) async throws
-
-    /// Browse for services of a given type.
-    func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord>
-
-    /// Resolve a discovered service to a network address.
-    func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress
-
-    /// Stop all advertisements.
-    func stopAdvertising() async
-
-    /// Stop advertising a specific service by name.
-    func stopAdvertising(name: String) async
-}
-
-extension MatterDiscovery {
-    /// Default implementation: stop all advertisements.
-    public func stopAdvertising(name: String) async {
-        await stopAdvertising()
     }
 }

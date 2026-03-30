@@ -77,7 +77,7 @@ actor MockServerDiscovery: MatterDiscovery {
 
     private(set) var advertisedServices: [MatterServiceRecord] = []
     private(set) var isAdvertising = false
-    private var browseRecords: [MatterServiceType: [MatterServiceRecord]] = [:]
+    private var browseRecords: [ServiceType: [MatterServiceRecord]] = [:]
     private var resolveResults: [String: MatterAddress] = [:]
 
     // MARK: - Test Helpers
@@ -96,10 +96,10 @@ actor MockServerDiscovery: MatterDiscovery {
         await recordAdvertise(service)
     }
 
-    nonisolated func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord> {
+    nonisolated func browse(serviceType: ServiceType) -> AsyncStream<MatterServiceRecord> {
         AsyncStream { continuation in
             Task {
-                let records = await self.recordsForType(type)
+                let records = await self.recordsForType(serviceType)
                 for record in records {
                     continuation.yield(record)
                 }
@@ -129,8 +129,8 @@ actor MockServerDiscovery: MatterDiscovery {
     }
 
     /// Services advertised with a specific service type.
-    func services(ofType type: MatterServiceType) -> [MatterServiceRecord] {
-        advertisedServices.filter { $0.serviceType == type }
+    func services(ofType serviceType: ServiceType) -> [MatterServiceRecord] {
+        advertisedServices.filter { $0.serviceType == serviceType }
     }
 
     // MARK: - Internal
@@ -140,8 +140,8 @@ actor MockServerDiscovery: MatterDiscovery {
         isAdvertising = true
     }
 
-    private func recordsForType(_ type: MatterServiceType) -> [MatterServiceRecord] {
-        browseRecords[type] ?? []
+    private func recordsForType(_ serviceType: ServiceType) -> [MatterServiceRecord] {
+        browseRecords[serviceType] ?? []
     }
 
     private func addressForName(_ name: String) -> MatterAddress? {

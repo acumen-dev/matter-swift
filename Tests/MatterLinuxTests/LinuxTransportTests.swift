@@ -4,6 +4,7 @@
 import Testing
 import Foundation
 @testable import MatterLinux
+@testable import MDNSLinux
 import MatterTransport
 import NIOCore
 

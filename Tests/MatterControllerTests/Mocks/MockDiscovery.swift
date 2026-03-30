@@ -12,7 +12,7 @@ actor MockDiscovery: MatterDiscovery {
 
     // MARK: - State
 
-    private var browseRecords: [MatterServiceType: [MatterServiceRecord]] = [:]
+    private var browseRecords: [ServiceType: [MatterServiceRecord]] = [:]
     private var resolveResults: [String: MatterAddress] = [:]
     private var advertisedServices: [MatterServiceRecord] = []
 
@@ -34,10 +34,10 @@ actor MockDiscovery: MatterDiscovery {
         await recordAdvertise(service)
     }
 
-    nonisolated func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord> {
+    nonisolated func browse(serviceType: ServiceType) -> AsyncStream<MatterServiceRecord> {
         AsyncStream { continuation in
             Task {
-                let records = await self.recordsForType(type)
+                let records = await self.recordsForType(serviceType)
                 for record in records {
                     continuation.yield(record)
                 }
@@ -72,8 +72,8 @@ actor MockDiscovery: MatterDiscovery {
         advertisedServices.append(service)
     }
 
-    private func recordsForType(_ type: MatterServiceType) -> [MatterServiceRecord] {
-        browseRecords[type] ?? []
+    private func recordsForType(_ serviceType: ServiceType) -> [MatterServiceRecord] {
+        browseRecords[serviceType] ?? []
     }
 
     private func addressForName(_ name: String) -> MatterAddress? {

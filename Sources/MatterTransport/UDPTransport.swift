@@ -2,17 +2,12 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import MatterTypes
+import MDNSCore
 
 /// Network address for Matter communication.
-public struct MatterAddress: Sendable, Hashable {
-    public let host: String
-    public let port: UInt16
-
-    public init(host: String, port: UInt16) {
-        self.host = host
-        self.port = port
-    }
-}
+///
+/// Matter-specific alias for `NetworkAddress` from MDNSCore.
+public typealias MatterAddress = NetworkAddress
 
 /// Platform-agnostic UDP transport protocol.
 ///

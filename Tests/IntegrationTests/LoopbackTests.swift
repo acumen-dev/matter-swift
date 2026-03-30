@@ -533,7 +533,7 @@ struct PASEResult {
 /// and AppleUDPTransport's listener.
 final class StubDiscovery: MatterDiscovery, @unchecked Sendable {
     func advertise(service: MatterServiceRecord) async throws {}
-    func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord> {
+    func browse(serviceType: ServiceType) -> AsyncStream<MatterServiceRecord> {
         AsyncStream { $0.finish() }
     }
     func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
