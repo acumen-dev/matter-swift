@@ -39,7 +39,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
-        .package(url: "https://github.com/acumen-dev/mdns-swift.git", from: "0.1.0"),
+        .package(url: "https://github.com/acumen-dev/mdns-swift.git", from: "1.0.0"),
     ],
     targets: [
         // MARK: - Core Types
