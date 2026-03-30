@@ -31,6 +31,19 @@ let package = Package(
         .library(name: "MatterLinux", targets: ["MatterLinux"]),
         // Convenience: re-exports everything for typical use
         .library(name: "MatterSwift", targets: ["MatterSwift"]),
+
+        // Thread mesh networking (requires openthread-swift + pre-built OpenThread libs)
+        .library(name: "MatterThread", targets: ["MatterThread"]),
+        // Thread Border Router
+        .library(name: "MatterThreadBorderRouter", targets: ["MatterThreadBorderRouter"]),
+    ],
+    traits: [
+        .trait(name: "Thread", description: "Thread mesh networking via OpenThread"),
+        .trait(
+            name: "ThreadBorderRouter",
+            description: "Thread Border Router: IPv6 bridging, SRP proxy, DNS proxy, NAT64",
+            enabledTraits: ["Thread"]
+        ),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
@@ -40,6 +53,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         .package(url: "https://github.com/acumen-dev/mdns-swift.git", from: "1.0.0"),
+        // OpenThread — local path during development, switch to URL for release.
+        // Only resolved when the "Thread" trait is enabled.
+        .package(path: "../openthread-swift", traits: [.defaults]),
     ],
     targets: [
         // MARK: - Core Types
@@ -125,7 +141,6 @@ let package = Package(
         ),
 
         // MARK: - Platform: Apple
-        // Note: MatterCrypto not needed here — crypto lives in the MatterCrypto module.
 
         .target(
             name: "MatterApple",
@@ -146,6 +161,31 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "MDNSLinux", package: "mdns-swift"),
+            ]
+        ),
+
+        // MARK: - Thread (requires openthread-swift package + pre-built libs)
+
+        .target(
+            name: "MatterThread",
+            dependencies: [
+                .product(name: "OpenThread", package: "openthread-swift",
+                         condition: .when(traits: ["Thread"])),
+                "MatterTransport",
+                "MatterController",
+                "MatterModel",
+                .product(name: "Logging", package: "swift-log"),
+            ]
+        ),
+
+        .target(
+            name: "MatterThreadBorderRouter",
+            dependencies: [
+                .target(name: "MatterThread",
+                        condition: .when(traits: ["ThreadBorderRouter"])),
+                .product(name: "OpenThread", package: "openthread-swift",
+                         condition: .when(traits: ["ThreadBorderRouter"])),
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
 
