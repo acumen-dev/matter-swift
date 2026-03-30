@@ -121,7 +121,7 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
         // Restrict advertisement to the primary LAN interface.
         // Both commissionable and operational use the system hostname (hostParam=nil)
         // so that mDNSResponder resolves SRV targets using the Mac's own Bonjour
-        // records (DM-Mac-mini.local. → fe80:: + IPv4).  CHIP's address scorer picks
+        // records (e.g. my-mac.local. → fe80:: + IPv4).  CHIP's address scorer picks
         // link-local IPv6 first, so CASE connects on the same address as PASE even
         // when VPN/Tailscale addresses are also present in the hostname's record set.
         //
@@ -155,7 +155,7 @@ public final class AppleDiscovery: MatterDiscovery, @unchecked Sendable {
                 service.name,
                 typeString,
                 "local.",
-                hostParam,      // nil = system hostname (DM-Mac-mini.local.)
+                hostParam,      // nil = system hostname (e.g. my-mac.local.)
                 portBig,
                 UInt16(txtData.count),
                 ptr.baseAddress,

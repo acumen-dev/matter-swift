@@ -370,6 +370,12 @@ public actor MatterDeviceServer {
             // Purge stale chunked invoke buffers
             await bridge.chunkedInvokeBuffer.purgeStale()
 
+            // Expire subscriptions that haven't sent a StatusResponse within maxInterval + margin
+            let expired = await bridge.expireStale(now: now)
+            for expiredID in expired {
+                logger.info("Subscription \(expiredID) expired (no StatusResponse within interval)")
+            }
+
             let reports = await bridge.pendingReports(now: now)
             for report in reports {
                 guard let chunks = await bridge.buildReport(for: report),
@@ -391,9 +397,9 @@ public actor MatterDeviceServer {
                     // StatusResponse is handled by the chunked report handler and ACK'd.
                     if chunks.count > 1 {
                         let remainingChunks = Array(chunks.dropFirst())
-                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: remainingChunks, isServerInitiated: true)
+                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: remainingChunks, isServerInitiated: true, subscriptionID: report.subscriptionID)
                     } else {
-                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: [], isServerInitiated: true)
+                        pendingChunkedReports[exchangeID] = ChunkedReportContext(chunks: [], isServerInitiated: true, subscriptionID: report.subscriptionID)
                     }
 
                     let exchangeHeader = ExchangeHeader(
@@ -1358,6 +1364,11 @@ public actor MatterDeviceServer {
                 if statusResponse.status != 0x00 {
                     logger.warning("[CHUNK-FLOW] Client rejected chunk with status=0x\(String(statusResponse.status, radix: 16)) on exchange \(exchangeHeader.exchangeID) — aborting chunk delivery")
                     pendingChunkedReports.removeValue(forKey: exchangeHeader.exchangeID)
+                    // Remove the subscription so we stop retrying on the next reportLoop tick
+                    if let subID = context.subscriptionID {
+                        await bridge.removeSubscription(id: subID)
+                        logger.warning("[CHUNK-FLOW] Removed subscription \(subID) after client rejection (status=0x\(String(statusResponse.status, radix: 16)))")
+                    }
                     return
                 }
 
@@ -1664,6 +1675,11 @@ public actor MatterDeviceServer {
         let sessionsToRemove = sessions.filter { $0.value.fabricIndex == fabricIndex }
         for (sessionID, _) in sessionsToRemove {
             sessions.removeValue(forKey: sessionID)
+        }
+
+        // Remove subscriptions for this fabric
+        Task { [bridge] in
+            await bridge.removeSubscriptions(fabricIndex: fabricIndex)
         }
 
         logger.info("Fabric \(fabricIndex) removed, \(sessionsToRemove.count) sessions closed")
