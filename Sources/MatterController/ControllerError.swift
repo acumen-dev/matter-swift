@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import MatterTypes
 
 /// Errors specific to the Matter controller module.
 public enum ControllerError: Error, Sendable, Equatable {
@@ -44,6 +45,12 @@ public enum ControllerError: Error, Sendable, Equatable {
 
     /// No operational address for the device.
     case noOperationalAddress
+
+    /// The device did not acknowledge a request after every MRP
+    /// retransmission, or its session closed mid-request. The cached session
+    /// has been invalidated; the request was **not** re-sent. The next call
+    /// establishes a fresh session.
+    case peerUnreachable(NodeID)
 
     /// Secure message encoding/decoding failed.
     case secureMessageFailed(String)

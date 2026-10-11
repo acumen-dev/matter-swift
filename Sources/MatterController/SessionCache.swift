@@ -30,6 +30,12 @@ struct SessionCache: Sendable {
         return entry.session
     }
 
+    /// The cached session for a node whether or not it has expired: an
+    /// expired session may still be registered with the message layer.
+    func storedSession(for nodeID: NodeID) -> SecureSession? {
+        entries[nodeID]?.session
+    }
+
     // MARK: - Store / Remove
 
     /// Cache a session for a node, replacing any existing entry.

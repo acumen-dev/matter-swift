@@ -4,6 +4,7 @@
 import Foundation
 import MatterTypes
 import MatterTransport
+import MatterProtocol
 
 /// A commissioned Matter device known to the controller.
 ///
@@ -36,6 +37,11 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
     /// When this device was commissioned.
     public let commissionedAt: Date
 
+    /// The device's advertised MRP parameters (SII/SAI/SAT), if known.
+    /// Spaces retransmissions toward sleepy devices; `nil` uses the
+    /// controller's `Configuration.mrp.peer`.
+    public var mrpParameters: MRPParameters?
+
     public init(
         nodeID: NodeID,
         fabricIndex: FabricIndex,
@@ -44,7 +50,8 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
         operationalHost: String? = nil,
         operationalPort: UInt16? = nil,
         label: String? = nil,
-        commissionedAt: Date = Date()
+        commissionedAt: Date = Date(),
+        mrpParameters: MRPParameters? = nil
     ) {
         self.nodeID = nodeID
         self.fabricIndex = fabricIndex
@@ -54,6 +61,7 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
         self.operationalPort = operationalPort
         self.label = label
         self.commissionedAt = commissionedAt
+        self.mrpParameters = mrpParameters
     }
 
     // MARK: - Address Convenience
@@ -102,7 +110,8 @@ public actor DeviceRegistry {
                 operationalHost: sd.operationalHost,
                 operationalPort: sd.operationalPort,
                 label: sd.label,
-                commissionedAt: sd.commissionedAt
+                commissionedAt: sd.commissionedAt,
+                mrpParameters: Self.mrpParameters(from: sd)
             )
             devices[device.nodeID] = device
         }
@@ -137,6 +146,13 @@ public actor DeviceRegistry {
     public func updateLabel(for nodeID: NodeID, label: String) {
         guard var device = devices[nodeID] else { return }
         device.label = label
+        devices[nodeID] = device
+    }
+
+    /// Set or clear a device's advertised MRP parameters.
+    public func updateMRPParameters(for nodeID: NodeID, parameters: MRPParameters?) {
+        guard var device = devices[nodeID] else { return }
+        device.mrpParameters = parameters
         devices[nodeID] = device
     }
 
@@ -178,8 +194,31 @@ public actor DeviceRegistry {
                 operationalHost: d.operationalHost,
                 operationalPort: d.operationalPort,
                 label: d.label,
-                commissionedAt: d.commissionedAt
+                commissionedAt: d.commissionedAt,
+                mrpIdleIntervalMs: d.mrpParameters.map { Self.milliseconds($0.sessionIdleInterval) },
+                mrpActiveIntervalMs: d.mrpParameters.map { Self.milliseconds($0.sessionActiveInterval) },
+                mrpActiveThresholdMs: d.mrpParameters.map { Self.milliseconds($0.sessionActiveThreshold) }
             )
         }
+    }
+
+    // MARK: - MRP parameter persistence
+
+    /// Parameters from a stored record; a missing field takes the spec default.
+    static func mrpParameters(from stored: StoredCommissionedDevice) -> MRPParameters? {
+        guard stored.mrpIdleIntervalMs != nil || stored.mrpActiveIntervalMs != nil || stored.mrpActiveThresholdMs != nil else {
+            return nil
+        }
+        let defaults = MRPParameters.default
+        return MRPParameters(
+            sessionIdleInterval: stored.mrpIdleIntervalMs.map { .milliseconds(Int64($0)) } ?? defaults.sessionIdleInterval,
+            sessionActiveInterval: stored.mrpActiveIntervalMs.map { .milliseconds(Int64($0)) } ?? defaults.sessionActiveInterval,
+            sessionActiveThreshold: stored.mrpActiveThresholdMs.map { .milliseconds(Int64($0)) } ?? defaults.sessionActiveThreshold
+        )
+    }
+
+    static func milliseconds(_ duration: Duration) -> UInt32 {
+        let (seconds, attoseconds) = duration.components
+        return UInt32(clamping: seconds * 1_000 + attoseconds / 1_000_000_000_000_000)
     }
 }

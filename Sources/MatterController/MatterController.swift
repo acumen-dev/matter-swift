@@ -61,13 +61,19 @@ public actor MatterController {
         /// Timeout for the full commissioning flow (default: 120s).
         public let commissioningTimeout: Duration
 
+        /// MRP behaviour of the message layer (default: spec values, 4
+        /// retransmissions). `mrp.peer` applies to devices with no recorded
+        /// parameters of their own.
+        public var mrp: MRPConfig
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
             vendorID: VendorID = .test,
             rootKey: P256.Signing.PrivateKey = P256.Signing.PrivateKey(),
             operationTimeout: Duration = .seconds(30),
-            commissioningTimeout: Duration = .seconds(120)
+            commissioningTimeout: Duration = .seconds(120),
+            mrp: MRPConfig = .default
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -75,6 +81,7 @@ public actor MatterController {
             self.rootKey = rootKey
             self.operationTimeout = operationTimeout
             self.commissioningTimeout = commissioningTimeout
+            self.mrp = mrp
         }
     }
 
@@ -83,18 +90,19 @@ public actor MatterController {
     private let fabricManager: FabricManager
     private let commissioning: CommissioningController
     private let controllerSession: ControllerSession
-    private let operationalController: OperationalController
     private let registry: DeviceRegistry
     private let subscriptionClient: SubscriptionClient
-    private let transceiver: MessageTransceiver
     private let discovery: any MatterDiscovery
     private let configuration: Configuration
     private let logger: Logger
     private let store: (any MatterControllerStore)?
 
+    /// The message layer: the transport's single reader, exchanges and MRP.
+    /// Exposed for the Interaction Model client (subscription reports are
+    /// routed through it).
+    public let messenger: ControllerMessenger
+
     private var sessionCache = SessionCache()
-    private var exchangeCounter: UInt16 = 1
-    private var unsecuredMessageCounter: UInt32
 
     // MARK: - Init
 
@@ -113,25 +121,26 @@ public actor MatterController {
         store: (any MatterControllerStore)? = nil,
         logger: Logger = Logger(label: "matter.controller")
     ) throws {
-        self.fabricManager = try FabricManager(
+        let fabricManager = try FabricManager(
             rootKey: configuration.rootKey,
             fabricID: configuration.fabricID,
             controllerNodeID: configuration.controllerNodeID,
             vendorID: configuration.vendorID
         )
+        self.fabricManager = fabricManager
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
-        self.operationalController = OperationalController()
         self.registry = DeviceRegistry()
         self.subscriptionClient = SubscriptionClient()
-        self.transceiver = MessageTransceiver(transport: transport)
+        self.messenger = Self.makeMessenger(
+            transport: transport,
+            localNodeID: fabricManager.controllerFabricInfo.nodeID,
+            configuration: configuration
+        )
         self.discovery = discovery
         self.configuration = configuration
         self.store = store
         self.logger = logger
-
-        // Initialize unsecured message counter with random 28-bit value per spec
-        self.unsecuredMessageCounter = UInt32.random(in: 0...0x0FFF_FFFF)
     }
 
     /// Restore a controller from persisted state.
@@ -145,7 +154,7 @@ public actor MatterController {
     /// - Parameters:
     ///   - transport: UDP transport for message exchange.
     ///   - discovery: mDNS/DNS-SD discovery service.
-    ///   - configuration: Controller configuration (used for timeouts only).
+    ///   - configuration: Controller configuration (timeouts and MRP).
     ///   - stored: Previously persisted controller state.
     ///   - store: Controller store for ongoing persistence.
     ///   - logger: Logger instance (default: "matter.controller").
@@ -157,23 +166,24 @@ public actor MatterController {
         store: (any MatterControllerStore)? = nil,
         logger: Logger = Logger(label: "matter.controller")
     ) throws {
-        self.fabricManager = try FabricManager(
+        let fabricManager = try FabricManager(
             stored: stored.identity,
             nextNodeID: stored.nextNodeID
         )
+        self.fabricManager = fabricManager
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
-        self.operationalController = OperationalController()
         self.registry = DeviceRegistry(storedDevices: stored.devices)
         self.subscriptionClient = SubscriptionClient()
-        self.transceiver = MessageTransceiver(transport: transport)
+        self.messenger = Self.makeMessenger(
+            transport: transport,
+            localNodeID: fabricManager.controllerFabricInfo.nodeID,
+            configuration: configuration
+        )
         self.discovery = discovery
         self.configuration = configuration
         self.store = store
         self.logger = logger
-
-        // Initialize unsecured message counter with random 28-bit value per spec
-        self.unsecuredMessageCounter = UInt32.random(in: 0...0x0FFF_FFFF)
 
         logger.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
     }
@@ -268,7 +278,7 @@ public actor MatterController {
     /// Commission a device at the given address using the setup passcode.
     ///
     /// Drives the full commissioning flow:
-    /// 1. PASE session establishment (PBKDFParamRequest → Pake3)
+    /// 1. PASE session establishment (PBKDFParamRequest → Pake3) on one unsecured exchange
     /// 2. ArmFailSafe
     /// 3. SetRegulatoryConfig
     /// 4. CSRRequest → generate NOC
@@ -276,158 +286,98 @@ public actor MatterController {
     /// 6. ACL write
     /// 7. CommissioningComplete
     ///
+    /// Steps 2-7 run over the PASE session, registered with the message layer
+    /// for their duration and unregistered on every exit path.
+    ///
     /// - Parameters:
     ///   - address: The device's network address.
     ///   - setupCode: The device's setup passcode (e.g., 20202021).
+    ///   - mrp: The device's advertised MRP parameters (SII/SAI/SAT from its
+    ///     commissionable TXT record), if known. Recorded with the device and
+    ///     used for its CASE sessions.
     /// - Returns: The commissioned device record.
     public func commission(
         address: MatterAddress,
-        setupCode: UInt32
+        setupCode: UInt32,
+        mrp: MRPParameters? = nil
     ) async throws -> CommissionedDevice {
         let timeout = configuration.operationTimeout
 
         logger.info("Beginning commissioning to \(address.host):\(address.port)")
 
-        // Step 1a: PBKDFParamRequest
+        // Step 1: PASE on one unsecured exchange
         let sessionID = sessionCache.allocateSessionID()
         let (pbkdfReq, ctx1) = commissioning.beginPASE(
             passcode: setupCode,
             initiatorSessionID: sessionID
         )
 
-        let exchangeID = nextExchangeID()
-        let pbkdfMsg = buildUnsecuredMessage(
-            payload: pbkdfReq,
-            opcode: .pbkdfParamRequest,
-            exchangeID: exchangeID,
-            isInitiator: true
-        )
-
-        let pbkdfRespMsg = try await transceiver.sendAndReceive(
-            pbkdfMsg, to: address, timeout: timeout
-        )
-        let pbkdfResp = try extractUnsecuredPayload(from: pbkdfRespMsg)
-
-        // Step 1b: Pake1
-        let (pake1, ctx2) = try commissioning.handlePBKDFParamResponse(
-            response: pbkdfResp, context: ctx1
-        )
-
-        let pake1Msg = buildUnsecuredMessage(
-            payload: pake1,
-            opcode: .pasePake1,
-            exchangeID: exchangeID,
-            isInitiator: true
-        )
-
-        let pake2Msg = try await transceiver.sendAndReceive(
-            pake1Msg, to: address, timeout: timeout
-        )
-        let pake2 = try extractUnsecuredPayload(from: pake2Msg)
-
-        // Step 1c: Pake3 → PASE session established
-        let (pake3, ctx3) = try commissioning.handlePake2(
-            response: pake2, context: ctx2
-        )
-
-        let pake3Msg = buildUnsecuredMessage(
-            payload: pake3,
-            opcode: .pasePake3,
-            exchangeID: exchangeID,
-            isInitiator: true
-        )
-
-        let statusMsg = try await transceiver.sendAndReceive(
-            pake3Msg, to: address, timeout: timeout
-        )
-        let statusPayload = try extractUnsecuredPayload(from: statusMsg)
-        let statusReport = try StatusReportMessage.decode(from: statusPayload)
-        guard statusReport.generalStatus == .success else {
-            throw ControllerError.paseHandshakeFailed(
-                "PASE StatusReport: \(statusReport.generalStatus)"
+        let handshake = await messenger.openExchange(peer: address, mrp: mrp)
+        let paseContext: CommissioningController.CommissioningContext
+        do {
+            let pbkdfResp = try await handshake.request(
+                protocolID: .secureChannel,
+                opcode: SecureChannelOpcode.pbkdfParamRequest.rawValue,
+                payload: pbkdfReq,
+                timeout: timeout
             )
-        }
+            try Self.expect(pbkdfResp, .pbkdfParamResponse, failure: ControllerError.paseHandshakeFailed)
+            let (pake1, ctx2) = try commissioning.handlePBKDFParamResponse(
+                response: pbkdfResp.payload, context: ctx1
+            )
 
-        guard let paseSession = ctx3.paseSession else {
+            let pake2 = try await handshake.request(
+                protocolID: .secureChannel,
+                opcode: SecureChannelOpcode.pasePake1.rawValue,
+                payload: pake1,
+                timeout: timeout
+            )
+            try Self.expect(pake2, .pasePake2, failure: ControllerError.paseHandshakeFailed)
+            let (pake3, ctx3) = try commissioning.handlePake2(
+                response: pake2.payload, context: ctx2
+            )
+
+            let status = try await handshake.request(
+                protocolID: .secureChannel,
+                opcode: SecureChannelOpcode.pasePake3.rawValue,
+                payload: pake3,
+                timeout: timeout
+            )
+            try Self.expect(status, .statusReport, failure: ControllerError.paseHandshakeFailed)
+            let statusReport = try StatusReportMessage.decode(from: status.payload)
+            guard statusReport.generalStatus == .success else {
+                throw ControllerError.paseHandshakeFailed(
+                    "PASE StatusReport: \(statusReport.generalStatus)"
+                )
+            }
+            paseContext = ctx3
+        } catch {
+            await handshake.close()
+            throw Self.commissioningError(error)
+        }
+        await handshake.close()
+
+        guard let paseSession = paseContext.paseSession else {
             throw ControllerError.paseHandshakeFailed("No PASE session after Pake3")
         }
 
         logger.info("PASE session established (localSession=\(paseSession.localSessionID))")
 
-        // Steps 2-7: Commissioning over encrypted PASE session
-        let sourceNodeID = fabricManager.controllerFabricInfo.nodeID
+        // Steps 2-7 over the encrypted PASE session. Register it before the
+        // first encrypted request so the reply can be decrypted and routed.
+        await messenger.registerSession(paseSession, peerAddress: address, mrp: mrp)
+        var device: CommissionedDevice
+        do {
+            device = try await commissionOverPASE(session: paseSession, context: paseContext)
+        } catch {
+            await messenger.unregisterSession(localSessionID: paseSession.localSessionID)
+            throw Self.commissioningError(error)
+        }
+        await messenger.unregisterSession(localSessionID: paseSession.localSessionID)
 
-        // Step 2: ArmFailSafe
-        let (armMsg, ctx4) = try commissioning.buildArmFailSafe(context: ctx3)
-        let armResp = try await sendIMRequest(
-            payload: armMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .invokeRequest
-        )
-        let ctx5 = try commissioning.handleArmFailSafeResponse(
-            response: armResp, context: ctx4
-        )
-
-        // Step 3: SetRegulatoryConfig
-        let regMsg = commissioning.buildSetRegulatoryConfig(context: ctx5)
-        let regResp = try await sendIMRequest(
-            payload: regMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .invokeRequest
-        )
-        try commissioning.handleSetRegulatoryConfigResponse(response: regResp)
-
-        // Step 4: CSRRequest
-        let csrMsg = commissioning.buildCSRRequest()
-        let csrResp = try await sendIMRequest(
-            payload: csrMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .invokeRequest
-        )
-        let (addRootMsg, addNOCMsg, deviceNodeID, ctx6) = try await commissioning.handleCSRResponse(
-            response: csrResp, context: ctx5
-        )
-
-        // Step 5: AddTrustedRootCert
-        let addRootResp = try await sendIMRequest(
-            payload: addRootMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .invokeRequest
-        )
-        // Root cert add returns a status response — check for errors
-        _ = addRootResp
-
-        // Step 5b: AddNOC
-        let addNOCResp = try await sendIMRequest(
-            payload: addNOCMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .invokeRequest
-        )
-        let (aclMsg, ctx7) = try commissioning.handleNOCResponse(
-            response: addNOCResp, context: ctx6
-        )
-
-        // Step 6: ACL write
-        let aclResp = try await sendIMRequest(
-            payload: aclMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .writeRequest
-        )
-        _ = aclResp
-
-        // Step 7: CommissioningComplete
-        let completeMsg = commissioning.buildCommissioningComplete()
-        let completeResp = try await sendIMRequest(
-            payload: completeMsg, session: paseSession,
-            sourceNodeID: sourceNodeID, to: address,
-            opcode: .invokeRequest
-        )
-        var device = try commissioning.handleCommissioningComplete(
-            response: completeResp, context: ctx7
-        )
-
-        // Store the operational address
+        // Store the operational address and the device's MRP parameters
         device.setOperationalAddress(address)
+        device.mrpParameters = mrp
 
         // Register in device registry
         await registry.register(device)
@@ -435,10 +385,58 @@ public actor MatterController {
         // Persist controller state
         await saveState()
 
-        logger.info("Commissioning complete: nodeID=\(deviceNodeID.rawValue)")
+        logger.info("Commissioning complete: nodeID=\(device.nodeID.rawValue)")
 
         return device
     }
+
+    /// Commissioning steps 2-7 over the established PASE session.
+    private func commissionOverPASE(
+        session: SecureSession,
+        context ctx3: CommissioningController.CommissioningContext
+    ) async throws -> CommissionedDevice {
+        let paseSessionID = session.localSessionID
+
+        // Step 2: ArmFailSafe
+        let (armMsg, ctx4) = try commissioning.buildArmFailSafe(context: ctx3)
+        let armResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: armMsg)
+        let ctx5 = try commissioning.handleArmFailSafeResponse(
+            response: armResp.payload, context: ctx4
+        )
+
+        // Step 3: SetRegulatoryConfig
+        let regMsg = commissioning.buildSetRegulatoryConfig(context: ctx5)
+        let regResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: regMsg)
+        try commissioning.handleSetRegulatoryConfigResponse(response: regResp.payload)
+
+        // Step 4: CSRRequest
+        let csrMsg = commissioning.buildCSRRequest()
+        let csrResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: csrMsg)
+        let (addRootMsg, addNOCMsg, deviceNodeID, ctx6) = try await commissioning.handleCSRResponse(
+            response: csrResp.payload, context: ctx5
+        )
+        logger.debug("Device will be node \(deviceNodeID.rawValue)")
+
+        // Step 5: AddTrustedRootCert — its status is checked by the commissioning plan
+        _ = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addRootMsg)
+
+        // Step 5b: AddNOC
+        let addNOCResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addNOCMsg)
+        let (aclMsg, ctx7) = try commissioning.handleNOCResponse(
+            response: addNOCResp.payload, context: ctx6
+        )
+
+        // Step 6: ACL write — its status is checked by the commissioning plan
+        _ = try await imRequest(sessionID: paseSessionID, opcode: .writeRequest, payload: aclMsg)
+
+        // Step 7: CommissioningComplete
+        let completeMsg = commissioning.buildCommissioningComplete()
+        let completeResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: completeMsg)
+        return try commissioning.handleCommissioningComplete(
+            response: completeResp.payload, context: ctx7
+        )
+    }
+
 
     // MARK: - Session Management
 
@@ -452,49 +450,71 @@ public actor MatterController {
             return cached
         }
 
+        // An expired session is still registered with the message layer.
+        await invalidateSession(for: nodeID)
+
         // Need to establish a new CASE session
         return try await establishCASESession(nodeID: nodeID)
     }
 
-    /// Invalidate the cached session for a node (e.g., after a communication error).
-    public func invalidateSession(for nodeID: NodeID) {
+    /// Invalidate the cached session for a node (e.g., after a communication
+    /// error) and unregister it from the message layer.
+    public func invalidateSession(for nodeID: NodeID) async {
+        guard let session = sessionCache.storedSession(for: nodeID) else { return }
+        // Out of the cache before suspending, so a session established
+        // meanwhile is never the one removed.
         sessionCache.remove(for: nodeID)
+        await messenger.unregisterSession(localSessionID: session.localSessionID)
+    }
+
+    /// Set (or clear) a device's advertised MRP parameters (SII/SAI/SAT).
+    /// Persisted with the device and applied to new exchanges at once,
+    /// including on its cached session.
+    public func setMRPParameters(_ parameters: MRPParameters?, for nodeID: NodeID) async {
+        await registry.updateMRPParameters(for: nodeID, parameters: parameters)
+        if let session = sessionCache.session(for: nodeID) {
+            // Never re-registers: a session unregistered meanwhile stays gone.
+            await messenger.updateSession(localSessionID: session.localSessionID, mrp: parameters)
+        }
+        await saveState()
+    }
+
+    /// Stop the message layer: pending requests fail with
+    /// `MessagingError.stopped`. Terminal for this controller instance.
+    public func stop() async {
+        await messenger.stop()
     }
 
     // MARK: - Operational API
 
     /// Read a single attribute from a commissioned device.
     ///
-    /// Automatically manages CASE sessions, with a single retry on session failure.
+    /// Gets or establishes a CASE session and sends the request once. MRP
+    /// retransmits it; a device that never acknowledges surfaces as
+    /// `ControllerError.peerUnreachable` — the request is not re-issued.
     public func readAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         attributeID: AttributeID
     ) async throws -> TLVElement {
-        try await withSessionRetry(nodeID: nodeID) { session, address in
-            let sourceNodeID = self.fabricManager.controllerFabricInfo.nodeID
-            let msg = try self.operationalController.readAttribute(
-                endpointID: endpointID,
-                clusterID: clusterID,
-                attributeID: attributeID,
-                session: session,
-                sourceNodeID: sourceNodeID
+        try await withSession(nodeID: nodeID) { session in
+            let response = try await self.imRequest(
+                sessionID: session.localSessionID,
+                opcode: .readRequest,
+                payload: IMClient.readAttributeRequest(
+                    endpointID: endpointID,
+                    clusterID: clusterID,
+                    attributeID: attributeID
+                )
             )
-
-            let response = try await self.transceiver.sendAndReceive(
-                msg, to: address, timeout: self.configuration.operationTimeout
-            )
-
-            return try self.operationalController.parseReadResponse(
-                encryptedMessage: response, session: session
-            )
+            return try IMClient.parseReadResponse(response.payload)
         }
     }
 
     /// Write a single attribute on a commissioned device.
     ///
-    /// Automatically manages CASE sessions, with a single retry on session failure.
+    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:)``).
     public func writeAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
@@ -502,30 +522,27 @@ public actor MatterController {
         attributeID: AttributeID,
         value: TLVElement
     ) async throws -> Bool {
-        try await withSessionRetry(nodeID: nodeID) { session, address in
-            let sourceNodeID = self.fabricManager.controllerFabricInfo.nodeID
-            let msg = try self.operationalController.writeAttribute(
-                endpointID: endpointID,
-                clusterID: clusterID,
-                attributeID: attributeID,
-                value: value,
-                session: session,
-                sourceNodeID: sourceNodeID
+        try await withSession(nodeID: nodeID) { session in
+            let response = try await self.imRequest(
+                sessionID: session.localSessionID,
+                opcode: .writeRequest,
+                payload: IMClient.writeAttributeRequest(
+                    endpointID: endpointID,
+                    clusterID: clusterID,
+                    attributeID: attributeID,
+                    value: value
+                )
             )
-
-            let response = try await self.transceiver.sendAndReceive(
-                msg, to: address, timeout: self.configuration.operationTimeout
-            )
-
-            return try self.operationalController.parseWriteResponse(
-                encryptedMessage: response, session: session
-            )
+            return try IMClient.parseWriteResponse(response.payload)
         }
     }
 
     /// Invoke a command on a commissioned device.
     ///
-    /// Automatically manages CASE sessions, with a single retry on session failure.
+    /// Sent once on the node's CASE session. An invoke is never re-issued:
+    /// if the device stops acknowledging, the call fails with
+    /// `ControllerError.peerUnreachable` and the command may or may not have
+    /// executed — exactly once at most, never twice.
     public func invokeCommand(
         nodeID: NodeID,
         endpointID: EndpointID,
@@ -533,26 +550,21 @@ public actor MatterController {
         commandID: CommandID,
         commandFields: TLVElement? = nil
     ) async throws -> TLVElement? {
-        try await withSessionRetry(nodeID: nodeID) { session, address in
-            let sourceNodeID = self.fabricManager.controllerFabricInfo.nodeID
-            let msg = try self.operationalController.invokeCommand(
-                endpointID: endpointID,
-                clusterID: clusterID,
-                commandID: commandID,
-                commandFields: commandFields,
-                session: session,
-                sourceNodeID: sourceNodeID
+        try await withSession(nodeID: nodeID) { session in
+            let response = try await self.imRequest(
+                sessionID: session.localSessionID,
+                opcode: .invokeRequest,
+                payload: IMClient.invokeCommandRequest(
+                    endpointID: endpointID,
+                    clusterID: clusterID,
+                    commandID: commandID,
+                    commandFields: commandFields
+                )
             )
-
-            let response = try await self.transceiver.sendAndReceive(
-                msg, to: address, timeout: self.configuration.operationTimeout
-            )
-
-            return try self.operationalController.parseInvokeResponse(
-                encryptedMessage: response, session: session
-            )
+            return try IMClient.parseInvokeResponse(response.payload)
         }
     }
+
 
     // MARK: - Device Registry
 
@@ -565,11 +577,10 @@ public actor MatterController {
     public func device(for nodeID: NodeID) async -> CommissionedDevice? {
         await registry.device(for: nodeID)
     }
-
     /// Remove a device from the registry and invalidate its session.
     public func removeDevice(nodeID: NodeID) async {
         await registry.remove(nodeID: nodeID)
-        sessionCache.remove(for: nodeID)
+        await invalidateSession(for: nodeID)
         await saveState()
     }
 
@@ -594,95 +605,45 @@ public actor MatterController {
 
     // MARK: - Private Helpers
 
-    /// Allocate the next exchange ID (sequential, wrapping).
-    private func nextExchangeID() -> UInt16 {
-        let id = exchangeCounter
-        exchangeCounter = exchangeCounter == UInt16.max ? 1 : exchangeCounter + 1
-        return id
+    private static func makeMessenger(
+        transport: any MatterUDPTransport,
+        localNodeID: NodeID,
+        configuration: Configuration
+    ) -> ControllerMessenger {
+        var messaging = ControllerMessenger.Configuration()
+        messaging.mrp = configuration.mrp
+        return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging)
     }
 
-    /// Allocate the next unsecured message counter.
-    private func nextUnsecuredCounter() -> UInt32 {
-        let counter = unsecuredMessageCounter
-        unsecuredMessageCounter &+= 1
-        return counter
+    /// Send one Interaction Model request on a fresh exchange of `sessionID`
+    /// and return the reply. The exchange is closed (owed ack flushed) on
+    /// every path.
+    private func imRequest(
+        sessionID: UInt16,
+        opcode: InteractionModelOpcode,
+        payload: Data
+    ) async throws -> InboundMessage {
+        let exchange = try await messenger.openExchange(sessionID: sessionID)
+        do {
+            let response = try await exchange.request(
+                protocolID: .interactionModel,
+                opcode: opcode.rawValue,
+                payload: payload,
+                timeout: configuration.operationTimeout
+            )
+            await exchange.close()
+            guard response.protocolID == MatterProtocolID.interactionModel.rawValue else {
+                throw MessagingError.unexpectedProtocol(protocolID: response.protocolID, opcode: response.opcode)
+            }
+            return response
+        } catch {
+            await exchange.close()
+            throw error
+        }
     }
 
-    /// Build an unsecured message (for PASE/CASE handshakes).
-    ///
-    /// Constructs MessageHeader (session 0) + ExchangeHeader + payload.
-    private func buildUnsecuredMessage(
-        payload: Data,
-        opcode: SecureChannelOpcode,
-        exchangeID: UInt16,
-        isInitiator: Bool
-    ) -> Data {
-        let messageHeader = MessageHeader(
-            sessionID: 0,
-            messageCounter: nextUnsecuredCounter(),
-            sourceNodeID: nil
-        )
-
-        let exchangeHeader = ExchangeHeader(
-            flags: ExchangeFlags(
-                initiator: isInitiator,
-                reliableDelivery: true
-            ),
-            protocolOpcode: opcode.rawValue,
-            exchangeID: exchangeID,
-            protocolID: MatterProtocolID.secureChannel.rawValue
-        )
-
-        var data = messageHeader.encode()
-        data.append(exchangeHeader.encode())
-        data.append(payload)
-        return data
-    }
-
-    /// Extract the application payload from an unsecured message.
-    ///
-    /// Strips the MessageHeader and ExchangeHeader, returning just the payload.
-    private func extractUnsecuredPayload(from data: Data) throws -> Data {
-        let (_, headerConsumed) = try MessageHeader.decode(from: data)
-        let afterHeader = Data(data.suffix(from: headerConsumed))
-        let (_, exchConsumed) = try ExchangeHeader.decode(from: afterHeader)
-        return Data(afterHeader.suffix(from: exchConsumed))
-    }
-
-    /// Send an IM request over an encrypted session and return the decrypted response payload.
-    private func sendIMRequest(
-        payload: Data,
-        session: SecureSession,
-        sourceNodeID: NodeID,
-        to address: MatterAddress,
-        opcode: InteractionModelOpcode
-    ) async throws -> Data {
-        let exchangeHeader = ExchangeHeader(
-            flags: ExchangeFlags(initiator: true, reliableDelivery: true),
-            protocolOpcode: opcode.rawValue,
-            exchangeID: nextExchangeID(),
-            protocolID: MatterProtocolID.interactionModel.rawValue
-        )
-
-        let encrypted = try SecureMessageCodec.encode(
-            exchangeHeader: exchangeHeader,
-            payload: payload,
-            session: session,
-            sourceNodeID: sourceNodeID
-        )
-
-        let responseMsg = try await transceiver.sendAndReceive(
-            encrypted, to: address, timeout: configuration.operationTimeout
-        )
-
-        let (_, _, responsePayload) = try SecureMessageCodec.decode(
-            data: responseMsg, session: session
-        )
-
-        return responsePayload
-    }
-
-    /// Establish a new CASE session to a device via Sigma1/2/3.
+    /// Establish a new CASE session to a device via Sigma1/2/3 on one
+    /// unsecured exchange, and register it before caching it.
     private func establishCASESession(nodeID: NodeID) async throws -> SecureSession {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
@@ -697,52 +658,52 @@ public actor MatterController {
 
         logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
 
-        // Sigma1
-        let exchangeID = nextExchangeID()
         let (sigma1Data, handshakeCtx) = controllerSession.createSigma1(
             peerNodeID: nodeID,
             initiatorSessionID: sessionID
         )
 
-        let sigma1Msg = buildUnsecuredMessage(
-            payload: sigma1Data,
-            opcode: .caseSigma1,
-            exchangeID: exchangeID,
-            isInitiator: true
-        )
-
-        let sigma2Msg = try await transceiver.sendAndReceive(
-            sigma1Msg, to: address, timeout: timeout
-        )
-        let sigma2Data = try extractUnsecuredPayload(from: sigma2Msg)
-
-        // Sigma2 → Sigma3 + session
-        let (sigma3Data, session) = try controllerSession.handleSigma2(
-            sigma2Data: sigma2Data,
-            context: handshakeCtx,
-            localSessionID: sessionID
-        )
-
-        let sigma3Msg = buildUnsecuredMessage(
-            payload: sigma3Data,
-            opcode: .caseSigma3,
-            exchangeID: exchangeID,
-            isInitiator: true
-        )
-
-        // Wait for StatusReport confirming CASE session
-        let caseStatusMsg = try await transceiver.sendAndReceive(
-            sigma3Msg, to: address, timeout: timeout
-        )
-        let caseStatusPayload = try extractUnsecuredPayload(from: caseStatusMsg)
-        let caseStatusReport = try StatusReportMessage.decode(from: caseStatusPayload)
-        guard caseStatusReport.generalStatus == .success else {
-            throw ControllerError.caseSessionFailed(
-                "CASE StatusReport: \(caseStatusReport.generalStatus)"
+        let handshake = await messenger.openExchange(peer: address, mrp: device.mrpParameters)
+        let session: SecureSession
+        do {
+            let sigma2 = try await handshake.request(
+                protocolID: .secureChannel,
+                opcode: SecureChannelOpcode.caseSigma1.rawValue,
+                payload: sigma1Data,
+                timeout: timeout
             )
-        }
+            try Self.expect(sigma2, .caseSigma2, failure: ControllerError.caseSessionFailed)
 
-        // Cache the session
+            // Sigma2 → Sigma3 + session
+            let (sigma3Data, established) = try controllerSession.handleSigma2(
+                sigma2Data: sigma2.payload,
+                context: handshakeCtx,
+                localSessionID: sessionID
+            )
+
+            // Wait for StatusReport confirming CASE session
+            let status = try await handshake.request(
+                protocolID: .secureChannel,
+                opcode: SecureChannelOpcode.caseSigma3.rawValue,
+                payload: sigma3Data,
+                timeout: timeout
+            )
+            try Self.expect(status, .statusReport, failure: ControllerError.caseSessionFailed)
+            let statusReport = try StatusReportMessage.decode(from: status.payload)
+            guard statusReport.generalStatus == .success else {
+                throw ControllerError.caseSessionFailed(
+                    "CASE StatusReport: \(statusReport.generalStatus)"
+                )
+            }
+            session = established
+        } catch {
+            await handshake.close()
+            throw Self.operationalError(error, nodeID: nodeID)
+        }
+        await handshake.close()
+
+        // Register before caching so the first request's reply is routable.
+        await messenger.registerSession(session, peerAddress: address, mrp: device.mrpParameters)
         sessionCache.store(session, for: nodeID)
 
         logger.debug("CASE session established to node \(nodeID.rawValue)")
@@ -750,32 +711,83 @@ public actor MatterController {
         return session
     }
 
-    /// Execute an operation with automatic session management.
+    /// Run `operation` **once** on the node's CASE session (established if
+    /// needed).
     ///
-    /// Gets or establishes a session, runs the operation. On failure,
-    /// invalidates the session, re-establishes, and retries once.
-    private func withSessionRetry<T: Sendable>(
+    /// A transmitted request is only ever retransmitted by MRP under its
+    /// original counter; it is never re-encoded on a new exchange or session.
+    /// If the peer stops acknowledging or the session closes, the session is
+    /// invalidated and the error surfaces as `ControllerError.peerUnreachable`;
+    /// the next call establishes a fresh session.
+    private func withSession<T: Sendable>(
         nodeID: NodeID,
-        operation: (SecureSession, MatterAddress) async throws -> T
+        operation: (SecureSession) async throws -> T
     ) async throws -> T {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
         }
 
-        guard let address = device.operationalAddress else {
+        guard device.operationalAddress != nil else {
             throw ControllerError.noOperationalAddress
         }
 
         let activeSession = try await session(for: nodeID)
 
         do {
-            return try await operation(activeSession, address)
+            return try await operation(activeSession)
         } catch {
-            // Retry once with a fresh session
-            logger.debug("Operation failed, retrying with fresh session: \(error)")
-            invalidateSession(for: nodeID)
-            let freshSession = try await establishCASESession(nodeID: nodeID)
-            return try await operation(freshSession, address)
+            let mapped = Self.operationalError(error, nodeID: nodeID)
+            if let controllerError = mapped as? ControllerError, controllerError == .peerUnreachable(nodeID) {
+                logger.info("Node \(nodeID.rawValue) unreachable; invalidating its session (the request is not re-sent)")
+                // Only the session this operation used: a concurrent failure
+                // must not invalidate a session established since.
+                if sessionCache.storedSession(for: nodeID) === activeSession {
+                    await invalidateSession(for: nodeID)
+                }
+            }
+            throw mapped
+        }
+    }
+
+    /// Check a handshake reply's protocol and opcode. A StatusReport in its
+    /// place is the peer refusing the step.
+    private static func expect(
+        _ message: InboundMessage,
+        _ opcode: SecureChannelOpcode,
+        failure: (String) -> ControllerError
+    ) throws {
+        guard message.protocolID == MatterProtocolID.secureChannel.rawValue else {
+            throw MessagingError.unexpectedProtocol(protocolID: message.protocolID, opcode: message.opcode)
+        }
+        if message.opcode == opcode.rawValue {
+            return
+        }
+        if message.opcode == SecureChannelOpcode.statusReport.rawValue,
+           let report = try? StatusReportMessage.decode(from: message.payload) {
+            throw failure("StatusReport \(report.generalStatus) instead of \(opcode)")
+        }
+        throw ControllerError.unexpectedResponse("Expected \(opcode), got opcode \(message.opcode)")
+    }
+
+    /// Messaging failures during commissioning become `commissioningFailed`;
+    /// anything else passes through.
+    private static func commissioningError(_ error: any Error) -> any Error {
+        guard let messaging = error as? MessagingError else { return error }
+        return ControllerError.commissioningFailed("Messaging failure: \(messaging)")
+    }
+
+    /// Messaging failures on an operational exchange, as `ControllerError`.
+    private static func operationalError(_ error: any Error, nodeID: NodeID) -> any Error {
+        guard let messaging = error as? MessagingError else { return error }
+        switch messaging {
+        case .peerUnreachable, .sessionClosed:
+            return ControllerError.peerUnreachable(nodeID)
+        case .responseTimeout:
+            return ControllerError.timeout("No response from node \(nodeID.rawValue)")
+        case .unexpectedProtocol(let protocolID, let opcode):
+            return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
+        case .unknownSession, .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped:
+            return ControllerError.transportError("\(messaging)")
         }
     }
 }
