@@ -416,17 +416,20 @@ public actor ControllerMessenger {
 
         manager.recordReceived(scope: scope, now: now)
         let wasClosing = closing.contains(key)
-        if let acked = exchangeHeader.acknowledgedMessageCounter,
-           manager.recordAcknowledgment(key, ackedCounter: acked),
-           wasClosing {
-            // The last message of a closed exchange is acknowledged: done.
-            removeExchange(key)
+        var acknowledgedOurs = false
+        if let acked = exchangeHeader.acknowledgedMessageCounter {
+            acknowledgedOurs = manager.recordAcknowledgment(key, ackedCounter: acked)
         }
         if wasClosing {
             // Closed by its owner: acknowledge if asked, deliver nothing, and
-            // never let a late message re-open it as a new exchange.
+            // never let a late message re-open it as a new exchange. The ack
+            // is encoded while the exchange (and its ephemeral ID) still exists.
             if requiresAck, !isStandaloneAck(exchangeHeader), let ack = standaloneAck(key: key, ackCounter: counter) {
                 outgoing.append(ack)
+            }
+            if acknowledgedOurs {
+                // The last message of a closed exchange is acknowledged: done.
+                removeExchange(key)
             }
             return
         }

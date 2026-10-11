@@ -111,6 +111,15 @@ struct MessengerReliabilityTests {
         #expect(again.isStandaloneAck)
         #expect(again.exchangeHeader.acknowledgedMessageCounter == 300)
         #expect(await messenger.closingExchangeCount == 1)
+
+        // A late reply that also acknowledges our message: acked (still with
+        // the exchange's ephemeral source ID), and the exchange is done.
+        try await peer.send(ScriptedPeer.unsecuredReply(to: request, protocolID: .echo, opcode: echoResponse, counter: 301))
+        let finalAck = try await peer.next()
+        #expect(finalAck.isStandaloneAck)
+        #expect(finalAck.exchangeHeader.acknowledgedMessageCounter == 301)
+        #expect(finalAck.messageHeader.sourceNodeID == request.messageHeader.sourceNodeID)
+        #expect(await messenger.closingExchangeCount == 0)
         await messenger.stop()
     }
 
