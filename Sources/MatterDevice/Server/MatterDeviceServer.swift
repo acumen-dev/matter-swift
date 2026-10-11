@@ -1453,22 +1453,18 @@ public actor MatterDeviceServer {
                         message: encrypted,
                         peerAddress: address
                     )
+                    // Store the advanced context before the send, as tracking is:
+                    // if the send throws, MRP retransmits this chunk, and the
+                    // client's StatusResponse for it must advance to the next
+                    // chunk rather than re-send this one under a new counter.
+                    // The context stays in the map in every case: more chunks
+                    // remain; or this was the last chunk and trailing responses
+                    // (e.g., SubscribeResponse) wait for the client's
+                    // StatusResponse so they can piggyback its ACK; or this was
+                    // the last chunk and the final StatusResponse is ACK'd on
+                    // the next iteration.
+                    pendingChunkedReports[exchangeHeader.exchangeID] = context
                     try await transport.send(encrypted, to: address)
-
-                    if context.isComplete && !context.trailingResponses.isEmpty {
-                        // Last chunk just sent but there are trailing responses
-                        // (e.g., SubscribeResponse). Keep context in map so we wait
-                        // for the client's StatusResponse acknowledging this last chunk
-                        // before sending trailing responses with the ACK piggybacked.
-                        pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    } else if context.isComplete {
-                        // Last chunk sent, no trailing responses — keep context so we
-                        // ACK the client's final StatusResponse on the next iteration.
-                        pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    } else {
-                        // More chunks remain.
-                        pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    }
                 } else if context.isComplete && !context.trailingResponses.isEmpty {
                     // All chunks already sent — this StatusResponse acknowledges
                     // the final chunk. Now send trailing responses (SubscribeResponse)
@@ -1583,8 +1579,22 @@ public actor MatterDeviceServer {
                 }
 
             case .chunkedReport(var context):
+                let firstChunk = context.nextChunk()
+                // Store context for delivery on subsequent StatusResponse messages,
+                // before the first chunk's send: if that send throws, MRP
+                // retransmits the chunk and the client's StatusResponse for it
+                // must find the context, or chunks 2..N and any trailing
+                // responses are never sent.
+                // Even if all chunks are sent, we keep the context when there are
+                // trailing responses (e.g., SubscribeResponse) — those must wait for
+                // the client's StatusResponse acknowledging the final chunk so we can
+                // piggyback the ACK. Without the piggybacked ACK, the client
+                // retransmits the StatusResponse until MRP timeout.
+                if !context.isComplete || !context.trailingResponses.isEmpty {
+                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                }
                 // Send first chunk immediately
-                if let firstChunk = context.nextChunk() {
+                if let firstChunk {
                     let chunkHeader = ExchangeHeader(
                         flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
@@ -1607,15 +1617,6 @@ public actor MatterDeviceServer {
                         peerAddress: address
                     )
                     try await transport.send(encrypted, to: address)
-                }
-                // Store context for delivery on subsequent StatusResponse messages.
-                // Even if all chunks are sent, we keep the context when there are
-                // trailing responses (e.g., SubscribeResponse) — those must wait for
-                // the client's StatusResponse acknowledging the final chunk so we can
-                // piggyback the ACK. Without the piggybacked ACK, the client
-                // retransmits the StatusResponse until MRP timeout.
-                if !context.isComplete || !context.trailingResponses.isEmpty {
-                    pendingChunkedReports[exchangeHeader.exchangeID] = context
                 }
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {

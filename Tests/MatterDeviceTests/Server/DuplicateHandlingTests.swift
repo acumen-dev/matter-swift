@@ -119,7 +119,55 @@ struct DuplicateHandlingTests {
         try await waitForFrame(rig.transport, after: before, session: session) {
             $0.exchange.protocolOpcode == InteractionModelOpcode.invokeResponse.rawValue
         }
+        // The send that failed was the response itself, and the frame that
+        // reached the peer is that same message, retransmitted.
+        let dropped = try Self.decodeFrames(rig.transport.droppedMessages, session: session)
+        try #require(dropped.count == 1)
+        #expect(dropped[0].exchange.protocolOpcode == InteractionModelOpcode.invokeResponse.rawValue)
+        #expect(dropped[0].exchange.exchangeID == 0x0301)
+        let frames = try Self.decodeFrames(Array(rig.transport.sentMessages[before...]), session: session)
+        let responses = frames.filter { $0.exchange.protocolOpcode == InteractionModelOpcode.invokeResponse.rawValue }
+        #expect(!responses.isEmpty)
+        #expect(responses.allSatisfy { $0.counter == dropped[0].counter }, "MRP re-sends the dropped response under its own counter")
         #expect(toggles.value == 1)
+        await rig.server.stop()
+    }
+
+    // MARK: - Chunked reports
+
+    @Test("A chunked read whose first chunk send fails still delivers every chunk exactly once, in order")
+    func failedFirstChunkSendDeliversEveryChunk() async throws {
+        let rig = try await startServer(extraLights: 2)
+        let pase = try await performPASE(rig.transport)
+        let session = pase.session()
+
+        let reference = try await readChunked(rig, session: session, exchangeID: 0x0501)
+        try #require(reference.count >= 3, "the wildcard read must be chunked for this test to mean anything")
+
+        let failing = try await readChunked(rig, session: session, exchangeID: 0x0502, failSendBefore: 0)
+        try #require(rig.transport.droppedMessages.count == 1)
+        let dropped = try Self.decodeFrames(rig.transport.droppedMessages, session: session)
+        #expect(dropped[0].exchange.exchangeID == 0x0502)
+        #expect(dropped[0].payload == failing.first?.payload, "the failed send was chunk 1")
+        #expect(failing.map(\.payload) == reference.map(\.payload))
+        await rig.server.stop()
+    }
+
+    @Test("A chunked read whose second chunk send fails never repeats a chunk under a new counter")
+    func failedLaterChunkSendIsNotRepeated() async throws {
+        let rig = try await startServer(extraLights: 2)
+        let pase = try await performPASE(rig.transport)
+        let session = pase.session()
+
+        let reference = try await readChunked(rig, session: session, exchangeID: 0x0601)
+        try #require(reference.count >= 3, "the wildcard read must be chunked for this test to mean anything")
+
+        let failing = try await readChunked(rig, session: session, exchangeID: 0x0602, failSendBefore: 1)
+        try #require(rig.transport.droppedMessages.count == 1)
+        let dropped = try Self.decodeFrames(rig.transport.droppedMessages, session: session)
+        #expect(dropped[0].exchange.exchangeID == 0x0602)
+        #expect(dropped[0].payload == failing.dropFirst().first?.payload, "the failed send was chunk 2")
+        #expect(failing.map(\.payload) == reference.map(\.payload), "each chunk once, in order")
         await rig.server.stop()
     }
 
@@ -163,10 +211,13 @@ struct DuplicateHandlingTests {
         let light: BridgedEndpoint
     }
 
-    private func startServer(onOffChanged: (@Sendable (Bool) -> Void)? = nil) async throws -> Rig {
+    private func startServer(onOffChanged: (@Sendable (Bool) -> Void)? = nil, extraLights: Int = 0) async throws -> Rig {
         let transport = MockServerUDPTransport()
         let bridge = MatterBridge()
         let light = bridge.addDimmableLight(name: "Duplicate Light", onOffChanged: onOffChanged)
+        for index in 0..<extraLights {
+            _ = bridge.addDimmableLight(name: "Extra Light \(index)")
+        }
         let server = MatterDeviceServer(
             bridge: bridge,
             transport: transport,
@@ -252,6 +303,7 @@ struct DuplicateHandlingTests {
     struct Frame {
         let counter: UInt32
         let exchange: ExchangeHeader
+        let payload: Data
 
         var isStandaloneAck: Bool {
             exchange.protocolID == MatterProtocolID.secureChannel.rawValue
@@ -261,8 +313,8 @@ struct DuplicateHandlingTests {
 
     static func decodeFrames(_ datagrams: [(Data, MatterAddress)], session: SecureSession) throws -> [Frame] {
         try datagrams.map { data, _ in
-            let (messageHeader, exchangeHeader, _) = try SecureMessageCodec.decode(data: data, session: session)
-            return Frame(counter: messageHeader.messageCounter, exchange: exchangeHeader)
+            let (messageHeader, exchangeHeader, payload) = try SecureMessageCodec.decode(data: data, session: session)
+            return Frame(counter: messageHeader.messageCounter, exchange: exchangeHeader, payload: payload)
         }
     }
 
@@ -281,6 +333,81 @@ struct DuplicateHandlingTests {
         let message = try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: session, sourceNodeID: NodeID(rawValue: 0))
         let (messageHeader, _) = try MessageHeader.decode(from: message)
         return (message, messageHeader.messageCounter)
+    }
+
+    /// Read every attribute as the client on `exchangeID`, acknowledging each
+    /// new chunk with a StatusResponse (piggybacking its ack), and return the
+    /// ReportData frames in arrival order, one per message counter (an MRP
+    /// retransmission repeats a counter and is not a new chunk).
+    ///
+    /// - Parameter failSendBefore: make the server's send of the chunk with
+    ///   this index fail once (it is armed just before the message that
+    ///   triggers that send).
+    private func readChunked(
+        _ rig: Rig,
+        session: SecureSession,
+        exchangeID: UInt16,
+        failSendBefore failIndex: Int? = nil
+    ) async throws -> [Frame] {
+        let start = rig.transport.sentCount
+        let read = ReadRequest(attributeRequests: [AttributePath()], isFabricFiltered: false)
+        if failIndex == 0 { rig.transport.failNextSends(1) }
+        rig.transport.injectDatagram(
+            try Self.securedRequest(session: session, exchangeID: exchangeID, opcode: .readRequest, payload: read.tlvEncode()),
+            from: sender
+        )
+
+        var chunks: [Frame] = []
+        while true {
+            let seen = Set(chunks.map(\.counter))
+            let chunk = try await waitForFrameValue(rig.transport, after: start, session: session) {
+                $0.exchange.exchangeID == exchangeID
+                    && $0.exchange.protocolOpcode == InteractionModelOpcode.reportData.rawValue
+                    && !seen.contains($0.counter)
+            }
+            chunks.append(chunk)
+            guard try ReportData.fromTLV(chunk.payload).moreChunkedMessages else {
+                // Acknowledge the final chunk and wait for the server's ack of
+                // that: the exchange is then closed, so nothing on it is still
+                // being retransmitted when a later read arms a send failure.
+                let final = try Self.securedRequest(
+                    session: session, exchangeID: exchangeID, opcode: .statusResponse,
+                    payload: IMStatusResponse.success.tlvEncode(), acknowledging: chunk.counter
+                )
+                let finalCounter = try MessageHeader.decode(from: final).header.messageCounter
+                rig.transport.injectDatagram(final, from: sender)
+                try await waitForFrame(rig.transport, after: start, session: session) {
+                    $0.exchange.exchangeID == exchangeID && $0.isStandaloneAck
+                        && $0.exchange.acknowledgedMessageCounter == finalCounter
+                }
+                return chunks
+            }
+            if failIndex == chunks.count { rig.transport.failNextSends(1) }
+            rig.transport.injectDatagram(
+                try Self.securedRequest(
+                    session: session, exchangeID: exchangeID, opcode: .statusResponse,
+                    payload: IMStatusResponse.success.tlvEncode(), acknowledging: chunk.counter
+                ),
+                from: sender
+            )
+        }
+    }
+
+    static func securedRequest(
+        session: SecureSession,
+        exchangeID: UInt16,
+        opcode: InteractionModelOpcode,
+        payload: Data,
+        acknowledging ackCounter: UInt32? = nil
+    ) throws -> Data {
+        let header = ExchangeHeader(
+            flags: ExchangeFlags(initiator: true, reliableDelivery: true),
+            protocolOpcode: opcode.rawValue,
+            exchangeID: exchangeID,
+            protocolID: MatterProtocolID.interactionModel.rawValue,
+            acknowledgedMessageCounter: ackCounter
+        )
+        return try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: session, sourceNodeID: NodeID(rawValue: 0))
     }
 
     static func pbkdfRequest(initiatorSessionID: UInt16) -> PASEMessages.PBKDFParamRequest {
@@ -327,10 +454,20 @@ struct DuplicateHandlingTests {
         session: SecureSession,
         where predicate: (Frame) -> Bool
     ) async throws {
+        _ = try await waitForFrameValue(transport, after: start, session: session, where: predicate)
+    }
+
+    /// The first frame sent after `start` matching `predicate` (polled, with a hang guard).
+    private func waitForFrameValue(
+        _ transport: MockServerUDPTransport,
+        after start: Int,
+        session: SecureSession,
+        where predicate: (Frame) -> Bool
+    ) async throws -> Frame {
         let deadline = ContinuousClock.now + .seconds(10)
         while true {
             let frames = try Self.decodeFrames(Array(transport.sentMessages[start...]), session: session)
-            if frames.contains(where: predicate) { return }
+            if let frame = frames.first(where: predicate) { return frame }
             guard ContinuousClock.now < deadline else { throw DuplicateTestError.timedOut }
             try await Task.sleep(for: .milliseconds(20))
         }
