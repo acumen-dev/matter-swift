@@ -197,7 +197,7 @@ final class LinkCore: Sendable {
             if let interceptor = state.interceptor {
                 return .intercept(interceptor)
             }
-            let dropped = Double.random(in: 0..<1, using: &direction.rng) < direction.dropProbability
+            let dropped = Double(direction.rng.next() >> 11) * 0x1.0p-53 < direction.dropProbability
             return .decided(dropped ? .drop : .deliver(after: .zero))
         }
 

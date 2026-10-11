@@ -51,6 +51,56 @@ struct TestSupportTests {
         #expect(clock.sleeperCount == 0)
     }
 
+    @Test("Cancellation before the sleep is reached is remembered and never counts")
+    func cancelBeforeRegistration() async throws {
+        let clock = ManualClock()
+        let gate = LockedValue(false)
+        let task = Task {
+            while !gate.value { await Task.yield() }
+            try await clock.sleep(until: clock.now + .seconds(1))
+        }
+        task.cancel()
+        gate.withLock { $0 = true }
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(clock.sleeperCount == 0)
+    }
+
+    @Test("A woken sleeper that does not re-arm is counted and costs little")
+    func nonRearmingSleeperTimesOut() async throws {
+        let clock = ManualClock(quiescenceYieldLimit: 200)
+        let once = Task { try await clock.sleep(until: clock.now + .milliseconds(10)) }
+        await clock.waitForSleepers(1)
+        await clock.advance(by: .milliseconds(10))
+        try await once.value
+        #expect(clock.quiescenceTimeouts == 1)
+    }
+
+    @Test("Same-deadline scheduled actions run in registration order and all same-deadline sleepers wake")
+    func sameDeadlineOrder() async throws {
+        // Sleepers are resumed in registration order, but where each woken
+        // task then runs is up to the executor, so only the synchronous
+        // scheduled actions can assert order deterministically.
+        let clock = ManualClock()
+        let deadline = clock.now + .milliseconds(10)
+        let order = LockedValue<[Int]>([])
+        for index in 0..<8 {
+            clock.schedule(at: deadline) { order.withLock { $0.append(index) } }
+        }
+        let woken = LockedValue(0)
+        var tasks: [Task<Void, any Error>] = []
+        for index in 0..<8 {
+            tasks.append(Task {
+                try await clock.sleep(until: deadline)
+                woken.withLock { $0 += 1 }
+            })
+            await clock.waitForSleepers(index + 1)
+        }
+        await clock.advance(by: .milliseconds(10))
+        for task in tasks { try await task.value }
+        #expect(order.value == Array(0..<8))
+        #expect(woken.value == 8)
+    }
+
     // MARK: - SeededJitter
 
     @Test("Seeded jitter repeats per seed and stays in 0..<1")
