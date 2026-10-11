@@ -25,7 +25,8 @@ struct CASEProtocolHandlerTests {
         )
         let initiatorNOC = try MatterCertificate.generateNOC(
             signerKey: rootKey, issuerDN: initiatorRCAC.subject,
-            nodePublicKey: initiatorKey.publicKey, nodeID: initiatorNodeID, fabricID: fabricID
+            nodePublicKey: initiatorKey.publicKey, nodeID: initiatorNodeID, fabricID: fabricID,
+            caseAuthenticatedTags: [0xD8D2_0001]
         )
         let initiatorFabric = FabricInfo(
             fabricIndex: FabricIndex(rawValue: 1), fabricID: fabricID,
@@ -95,6 +96,8 @@ struct CASEProtocolHandlerTests {
         #expect(responderSession.establishment == .case)
         #expect(initiatorSession.fabricIndex == FabricIndex(rawValue: 1))
         #expect(responderSession.fabricIndex == FabricIndex(rawValue: 2))
+        // The responder keeps the initiator's CATs so ACL checks can match CAT subjects
+        #expect(responderSession.peerCATs == [0xD8D2_0001])
 
         // Cross-encrypt: initiator encrypts, responder decrypts
         let testPayload = Data("Hello CASE!".utf8)

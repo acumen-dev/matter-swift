@@ -1405,7 +1405,8 @@ public actor MatterDeviceServer {
                 checkerContext: ACLChecker.RequestContext(
                     isPASE: session.establishment == .pase,
                     subjectNodeID: session.peerNodeID.rawValue,
-                    fabricIndex: fabricIndex
+                    fabricIndex: fabricIndex,
+                    subjectCATs: session.peerCATs
                 ),
                 acls: acls
             )

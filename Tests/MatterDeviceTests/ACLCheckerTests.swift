@@ -429,4 +429,73 @@ struct ACLCheckerTests {
         )
         #expect(decision == .allowed)
     }
+
+    // MARK: - CASE Authenticated Tag Subjects (§6.6.2.1.2)
+
+    /// Apple Home's AddNOC CaseAdminSubject, as observed: CAT identifier 0xD8D2, version 1.
+    private let appleAdminCATSubject: UInt64 = 0xFFFF_FFFD_D8D2_0001
+
+    private func catAdminACE(_ subject: UInt64) -> AccessControlCluster.AccessControlEntry {
+        AccessControlCluster.AccessControlEntry(
+            privilege: .administer, authMode: .case, subjects: [subject], targets: nil, fabricIndex: fabric1
+        )
+    }
+
+    @Test("CAT subject grants access to a peer holding that CAT at the same version")
+    func catSubjectMatchesSameVersion() {
+        let context = ACLChecker.RequestContext(
+            isPASE: false, subjectNodeID: 890_337_852, fabricIndex: fabric1, subjectCATs: [0xD8D2_0001]
+        )
+        let decision = ACLChecker.check(
+            requiredPrivilege: .administer, endpointID: endpoint0, clusterID: ClusterID(rawValue: 0x0030),
+            context: context, acls: [catAdminACE(appleAdminCATSubject)]
+        )
+        #expect(decision == .allowed)
+    }
+
+    @Test("CAT subject grants access to a peer holding a newer version of that CAT")
+    func catSubjectMatchesNewerVersion() {
+        let context = ACLChecker.RequestContext(
+            isPASE: false, subjectNodeID: 7, fabricIndex: fabric1, subjectCATs: [0x1234_0001, 0xD8D2_0003]
+        )
+        let decision = ACLChecker.check(
+            requiredPrivilege: .administer, endpointID: endpoint0, clusterID: aclCluster,
+            context: context, acls: [catAdminACE(appleAdminCATSubject)]
+        )
+        #expect(decision == .allowed)
+    }
+
+    @Test("CAT subject denies a peer holding an older version of that CAT")
+    func catSubjectDeniesOlderVersion() {
+        let context = ACLChecker.RequestContext(
+            isPASE: false, subjectNodeID: 7, fabricIndex: fabric1, subjectCATs: [0xD8D2_0001]
+        )
+        let decision = ACLChecker.check(
+            requiredPrivilege: .administer, endpointID: endpoint0, clusterID: aclCluster,
+            context: context, acls: [catAdminACE(0xFFFF_FFFD_D8D2_0002)]
+        )
+        #expect(decision == .denied)
+    }
+
+    @Test("CAT subject denies a peer holding a different CAT identifier")
+    func catSubjectDeniesDifferentIdentifier() {
+        let context = ACLChecker.RequestContext(
+            isPASE: false, subjectNodeID: 7, fabricIndex: fabric1, subjectCATs: [0xD8D3_0001]
+        )
+        let decision = ACLChecker.check(
+            requiredPrivilege: .administer, endpointID: endpoint0, clusterID: aclCluster,
+            context: context, acls: [catAdminACE(appleAdminCATSubject)]
+        )
+        #expect(decision == .denied)
+    }
+
+    @Test("CAT subject denies a peer with no CATs")
+    func catSubjectDeniesPeerWithoutCATs() {
+        let context = ACLChecker.RequestContext(isPASE: false, subjectNodeID: 7, fabricIndex: fabric1)
+        let decision = ACLChecker.check(
+            requiredPrivilege: .administer, endpointID: endpoint0, clusterID: aclCluster,
+            context: context, acls: [catAdminACE(appleAdminCATSubject)]
+        )
+        #expect(decision == .denied)
+    }
 }
