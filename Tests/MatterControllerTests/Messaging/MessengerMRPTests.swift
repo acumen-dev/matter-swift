@@ -26,9 +26,10 @@ struct MessengerMRPTests {
         #expect(await clock.waitForSleeper(until: origin + .milliseconds(550)))
 
         await clock.advance(by: .milliseconds(549))
+        #expect(await clock.waitForSleeper(until: origin + .milliseconds(550)), "still armed for the retransmission")
         #expect(link.sent(from: .a).count == 1)
         await clock.advance(by: .milliseconds(1))
-        #expect(link.sent(from: .a).count == 2)
+        #expect(await eventually { link.sent(from: .a).count == 2 })
 
         let sent = link.sent(from: .a)
         #expect(sent[0] == sent[1])
@@ -90,13 +91,23 @@ struct MessengerMRPTests {
             try await exchange.request(protocolID: .echo, opcode: echoRequest, payload: Data(), timeout: .seconds(1))
         }
         #expect(await eventually { await messenger.pendingReceiveCount == 1 })
-        #expect(await clock.waitForSleeper(until: origin + .milliseconds(550)))
-
-        await clock.advance(by: .milliseconds(8695))
+        // Each retransmission deadline: SII 500 x 1.1, then backoff x1.6 (jitter 0).
+        var previous = origin
+        for deadline in [550.0, 1430.0, 2838.0, 5090.8] {
+            let instant = origin + .microseconds(Int64(deadline * 1000))
+            #expect(await clock.waitForSleeper(until: instant))
+            await clock.advance(by: instant - previous)
+            previous = instant
+        }
+        let exhaustion = origin + .nanoseconds(8_695_280_000)
+        #expect(await clock.waitForSleeper(until: exhaustion), "exhaustion is pinned to the nanosecond")
+        #expect(await eventually { link.sent(from: .a).count == 5 })
         #expect(await messenger.pendingReceiveCount == 1, "a 1 s timeout must not end the wait while MRP is still retransmitting")
-        #expect(link.sent(from: .a).count == 5)
 
-        await clock.advance(by: .microseconds(280))
+        await clock.advance(by: exhaustion - previous - .nanoseconds(1))
+        #expect(await clock.waitForSleeper(until: exhaustion))
+        #expect(await messenger.pendingReceiveCount == 1)
+        await clock.advance(by: .nanoseconds(1))
         await #expect(throws: MessagingError.peerUnreachable(exchange.key, transmissions: 5)) {
             try await requesting.value
         }
@@ -169,9 +180,10 @@ struct MessengerMRPTests {
 
         #expect(await clock.waitForSleeper(until: origin + .milliseconds(200)))
         await clock.advance(by: .milliseconds(199))
+        #expect(await clock.waitForSleeper(until: origin + .milliseconds(200)), "still armed for the standalone ack")
         #expect(link.sent(from: .a).count == 1)
         await clock.advance(by: .milliseconds(1))
-        #expect(link.sent(from: .a).count == 2)
+        #expect(await eventually { link.sent(from: .a).count == 2 })
         let ack = try await peer.next()
         #expect(ack.isStandaloneAck)
         #expect(ack.exchangeHeader.acknowledgedMessageCounter == 77)
@@ -225,6 +237,7 @@ struct MessengerMRPTests {
         #expect(await messenger.pendingReceiveCount == 1)
         await clock.advance(by: .microseconds(100))
         await #expect(throws: MessagingError.responseTimeout(exchange.key)) { try await requesting.value }
+        #expect(await messenger.activeExchangeCount == 0)
         #expect(clock.quiescenceTimeouts == 0)
         await messenger.stop()
     }

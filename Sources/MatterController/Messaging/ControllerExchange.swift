@@ -23,9 +23,14 @@ public struct ControllerExchange: Sendable {
         try await messenger.send(key, protocolID: protocolID, opcode: opcode, payload: payload, reliable: reliable)
     }
 
-    /// The next message on the exchange. While our last reliable message is
-    /// still unacknowledged the wait extends to the MRP exhaustion horizon,
-    /// so the effective wait is `max(timeout, horizon)`.
+    /// The next message on the exchange. The effective wait is always
+    /// `max(timeout, MRP exhaustion horizon)` -- the larger of the idle and
+    /// active horizons (up to ~108 s for a peer with SII 5000). On expiry it
+    /// fails with ``MessagingError/responseTimeout(_:)`` and closes the
+    /// exchange exactly as ``close()`` does (a pending reliable message keeps
+    /// retransmitting until acked or exhausted). The deadline is fixed when
+    /// `receive` starts: a reliable send issued while a receive is already
+    /// waiting can outlive it (intended).
     ///
     /// Cancelling the calling task fails the receive with `CancellationError`
     /// and closes the exchange exactly as ``close()`` does: an

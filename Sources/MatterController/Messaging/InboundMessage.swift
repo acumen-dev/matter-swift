@@ -27,14 +27,15 @@ public struct InboundMessage: Sendable, Equatable {
 public enum MessagingError: Error, Sendable, Equatable {
     /// No secure session is registered under this local session ID.
     case unknownSession(UInt16)
-    /// The exchange was closed (by its owner, by cancellation, or idle).
+    /// The exchange was closed (by its owner, by cancellation, by a receive timeout, or idle).
     case exchangeClosed
     /// `receive()` is already waiting on this exchange.
     case receiveAlreadyPending
     /// A reliable message sent on this exchange is still unacknowledged; a
     /// second one would replace it and MRP would stop retransmitting the first.
     case sendAlreadyPending
-    /// The message was acknowledged but nothing arrived within the timeout.
+    /// Nothing arrived within the effective wait, `max(timeout, MRP exhaustion
+    /// horizon)`; the exchange is closed as by `close()`.
     case responseTimeout(ExchangeKey)
     /// Every transmission went unacknowledged (MRP exhausted).
     case peerUnreachable(ExchangeKey, transmissions: Int)
