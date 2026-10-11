@@ -36,6 +36,7 @@ struct TestSupportTests {
         ticker.cancel()
         await #expect(throws: CancellationError.self) { try await ticker.value }
         #expect(clock.sleeperCount == 0)
+        #expect(clock.quiescenceTimeouts == 0)
     }
 
     @Test("A deadline already reached returns at once; a cancelled sleep throws and leaves no sleeper")
@@ -69,7 +70,7 @@ struct TestSupportTests {
     func nonRearmingSleeperTimesOut() async throws {
         let clock = ManualClock(quiescenceYieldLimit: 200)
         let once = Task { try await clock.sleep(until: clock.now + .milliseconds(10)) }
-        await clock.waitForSleepers(1)
+        #expect(await clock.waitForSleepers(1))
         await clock.advance(by: .milliseconds(10))
         try await once.value
         #expect(clock.quiescenceTimeouts == 1)
@@ -80,7 +81,8 @@ struct TestSupportTests {
         // Sleepers are resumed in registration order, but where each woken
         // task then runs is up to the executor, so only the synchronous
         // scheduled actions can assert order deterministically.
-        let clock = ManualClock()
+        // These sleepers do not re-arm, so advance times out: keep the bound small.
+        let clock = ManualClock(quiescenceYieldLimit: 200)
         let deadline = clock.now + .milliseconds(10)
         let order = LockedValue<[Int]>([])
         for index in 0..<8 {
@@ -178,6 +180,7 @@ struct TestSupportTests {
         let secondCopy = await inbox.next()
         #expect(firstCopy?.0 == Data([7]))
         #expect(secondCopy?.0 == Data([7]))
+        #expect(clock.quiescenceTimeouts == 0)
     }
 
     @Test("A spoofed source is what the receiver sees")

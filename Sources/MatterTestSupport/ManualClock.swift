@@ -20,7 +20,6 @@ import MatterProtocol
 /// increments ``quiescenceTimeouts`` so a test can assert it stayed 0.
 public final class ManualClock: MRPClock, Sendable {
 
-
     private struct Sleeper: Sendable {
         let deadline: ContinuousClock.Instant
         let continuation: CheckedContinuation<Void, any Error>
@@ -53,14 +52,16 @@ public final class ManualClock: MRPClock, Sendable {
     private let timeouts = Mutex(0)
 
     /// Bound on the scheduler yields spent waiting for sleepers to re-register.
-    /// The default is generous for a woken task to run its work and re-arm
-    /// even on a loaded 2-core runner (a re-arm normally takes a handful of
-    /// yields), yet small enough that a task which never re-arms costs
-    /// milliseconds. Reaching it is counted in ``quiescenceTimeouts``; it is
-    /// not a timing margin.
+    /// The default is large enough to outlast an OS preemption of the woken
+    /// task on a loaded 2-core runner, so it never acts as a timing margin for
+    /// a correct test: a correct test never reaches it, and it only costs time
+    /// (a fraction of a second) on a path that is already failing. Tests that
+    /// deliberately leave a sleeper un-re-armed pass a small limit. Reaching
+    /// it is counted in ``quiescenceTimeouts``.
     public let quiescenceYieldLimit: Int
 
-    public init(origin: ContinuousClock.Instant = .now, quiescenceYieldLimit: Int = 10_000) {
+    public init(origin: ContinuousClock.Instant = .now, quiescenceYieldLimit: Int = 100_000) {
+        precondition(quiescenceYieldLimit >= 0, "quiescenceYieldLimit must not be negative")
         state = Mutex(State(now: origin))
         self.quiescenceYieldLimit = quiescenceYieldLimit
     }
@@ -176,7 +177,9 @@ public final class ManualClock: MRPClock, Sendable {
 
     /// Yield until at least `count` sleepers are registered (bounded by
     /// `quiescenceYieldLimit`, and by cancellation of the caller).
-    /// - Returns: whether the count was reached; a miss increments ``quiescenceTimeouts``.
+    /// - Returns: whether the count was reached. Hitting the yield bound
+    ///   increments ``quiescenceTimeouts``; returning `false` because the
+    ///   caller was cancelled does not.
     @discardableResult
     public func waitForSleepers(_ count: Int) async -> Bool {
         for _ in 0..<quiescenceYieldLimit {
@@ -191,16 +194,20 @@ public final class ManualClock: MRPClock, Sendable {
 
     /// Yield until a sleeper waits for exactly `deadline` (bounded as in
     /// ``waitForSleepers(_:)``).
-    /// - Returns: whether one did; a miss increments ``quiescenceTimeouts``.
+    /// - Returns: whether one did. Hitting the yield bound increments
+    ///   ``quiescenceTimeouts``; a cancelled caller returns `false` without counting.
     public func waitForSleeper(until deadline: ContinuousClock.Instant) async -> Bool {
-        for _ in 0..<quiescenceYieldLimit {
-            let found = state.withLock { state in
+        func isWaiting() -> Bool {
+            state.withLock { state in
                 state.sleepers.values.contains { $0.deadline == deadline }
             }
-            if found { return true }
+        }
+        for _ in 0..<quiescenceYieldLimit {
+            if isWaiting() { return true }
             if Task.isCancelled { return false }
             await Task.yield()
         }
+        if isWaiting() { return true }
         timeouts.withLock { $0 += 1 }
         return false
     }
