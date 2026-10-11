@@ -149,6 +149,21 @@ let package = Package(
             ]
         ),
 
+        // MARK: - Test Support (not a product)
+
+        // Deterministic clock, fault-injecting in-memory link and frame helpers
+        // for messaging tests. Pure Swift: runs on Linux and Apple platforms.
+        .target(
+            name: "MatterTestSupport",
+            dependencies: [
+                "MatterTypes",
+                "MatterCrypto",
+                "MatterProtocol",
+                "MatterTransport",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
+        ),
+
         // MARK: - Convenience Re-export
 
         .target(
@@ -184,15 +199,18 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterProtocolTests",
-            dependencies: ["MatterProtocol", "MatterCrypto", "MatterTransport"]
+            dependencies: ["MatterProtocol", "MatterCrypto", "MatterTransport", "MatterTestSupport"]
         ),
         .testTarget(
             name: "MatterDeviceTests",
-            dependencies: ["MatterDevice", "MatterCrypto", "MatterProtocol", "MatterTransport"]
+            dependencies: ["MatterDevice", "MatterCrypto", "MatterProtocol", "MatterTransport", "MatterTypes", "MatterTestSupport"]
         ),
         .testTarget(
             name: "MatterControllerTests",
-            dependencies: ["MatterController", "MatterModel", "MatterCrypto", "MatterTransport"]
+            dependencies: [
+                "MatterController", "MatterModel", "MatterCrypto", "MatterTransport",
+                "MatterProtocol", "MatterTypes", "MatterTestSupport",
+            ]
         ),
         .testTarget(
             name: "MatterAppleTests",
@@ -222,6 +240,7 @@ let package = Package(
                 "MatterTransport",
                 "MatterModel",
                 "MatterTypes",
+                "MatterTestSupport",
             ]
         ),
         .testTarget(
