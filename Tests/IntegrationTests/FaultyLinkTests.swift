@@ -87,12 +87,13 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
-            await controller.setMRPParameters(Self.fast, for: device.nodeID)
-            #expect(await controller.device(for: device.nodeID)?.mrpParameters == Self.fast)
             _ = try await controller.readAttribute(
                 nodeID: device.nodeID, endpointID: light.endpointID,
                 clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
             )
+            // With a CASE session cached, so the live session is updated in place.
+            await controller.setMRPParameters(Self.fast, for: device.nodeID)
+            #expect(await controller.device(for: device.nodeID)?.mrpParameters == Self.fast)
 
             // The device still receives and executes, but every reply is lost.
             link.setDropProbability(1, from: .b)
