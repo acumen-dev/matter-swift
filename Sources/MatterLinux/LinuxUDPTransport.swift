@@ -117,7 +117,7 @@ public actor LinuxUDPTransport: MatterUDPTransport {
 
 // MARK: - MatterDatagramHandler
 
-private final class MatterDatagramHandler: ChannelInboundHandler, @unchecked Sendable {
+final class MatterDatagramHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = AddressedEnvelope<ByteBuffer>
 
     private let continuation: AsyncStream<(Data, MatterAddress)>.Continuation
@@ -131,9 +131,24 @@ private final class MatterDatagramHandler: ChannelInboundHandler, @unchecked Sen
         let bytes = envelope.data.readBytes(length: envelope.data.readableBytes) ?? []
         let payload = Data(bytes)
 
-        guard let host = envelope.remoteAddress.ipAddress else { return }
-        let port = UInt16(envelope.remoteAddress.port ?? 0)
-        continuation.yield((payload, MatterAddress(host: host, port: port)))
+        guard let sender = Self.matterAddress(envelope.remoteAddress) else { return }
+        continuation.yield((payload, sender))
+    }
+
+    /// The sender as a `MatterAddress`. The socket is dual-stack, so an IPv4
+    /// peer arrives as an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`); it is
+    /// reported in plain IPv4 form, the form exchanges and sessions are keyed
+    /// by. Every other address (including link-local) is passed through.
+    static func matterAddress(_ address: SocketAddress) -> MatterAddress? {
+        let port = UInt16(address.port ?? 0)
+        if case .v6(let v6) = address {
+            let bytes = withUnsafeBytes(of: v6.address.sin6_addr) { Array($0) }
+            if bytes.count == 16, bytes[0..<10].allSatisfy({ $0 == 0 }), bytes[10] == 0xFF, bytes[11] == 0xFF {
+                return MatterAddress(host: "\(bytes[12]).\(bytes[13]).\(bytes[14]).\(bytes[15])", port: port)
+            }
+        }
+        guard let host = address.ipAddress else { return nil }
+        return MatterAddress(host: host, port: port)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {

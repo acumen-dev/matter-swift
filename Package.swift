@@ -225,6 +225,8 @@ let package = Package(
             dependencies: [
                 "MatterLinux",
                 "MatterTransport",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "MDNSLinux", package: "mdns-swift"),
             ]
         ),
