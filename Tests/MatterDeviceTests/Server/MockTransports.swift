@@ -20,6 +20,7 @@ final class MockServerUDPTransport: MatterUDPTransport, @unchecked Sendable {
         var sentMessages: [(Data, MatterAddress)] = []
         var boundPort: UInt16?
         var isClosed = false
+        var failNextSends = 0
     }
 
     init() {
@@ -53,7 +54,20 @@ final class MockServerUDPTransport: MatterUDPTransport, @unchecked Sendable {
 
     // MARK: - MatterUDPTransport
 
+    /// Make the next `count` sends throw (nothing is recorded for them).
+    func failNextSends(_ count: Int) {
+        state.withLock { $0.failNextSends = count }
+    }
+
+    struct InjectedSendFailure: Error {}
+
     func send(_ data: Data, to address: MatterAddress) async throws {
+        let shouldFail = state.withLock { state -> Bool in
+            guard state.failNextSends > 0 else { return false }
+            state.failNextSends -= 1
+            return true
+        }
+        if shouldFail { throw InjectedSendFailure() }
         state.withLock { $0.sentMessages.append((data, address)) }
     }
 

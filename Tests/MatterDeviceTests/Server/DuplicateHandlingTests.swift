@@ -89,9 +89,36 @@ struct DuplicateHandlingTests {
         }
 
         let frames = try Self.decodeFrames(Array(rig.transport.sentMessages[before...]), session: session)
+        let ack = try #require(frames.first { $0.isStandaloneAck && $0.exchange.acknowledgedMessageCounter == invoke.counter })
+        #expect(ack.exchange.exchangeID == 0x0101)
+        #expect(!ack.exchange.flags.initiator, "the controller opened the exchange, so the device's ack is not from the initiator")
         let responses = frames.filter { $0.exchange.protocolOpcode == InteractionModelOpcode.invokeResponse.rawValue }
         #expect(!responses.isEmpty)
         #expect(Set(responses.map(\.counter)).count == 1, "MRP re-sends one response; a second execution would add a new counter")
+        #expect(toggles.value == 1)
+        await rig.server.stop()
+    }
+
+    @Test("A response whose first send fails is still tracked, so the MRP loop recovers it")
+    func failedFirstSendIsRecovered() async throws {
+        let toggles = ToggleCounter()
+        let rig = try await startServer(onOffChanged: { _ in toggles.increment() })
+        let pase = try await performPASE(rig.transport)
+        let session = pase.session()
+        let invoke = try Self.toggleRequest(endpointID: rig.light.endpointID, session: session, exchangeID: 0x0301)
+        let before = rig.transport.sentCount
+
+        rig.transport.failNextSends(1)
+        rig.transport.injectDatagram(invoke.message, from: sender)
+        // The retransmission arrives after the response's first send failed.
+        rig.transport.injectDatagram(invoke.message, from: sender)
+        try await waitForFrame(rig.transport, after: before, session: session) {
+            $0.isStandaloneAck && $0.exchange.acknowledgedMessageCounter == invoke.counter
+        }
+        // The MRP loop re-sends the tracked response.
+        try await waitForFrame(rig.transport, after: before, session: session) {
+            $0.exchange.protocolOpcode == InteractionModelOpcode.invokeResponse.rawValue
+        }
         #expect(toggles.value == 1)
         await rig.server.stop()
     }

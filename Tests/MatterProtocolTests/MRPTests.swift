@@ -340,6 +340,14 @@ struct CounterDeduplicationVerdictTests {
         #expect(dedup.check(60) == .outOfWindow)
     }
 
+    @Test("A jump of exactly the window size keeps the previous max as a duplicate")
+    func jumpOfWindowSize() {
+        var dedup = CounterDeduplication(encrypted: true)
+        #expect(dedup.check(100) == .accepted)
+        #expect(dedup.check(132) == .accepted)
+        #expect(dedup.check(100) == .duplicate)
+    }
+
     @Test("Unencrypted: below the window is a peer reboot and is accepted")
     func unencrypted() {
         var dedup = CounterDeduplication(encrypted: false)

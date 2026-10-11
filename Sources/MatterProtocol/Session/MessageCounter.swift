@@ -67,7 +67,8 @@ extension CounterDeduplication {
         /// Seen before: acknowledge it again if it asked for an ack, never
         /// process it twice.
         case duplicate
-        /// Encrypted session only: below the window — drop silently.
+        /// Encrypted session only: below the window — acknowledged if it
+        /// requested an ack, never processed.
         case outOfWindow
     }
 
@@ -88,6 +89,9 @@ extension CounterDeduplication {
             let shift = counter - max
             if shift < Self.windowSize {
                 bitmap = (bitmap << shift) | (1 << (shift - 1))
+            } else if shift == Self.windowSize {
+                // The previous max sits at offset 32, the oldest slot still in the window.
+                bitmap = 1 << (Self.windowSize - 1)
             } else {
                 bitmap = 0
             }

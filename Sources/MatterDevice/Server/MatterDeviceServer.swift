@@ -1447,13 +1447,13 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
                     logger.trace("[CHUNK-FLOW] Sending chunk \(context.nextChunkIndex)/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(nextChunk.tlvEncode().count)B TLV, moreChunked=\(nextChunk.moreChunkedMessages), ackCounter=\(String(describing: ackCounter))")
-                    try await transport.send(encrypted, to: address)
                     trackForRetransmission(
                         inbound: exchangeHeader,
                         session: session,
                         message: encrypted,
                         peerAddress: address
                     )
+                    try await transport.send(encrypted, to: address)
 
                     if context.isComplete && !context.trailingResponses.isEmpty {
                         // Last chunk just sent but there are trailing responses
@@ -1489,13 +1489,13 @@ public actor MatterDeviceServer {
                             session: session,
                             sourceNodeID: NodeID(rawValue: 0)
                         )
-                        try await transport.send(encrypted, to: address)
                         trackForRetransmission(
                             inbound: exchangeHeader,
                             session: session,
                             message: encrypted,
                             peerAddress: address
                         )
+                        try await transport.send(encrypted, to: address)
                     }
                 } else {
                     // All chunks delivered, no trailing responses — send standalone ACK
@@ -1554,13 +1554,13 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
 
-                    try await transport.send(encrypted, to: address)
                     trackForRetransmission(
                         inbound: exchangeHeader,
                         session: session,
                         message: encrypted,
                         peerAddress: address
                     )
+                    try await transport.send(encrypted, to: address)
                 }
 
                 // If no response was sent but we owe an ACK, send a standalone ACK.
@@ -1600,13 +1600,13 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
                     logger.trace("[CHUNK-FLOW] Sending first chunk 1/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(firstChunk.tlvEncode().count)B TLV, moreChunked=\(firstChunk.moreChunkedMessages)")
-                    try await transport.send(encrypted, to: address)
                     trackForRetransmission(
                         inbound: exchangeHeader,
                         session: session,
                         message: encrypted,
                         peerAddress: address
                     )
+                    try await transport.send(encrypted, to: address)
                 }
                 // Store context for delivery on subsequent StatusResponse messages.
                 // Even if all chunks are sent, we keep the context when there are
