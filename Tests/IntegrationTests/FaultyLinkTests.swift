@@ -237,6 +237,60 @@ struct FaultyLinkTests {
         await server.stop()
     }
 
+    @Test("A caller cancelled while waiting on a shared CASE handshake stops waiting at once; the others still succeed")
+    func cancelledWaiterReturnsBeforeHandshakeCompletes() async throws {
+        let link = FaultInjectingLink(seed: 19)
+        let toggles = LockedValue(0)
+        let (server, light) = try await startServer(on: link, toggles: toggles)
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let sentBefore = link.sent(from: .a).count
+
+            // Hold the handshake: the device's replies are lost until released.
+            link.setDropProbability(1, from: .b)
+            let invoke: @Sendable () async throws -> Void = {
+                _ = try await controller.invokeCommand(
+                    nodeID: device.nodeID, endpointID: light.endpointID,
+                    clusterID: .onOff, commandID: OnOffCluster.Command.toggle
+                )
+            }
+            let first = Task { try await invoke() }
+            let cancelled = Task { try await invoke() }
+            let third = Task { try await invoke() }
+
+            let handshakeStarted = await Self.eventually {
+                !Self.sigma1Exchanges(in: link.sent(from: .a).dropFirst(sentBefore)).isEmpty
+            }
+            #expect(handshakeStarted)
+            cancelled.cancel()
+
+            // Still holding the handshake: the cancelled caller must not wait for it.
+            await #expect(throws: CancellationError.self) {
+                try await cancelled.value
+            }
+            #expect(await controller.messenger.sessions.isEmpty, "the handshake had not completed")
+
+            link.setDropProbability(0, from: .b)
+            try await first.value
+            try await third.value
+
+            let value = try await controller.readAttribute(
+                nodeID: device.nodeID, endpointID: light.endpointID,
+                clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
+            )
+            #expect(toggles.value == 2, "the cancelled caller's toggle must never be sent")
+            #expect(value.boolValue == false)
+        } catch {
+            await controller.stop()
+            await server.stop()
+            throw error
+        }
+        await controller.stop()
+        await server.stop()
+    }
+
     @Test("A session unregistered behind the controller's back surfaces as peerUnreachable; the next call re-establishes CASE")
     func unregisteredSessionIsInvalidated() async throws {
         let link = FaultInjectingLink(seed: 23)

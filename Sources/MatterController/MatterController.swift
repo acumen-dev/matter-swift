@@ -4,6 +4,7 @@
 import Foundation
 import Crypto
 import Logging
+import Synchronization
 import MatterTypes
 import MatterModel
 import MatterCrypto
@@ -457,14 +458,16 @@ public actor MatterController {
     ///
     /// Returns the cached session if there is one; otherwise establishes a
     /// new CASE session via Sigma1/2/3. Concurrent callers for the same node
-    /// share one handshake. A cached session stays until it is invalidated
-    /// (the device stopped acknowledging, or ``invalidateSession(for:)``).
+    /// share one handshake. A caller cancelled while waiting for it throws
+    /// `CancellationError` at once; the handshake carries on for the others.
+    /// A cached session stays until it is invalidated (the device stopped
+    /// acknowledging, or ``invalidateSession(for:)``).
     public func session(for nodeID: NodeID) async throws -> SecureSession {
         if let cached = sessionCache.session(for: nodeID) {
             return cached
         }
         if let inFlight = establishing[nodeID] {
-            return try await inFlight.value
+            return try await Self.value(of: inFlight)
         }
         // Isolated to this actor: it cannot start before the entry is stored.
         let task = Task {
@@ -472,7 +475,7 @@ public actor MatterController {
             return try await self.establishCASESession(nodeID: nodeID)
         }
         establishing[nodeID] = task
-        return try await task.value
+        return try await Self.value(of: task)
     }
 
     /// Invalidate the cached session for a node (e.g., after a communication
@@ -814,6 +817,23 @@ public actor MatterController {
         }
     }
 
+    /// Await a shared task's value, but stop waiting — throwing
+    /// `CancellationError` — as soon as the calling task is cancelled. The
+    /// shared task itself is never cancelled: other callers may be waiting
+    /// on it.
+    private static func value<T: Sendable>(of task: Task<T, any Error>) async throws -> T {
+        let waiter = CancellableWaiter<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                if waiter.install(continuation) {
+                    Task { waiter.resume(with: await task.result) }
+                }
+            }
+        } onCancel: {
+            waiter.resume(with: .failure(CancellationError()))
+        }
+    }
+
     /// Check a handshake reply's protocol and opcode. A StatusReport in its
     /// place is the peer refusing the step.
     private static func expect(
@@ -856,5 +876,59 @@ public actor MatterController {
         case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
             return ControllerError.transportError("\(messaging)")
         }
+    }
+}
+
+// MARK: - Cancellable wait
+
+/// One waiter's continuation, resumed exactly once: by the shared task's
+/// result or by the waiter's cancellation, whichever comes first.
+private final class CancellableWaiter<T: Sendable>: Sendable {
+    private enum State {
+        case idle
+        case waiting(CheckedContinuation<T, any Error>)
+        /// Resumed (by cancellation) before the continuation was installed.
+        case early(Result<T, any Error>)
+        case done
+    }
+
+    private let state = Mutex<State>(.idle)
+
+    /// Install the continuation. Returns `false` if the waiter was already
+    /// cancelled (the continuation is resumed at once); then nothing needs
+    /// to forward the task's result.
+    func install(_ continuation: CheckedContinuation<T, any Error>) -> Bool {
+        let early = state.withLock { state -> Result<T, any Error>? in
+            switch state {
+            case .idle:
+                state = .waiting(continuation)
+                return nil
+            case .early(let result):
+                state = .done
+                return result
+            case .waiting, .done:
+                preconditionFailure("CancellableWaiter continuation installed twice")
+            }
+        }
+        guard let early else { return true }
+        continuation.resume(with: early)
+        return false
+    }
+
+    /// Resume with `result` unless already resumed.
+    func resume(with result: Result<T, any Error>) {
+        let continuation = state.withLock { state -> CheckedContinuation<T, any Error>? in
+            switch state {
+            case .idle:
+                state = .early(result)
+                return nil
+            case .waiting(let continuation):
+                state = .done
+                return continuation
+            case .early, .done:
+                return nil
+            }
+        }
+        continuation?.resume(with: result)
     }
 }
