@@ -777,9 +777,10 @@ public actor MatterController {
     ///
     /// A transmitted request is only ever retransmitted by MRP under its
     /// original counter; it is never re-encoded on a new exchange or session.
-    /// If the peer stops acknowledging or the session closes, the session is
-    /// invalidated and the error surfaces as `ControllerError.peerUnreachable`;
-    /// the next call establishes a fresh session.
+    /// If the peer stops acknowledging, or the session closes or is no longer
+    /// registered with the message layer, the session is invalidated and the
+    /// error surfaces as `ControllerError.peerUnreachable`; the next call
+    /// establishes a fresh session.
     private func withSession<T: Sendable>(
         nodeID: NodeID,
         operation: (SecureSession) async throws -> T
@@ -844,13 +845,15 @@ public actor MatterController {
     private static func operationalError(_ error: any Error, nodeID: NodeID) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
         switch messaging {
-        case .peerUnreachable, .sessionClosed:
+        case .peerUnreachable, .sessionClosed, .unknownSession:
+            // The session is gone from the message layer (unacknowledged,
+            // closed, or unregistered): invalidate it, as for a silent peer.
             return ControllerError.peerUnreachable(nodeID)
         case .responseTimeout:
             return ControllerError.timeout("No response from node \(nodeID.rawValue)")
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
-        case .unknownSession, .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
+        case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
             return ControllerError.transportError("\(messaging)")
         }
     }

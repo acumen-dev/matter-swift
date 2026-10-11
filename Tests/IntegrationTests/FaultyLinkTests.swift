@@ -237,6 +237,43 @@ struct FaultyLinkTests {
         await server.stop()
     }
 
+    @Test("A session unregistered behind the controller's back surfaces as peerUnreachable; the next call re-establishes CASE")
+    func unregisteredSessionIsInvalidated() async throws {
+        let link = FaultInjectingLink(seed: 23)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let stale = try await controller.session(for: device.nodeID)
+            let sentBefore = link.sent(from: .a).count
+
+            await controller.messenger.unregisterSession(localSessionID: stale.localSessionID)
+            await #expect(throws: ControllerError.peerUnreachable(device.nodeID)) {
+                try await controller.readAttribute(
+                    nodeID: device.nodeID, endpointID: light.endpointID,
+                    clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
+                )
+            }
+
+            let value = try await controller.readAttribute(
+                nodeID: device.nodeID, endpointID: light.endpointID,
+                clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
+            )
+            #expect(value.boolValue == false)
+            let fresh = try await controller.session(for: device.nodeID)
+            #expect(fresh !== stale, "the broken session was invalidated, not reused")
+            #expect(await controller.messenger.sessions[fresh.localSessionID]?.session === fresh)
+            #expect(Self.sigma1Exchanges(in: link.sent(from: .a).dropFirst(sentBefore)).count == 1, "one new CASE handshake")
+        } catch {
+            await controller.stop()
+            await server.stop()
+            throw error
+        }
+        await controller.stop()
+        await server.stop()
+    }
+
     @Test("setMRPParameters on a live CASE session reaches the messenger")
     func mrpParametersReachLiveSession() async throws {
         let link = FaultInjectingLink(seed: 13)
