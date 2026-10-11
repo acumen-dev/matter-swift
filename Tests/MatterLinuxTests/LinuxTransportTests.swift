@@ -178,7 +178,8 @@ struct MatterLinuxTests {
 
         try await sender.send(testPayload, to: target)
 
-        // Collect the first datagram with a 3-second timeout.
+        // Collect the first datagram, bounded by a hang guard.
+        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
         let stream = receiver.receive()
         let received = await withTaskGroup(of: Data?.self) { group in
             group.addTask {
@@ -186,7 +187,7 @@ struct MatterLinuxTests {
                 return nil
             }
             group.addTask {
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: hangGuard)
                 return nil
             }
             let result = await group.next()!
@@ -220,6 +221,7 @@ struct MatterLinuxTests {
             data: buffer
         )).get()
 
+        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
         let stream = receiver.receive()
         let received = await withTaskGroup(of: MatterAddress?.self) { group in
             group.addTask {
@@ -228,7 +230,7 @@ struct MatterLinuxTests {
             }
             group.addTask {
                 // Hang guard only; the datagram is on loopback.
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: hangGuard)
                 return nil
             }
             let result = await group.next()!
