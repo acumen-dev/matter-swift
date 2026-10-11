@@ -15,9 +15,15 @@ extension ControllerMessenger {
     ///
     /// Registering the same session object again updates its address and MRP
     /// parameters (for exchanges opened from then on) but keeps its
-    /// received-counter window, so a replay is still recognised. Registering a
-    /// *different* session under a registered local session ID first
-    /// unregisters the old one: its exchanges cannot continue under new keys.
+    /// received-counter window, so a replay is still recognised. Passing
+    /// `mrp: nil` when re-registering clears the parameters to the messenger
+    /// default. Registering a *different* session under a registered local
+    /// session ID first unregisters the old one: its exchanges cannot
+    /// continue under new keys.
+    ///
+    /// To change only the MRP parameters of a session that may have been
+    /// unregistered concurrently, use ``updateSession(localSessionID:mrp:)``:
+    /// it never registers.
     public func registerSession(_ session: SecureSession, peerAddress: MatterAddress, mrp: MRPParameters? = nil) {
         start()
         if var existing = sessions[session.localSessionID] {
@@ -32,14 +38,31 @@ extension ControllerMessenger {
         sessions[session.localSessionID] = SessionEntry(session: session, peerAddress: peerAddress, mrp: mrp)
     }
 
+    /// Change the MRP parameters of a registered session, keeping its tracked
+    /// peer address and counter window. Exchanges already open keep the
+    /// parameters they were opened with; `nil` means the messenger default.
+    ///
+    /// - Returns: `false`, changing nothing, if no session is registered
+    ///   under `localSessionID` (for instance it was unregistered meanwhile).
+    @discardableResult
+    public func updateSession(localSessionID: UInt16, mrp: MRPParameters?) -> Bool {
+        guard var entry = sessions[localSessionID] else { return false }
+        entry.mrp = mrp
+        sessions[localSessionID] = entry
+        return true
+    }
+
     /// Forget a session. Every exchange on it ends at once: a pending
     /// `receive()` fails with ``MessagingError/sessionClosed``, an open
     /// exchange with nothing waiting reports it on its next `send`/`receive`,
     /// queued messages and owed acks are dropped (they can no longer be
     /// encrypted), and an exchange already closed but still retransmitting is
     /// dropped too — its keys are gone. Later datagrams for the session are
-    /// dropped.
+    /// dropped. A retransmission already collected by a timer wake that is
+    /// in flight may still be sent once; nothing further is scheduled.
+    /// A no-op once the messenger is stopped.
     public func unregisterSession(localSessionID: UInt16) {
+        guard !isStopped else { return }
         // Removed first, so `finishExchange` finds no address and queues no ack.
         guard sessions.removeValue(forKey: localSessionID) != nil else { return }
         let scope = SessionScope.secured(localSessionID: localSessionID)

@@ -542,6 +542,69 @@ struct MessengerSessionTests {
         await rig.messenger.stop()
     }
 
+    @Test("updateSession changes a registered session's MRP parameters for new exchanges, keeping its address")
+    func updateSessionChangesMRP() async throws {
+        let rig = await makeRig()
+        let sleepy = MRPParameters(
+            sessionIdleInterval: .milliseconds(5000),
+            sessionActiveInterval: .milliseconds(300),
+            sessionActiveThreshold: .milliseconds(4000)
+        )
+        let before = try await rig.messenger.openExchange(sessionID: 10)
+        #expect(await rig.messenger.updateSession(localSessionID: 10, mrp: sleepy))
+        #expect(await rig.messenger.peerAddress(forSession: 10) == rig.link.b.address)
+        let after = try await rig.messenger.openExchange(sessionID: 10)
+        #expect(after.peerAddress == rig.link.b.address)
+        #expect(await rig.messenger.manager.exchange(for: after.key)?.config.peer == sleepy)
+        #expect(await rig.messenger.manager.exchange(for: before.key)?.config.peer == testPeerParameters, "open exchanges keep their config")
+        await rig.messenger.stop()
+    }
+
+    @Test("updateSession after unregisterSession returns false and registers nothing")
+    func updateSessionAfterUnregister() async throws {
+        let rig = await makeRig()
+        await rig.messenger.unregisterSession(localSessionID: 10)
+        #expect(await rig.messenger.updateSession(localSessionID: 10, mrp: testPeerParameters) == false)
+        #expect(await rig.messenger.sessions.isEmpty)
+        #expect(await rig.messenger.peerAddress(forSession: 10) == nil)
+        await #expect(throws: MessagingError.unknownSession(10)) { try await rig.messenger.openExchange(sessionID: 10) }
+        await rig.messenger.stop()
+    }
+
+    @Test("updateSession keeps the counter window: a replay afterwards is acked, not handled")
+    func updateSessionKeepsWindow() async throws {
+        let rig = await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let handled = LockedValue(0)
+        await rig.messenger.setUnsolicitedHandler { _, _ in
+            handled.withLock { $0 += 1 }
+        }
+        let first = try ScriptedPeer.secured(
+            session: rig.peerSession, exchangeID: 0x4A00, initiator: true,
+            protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue
+        )
+        let firstCounter = try MessageHeader.decode(from: first).header.messageCounter
+        try await peer.send(first)
+        _ = try await peer.nextSecured(session: rig.peerSession)
+        #expect(handled.value == 1)
+
+        #expect(await rig.messenger.updateSession(localSessionID: 10, mrp: testPeerParameters))
+        try await peer.send(first)
+        let replayAck = try await peer.nextSecured(session: rig.peerSession)
+        #expect(replayAck.isStandaloneAck)
+        #expect(replayAck.exchangeHeader.acknowledgedMessageCounter == firstCounter)
+        #expect(handled.value == 1, "the replay was recognised as a duplicate")
+        await rig.messenger.stop()
+    }
+
+    @Test("unregisterSession on a stopped messenger is a no-op")
+    func unregisterAfterStopIsNoOp() async throws {
+        let rig = await makeRig()
+        await rig.messenger.stop()
+        await rig.messenger.unregisterSession(localSessionID: 10)
+        #expect(await rig.messenger.sessions[10] != nil)
+    }
+
     @Test("Registering a different session under a registered ID first closes the old session's exchanges")
     func registerReplacementSessionClosesOld() async throws {
         let rig = await makeRig()
