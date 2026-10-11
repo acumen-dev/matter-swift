@@ -238,7 +238,7 @@ public struct ReportData: Sendable, Equatable {
             throw IMError.invalidMessage("ReportData: expected structure")
         }
 
-        let subID = fields.first(where: { $0.tag == .contextSpecific(Tag.subscriptionID) })?.value.uintValue.map { SubscriptionID(rawValue: UInt32($0)) }
+        let subID = try fields.first(where: { $0.tag == .contextSpecific(Tag.subscriptionID) })?.value.uintValue.map { SubscriptionID(rawValue: try IMError.narrow($0, "ReportData.subscriptionID")) }
 
         var reports: [AttributeReportIB] = []
         if let attrField = fields.first(where: { $0.tag == .contextSpecific(Tag.attributeReports) }),
@@ -434,8 +434,8 @@ public struct AttributeDataIB: Sendable, Equatable {
         }
 
         // dataVersion is optional — omitted for unconditional writes (e.g., Apple Home ACL writes)
-        let dv = fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersion) })?.value.uintValue
-            .map { DataVersion(rawValue: UInt32($0)) }
+        let dv = try fields.first(where: { $0.tag == .contextSpecific(Tag.dataVersion) })?.value.uintValue
+            .map { DataVersion(rawValue: try IMError.narrow($0, "AttributeDataIB.dataVersion")) }
 
         guard let pathField = fields.first(where: { $0.tag == .contextSpecific(Tag.path) }) else {
             throw IMError.invalidMessage("AttributeDataIB: missing path")
@@ -574,8 +574,8 @@ public struct StatusIB: Sendable, Equatable {
         guard let s = fields.first(where: { $0.tag == .contextSpecific(Tag.status) })?.value.uintValue else {
             throw IMError.invalidStatus("StatusIB: missing status")
         }
-        let cs = fields.first(where: { $0.tag == .contextSpecific(Tag.clusterStatus) })?.value.uintValue.map { UInt8($0) }
-        return StatusIB(status: UInt8(s), clusterStatus: cs)
+        let cs: UInt8? = try fields.first(where: { $0.tag == .contextSpecific(Tag.clusterStatus) })?.value.uintValue.map { try IMError.narrow($0, "StatusIB.clusterStatus") }
+        return StatusIB(status: try IMError.narrow(s, "StatusIB.status"), clusterStatus: cs)
     }
 }
 
@@ -1047,7 +1047,7 @@ public struct IMStatusResponse: Sendable, Equatable {
               let s = fields.first(where: { $0.tag == .contextSpecific(0) })?.value.uintValue else {
             throw IMError.invalidMessage("IMStatusResponse: expected structure with status")
         }
-        return IMStatusResponse(status: UInt8(s))
+        return IMStatusResponse(status: try IMError.narrow(s, "IMStatusResponse.status"))
     }
 }
 
@@ -1199,8 +1199,8 @@ public struct SubscribeRequest: Sendable, Equatable {
 
         return SubscribeRequest(
             keepSubscriptions: keepSubs,
-            minIntervalFloor: UInt16(minFloor),
-            maxIntervalCeiling: UInt16(maxCeiling),
+            minIntervalFloor: try IMError.narrow(minFloor, "SubscribeRequest.minIntervalFloor"),
+            maxIntervalCeiling: try IMError.narrow(maxCeiling, "SubscribeRequest.maxIntervalCeiling"),
             attributeRequests: attrPaths,
             eventRequests: eventPaths,
             eventFilters: eventFilters,
@@ -1324,9 +1324,9 @@ public struct DataVersionFilter: Sendable, Equatable {
         }
 
         return DataVersionFilter(
-            endpointID: EndpointID(rawValue: UInt16(epRaw)),
-            clusterID: ClusterID(rawValue: UInt32(clRaw)),
-            dataVersion: UInt32(dvRaw)
+            endpointID: EndpointID(rawValue: try IMError.narrow(epRaw, "DataVersionFilter.endpointID")),
+            clusterID: ClusterID(rawValue: try IMError.narrow(clRaw, "DataVersionFilter.clusterID")),
+            dataVersion: try IMError.narrow(dvRaw, "DataVersionFilter.dataVersion")
         )
     }
 }
@@ -1388,8 +1388,8 @@ public struct SubscribeResponse: Sendable, Equatable {
         }
 
         return SubscribeResponse(
-            subscriptionID: SubscriptionID(rawValue: UInt32(sid)),
-            maxInterval: UInt16(maxInt)
+            subscriptionID: SubscriptionID(rawValue: try IMError.narrow(sid, "SubscribeResponse.subscriptionID")),
+            maxInterval: try IMError.narrow(maxInt, "SubscribeResponse.maxInterval")
         )
     }
 }

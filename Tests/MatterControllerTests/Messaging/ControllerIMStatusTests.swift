@@ -24,27 +24,32 @@ struct ControllerIMStatusTests {
         let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
         await controller.messenger.registerSession(controllerSession, peerAddress: link.b.address)
 
-        async let reply = controller.imRequest(
-            sessionID: 10,
-            opcode: .invokeRequest,
-            payload: Data([0x15, 0x18])
-        )
-        let request = try await peer.nextSecured(session: peerSession)
-        #expect(request.exchangeHeader.protocolOpcode == InteractionModelOpcode.invokeRequest.rawValue)
-
-        let unsupportedAccess: UInt8 = 0x7E
-        try await peer.send(ScriptedPeer.securedReply(
-            to: request, session: peerSession,
-            protocolID: .interactionModel,
-            opcode: InteractionModelOpcode.statusResponse.rawValue,
-            payload: IMStatusResponse(status: unsupportedAccess).tlvEncode()
-        ))
-
         do {
-            _ = try await reply
-            Issue.record("a StatusResponse reply must throw")
+            async let reply = controller.imRequest(
+                sessionID: 10,
+                opcode: .invokeRequest,
+                payload: Data([0x15, 0x18])
+            )
+            let request = try await peer.nextSecured(session: peerSession)
+            #expect(request.exchangeHeader.protocolOpcode == InteractionModelOpcode.invokeRequest.rawValue)
+
+            let unsupportedAccess: UInt8 = 0x7E
+            try await peer.send(ScriptedPeer.securedReply(
+                to: request, session: peerSession,
+                protocolID: .interactionModel,
+                opcode: InteractionModelOpcode.statusResponse.rawValue,
+                payload: IMStatusResponse(status: unsupportedAccess).tlvEncode()
+            ))
+
+            do {
+                _ = try await reply
+                Issue.record("a StatusResponse reply must throw")
+            } catch {
+                #expect(error as? ControllerError == .imStatus(unsupportedAccess))
+            }
         } catch {
-            #expect(error as? ControllerError == .imStatus(unsupportedAccess))
+            await controller.stop()
+            throw error
         }
         await controller.stop()
     }

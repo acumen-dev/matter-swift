@@ -481,16 +481,25 @@ public actor MatterController {
     /// including on its cached session.
     public func setMRPParameters(_ parameters: MRPParameters?, for nodeID: NodeID) async {
         await registry.updateMRPParameters(for: nodeID, parameters: parameters)
+        await saveState()
         // A CASE handshake in flight may have read the old parameters; let it
         // finish, then update the session it produced.
         if let inFlight = establishing[nodeID] {
             _ = try? await inFlight.value
         }
         if let session = sessionCache.session(for: nodeID) {
-            // Never re-registers: a session unregistered meanwhile stays gone.
-            await messenger.updateSession(localSessionID: session.localSessionID, mrp: parameters)
+            // The registry's current value, not this call's argument, re-read
+            // until stable: a concurrent call may interleave between the read
+            // and the update, and the last registry write must win. Never
+            // re-registers: a session unregistered meanwhile stays gone.
+            var applied = await registry.device(for: nodeID)?.mrpParameters
+            while true {
+                await messenger.updateSession(localSessionID: session.localSessionID, mrp: applied)
+                let latest = await registry.device(for: nodeID)?.mrpParameters
+                if latest == applied { break }
+                applied = latest
+            }
         }
-        await saveState()
     }
 
     /// Stop the message layer: pending requests fail with
@@ -725,8 +734,11 @@ public actor MatterController {
         // Register before caching so the first request's reply is routable.
         // Parameters re-read now: setMRPParameters may have run during the
         // handshake (it then waits for this establishment to finish).
-        let mrp = await registry.device(for: nodeID)?.mrpParameters
-        await messenger.registerSession(session, peerAddress: address, mrp: mrp)
+        // A device removed during the handshake gets no session.
+        guard let current = await registry.device(for: nodeID) else {
+            throw ControllerError.deviceNotFound
+        }
+        await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
         sessionCache.store(session, for: nodeID)
 
         logger.debug("CASE session established to node \(nodeID.rawValue)")
@@ -755,6 +767,9 @@ public actor MatterController {
         }
 
         let activeSession = try await session(for: nodeID)
+        // The wait may have been on a handshake shared with other callers; a
+        // caller cancelled meanwhile must not send its request late.
+        try Task.checkCancellation()
 
         do {
             return try await operation(activeSession)

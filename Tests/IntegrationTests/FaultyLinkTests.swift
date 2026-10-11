@@ -168,18 +168,66 @@ struct FaultyLinkTests {
             #expect(toggles.value == 1)
 
             // One Sigma1 exchange on the wire (MRP may resend its Sigma1; same exchange).
-            let sigma1Exchanges = Set(link.sent(from: .a).dropFirst(sentBefore).compactMap { data -> UInt16? in
-                guard let frame = try? ScriptedPeer.decodeUnsecured(data),
-                      frame.exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue,
-                      frame.exchangeHeader.protocolOpcode == SecureChannelOpcode.caseSigma1.rawValue else { return nil }
-                return frame.exchangeHeader.exchangeID
-            })
+            let sigma1Exchanges = Self.sigma1Exchanges(in: link.sent(from: .a).dropFirst(sentBefore))
             #expect(sigma1Exchanges.count == 1)
             #expect(await controller.messenger.sessions.count == 1, "exactly one registered session for the node")
 
             // The session survives its operations: still cached, still the same one.
             let session = try await controller.session(for: device.nodeID)
             #expect(await controller.messenger.sessions[session.localSessionID]?.session === session)
+        } catch {
+            await controller.stop()
+            await server.stop()
+            throw error
+        }
+        await controller.stop()
+        await server.stop()
+    }
+
+    @Test("A caller cancelled while waiting on a shared CASE handshake never sends its request")
+    func cancelledWaiterNeverSends() async throws {
+        let link = FaultInjectingLink(seed: 17)
+        let toggles = LockedValue(0)
+        let (server, light) = try await startServer(on: link, toggles: toggles)
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let sentBefore = link.sent(from: .a).count
+
+            // Hold the handshake: the device's replies are lost until released.
+            link.setDropProbability(1, from: .b)
+            let invoke: @Sendable () async throws -> Void = {
+                _ = try await controller.invokeCommand(
+                    nodeID: device.nodeID, endpointID: light.endpointID,
+                    clusterID: .onOff, commandID: OnOffCluster.Command.toggle
+                )
+            }
+            let first = Task { try await invoke() }
+            let cancelled = Task { try await invoke() }
+            let third = Task { try await invoke() }
+
+            // The handshake is under way (Sigma1 sent) and cannot complete yet.
+            let handshakeStarted = await Self.eventually {
+                !Self.sigma1Exchanges(in: link.sent(from: .a).dropFirst(sentBefore)).isEmpty
+            }
+            #expect(handshakeStarted)
+            cancelled.cancel()
+            link.setDropProbability(0, from: .b)
+
+            try await first.value
+            try await third.value
+            await #expect(throws: CancellationError.self) {
+                try await cancelled.value
+            }
+
+            // Served in order after both invokes: two toggles, back to off.
+            let value = try await controller.readAttribute(
+                nodeID: device.nodeID, endpointID: light.endpointID,
+                clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
+            )
+            #expect(toggles.value == 2, "the cancelled caller's toggle must never be sent")
+            #expect(value.boolValue == false)
         } catch {
             await controller.stop()
             await server.stop()
@@ -216,6 +264,26 @@ struct FaultyLinkTests {
     }
 
     // MARK: - Rig
+
+    /// Exchange IDs of CASE Sigma1 frames among `frames` (an MRP resend of
+    /// Sigma1 shares its exchange).
+    static func sigma1Exchanges(in frames: some Sequence<Data>) -> Set<UInt16> {
+        Set(frames.compactMap { data -> UInt16? in
+            guard let frame = try? ScriptedPeer.decodeUnsecured(data),
+                  frame.exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue,
+                  frame.exchangeHeader.protocolOpcode == SecureChannelOpcode.caseSigma1.rawValue else { return nil }
+            return frame.exchangeHeader.exchangeID
+        })
+    }
+
+    /// Yield until `condition` holds (bounded). An outcome wait, never a timing margin.
+    static func eventually(_ condition: @Sendable () async -> Bool) async -> Bool {
+        for _ in 0..<1_000_000 {
+            if await condition() { return true }
+            await Task.yield()
+        }
+        return false
+    }
 
     private func startServer(on link: FaultInjectingLink, toggles: LockedValue<Int>) async throws -> (MatterDeviceServer, BridgedEndpoint) {
         let bridge = MatterBridge()

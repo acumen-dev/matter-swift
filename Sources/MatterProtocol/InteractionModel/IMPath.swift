@@ -94,7 +94,7 @@ public struct AttributePath: Sendable, Equatable {
                 listIndex = .null
             default:
                 if let v = listField.value.uintValue {
-                    listIndex = .index(UInt16(v))
+                    listIndex = .index(try IMError.narrow(v, "AttributePath.listIndex"))
                 } else {
                     listIndex = nil
                 }
@@ -104,9 +104,9 @@ public struct AttributePath: Sendable, Equatable {
         }
 
         return AttributePath(
-            endpointID: fields.first(where: { $0.tag == .contextSpecific(Tag.endpointID) })?.value.uintValue.map { EndpointID(rawValue: UInt16($0)) },
-            clusterID: fields.first(where: { $0.tag == .contextSpecific(Tag.clusterID) })?.value.uintValue.map { ClusterID(rawValue: UInt32($0)) },
-            attributeID: fields.first(where: { $0.tag == .contextSpecific(Tag.attributeID) })?.value.uintValue.map { AttributeID(rawValue: UInt32($0)) },
+            endpointID: try fields.first(where: { $0.tag == .contextSpecific(Tag.endpointID) })?.value.uintValue.map { EndpointID(rawValue: try IMError.narrow($0, "AttributePath.endpointID")) },
+            clusterID: try fields.first(where: { $0.tag == .contextSpecific(Tag.clusterID) })?.value.uintValue.map { ClusterID(rawValue: try IMError.narrow($0, "AttributePath.clusterID")) },
+            attributeID: try fields.first(where: { $0.tag == .contextSpecific(Tag.attributeID) })?.value.uintValue.map { AttributeID(rawValue: try IMError.narrow($0, "AttributePath.attributeID")) },
             nodeID: fields.first(where: { $0.tag == .contextSpecific(Tag.nodeID) })?.value.uintValue.map { NodeID(rawValue: $0) },
             listIndex: listIndex
         )
@@ -160,9 +160,9 @@ public struct CommandPath: Sendable, Equatable {
         }
 
         return CommandPath(
-            endpointID: EndpointID(rawValue: UInt16(ep)),
-            clusterID: ClusterID(rawValue: UInt32(cl)),
-            commandID: CommandID(rawValue: UInt32(cmd))
+            endpointID: EndpointID(rawValue: try IMError.narrow(ep, "CommandPath.endpointID")),
+            clusterID: ClusterID(rawValue: try IMError.narrow(cl, "CommandPath.clusterID")),
+            commandID: CommandID(rawValue: try IMError.narrow(cmd, "CommandPath.commandID"))
         )
     }
 }
@@ -223,9 +223,9 @@ public struct EventPath: Sendable, Equatable {
             throw IMError.invalidPath("EventPath: expected list")
         }
         return EventPath(
-            endpointID: fields.first(where: { $0.tag == .contextSpecific(Tag.endpointID) })?.value.uintValue.map { EndpointID(rawValue: UInt16($0)) },
-            clusterID: fields.first(where: { $0.tag == .contextSpecific(Tag.clusterID) })?.value.uintValue.map { ClusterID(rawValue: UInt32($0)) },
-            eventID: fields.first(where: { $0.tag == .contextSpecific(Tag.eventID) })?.value.uintValue.map { EventID(rawValue: UInt32($0)) },
+            endpointID: try fields.first(where: { $0.tag == .contextSpecific(Tag.endpointID) })?.value.uintValue.map { EndpointID(rawValue: try IMError.narrow($0, "EventPath.endpointID")) },
+            clusterID: try fields.first(where: { $0.tag == .contextSpecific(Tag.clusterID) })?.value.uintValue.map { ClusterID(rawValue: try IMError.narrow($0, "EventPath.clusterID")) },
+            eventID: try fields.first(where: { $0.tag == .contextSpecific(Tag.eventID) })?.value.uintValue.map { EventID(rawValue: try IMError.narrow($0, "EventPath.eventID")) },
             nodeID: fields.first(where: { $0.tag == .contextSpecific(Tag.nodeID) })?.value.uintValue.map { NodeID(rawValue: $0) },
             isUrgent: fields.first(where: { $0.tag == .contextSpecific(Tag.isUrgent) })?.value.boolValue
         )
@@ -239,4 +239,15 @@ public enum IMError: Error, Sendable, Equatable {
     case invalidPath(String)
     case invalidMessage(String)
     case invalidStatus(String)
+}
+
+extension IMError {
+    /// A peer-supplied TLV unsigned integer narrowed to `T`. Out of range is
+    /// an invalid message, never a trap.
+    static func narrow<T: FixedWidthInteger & UnsignedInteger>(_ value: UInt64, _ field: String) throws -> T {
+        guard let narrowed = T(exactly: value) else {
+            throw IMError.invalidMessage("\(field): \(value) out of range for \(T.self)")
+        }
+        return narrowed
+    }
 }
