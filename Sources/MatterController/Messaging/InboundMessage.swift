@@ -31,6 +31,9 @@ public enum MessagingError: Error, Sendable, Equatable {
     case exchangeClosed
     /// `receive()` is already waiting on this exchange.
     case receiveAlreadyPending
+    /// A reliable message sent on this exchange is still unacknowledged; a
+    /// second one would replace it and MRP would stop retransmitting the first.
+    case sendAlreadyPending
     /// The message was acknowledged but nothing arrived within the timeout.
     case responseTimeout(ExchangeKey)
     /// Every transmission went unacknowledged (MRP exhausted).

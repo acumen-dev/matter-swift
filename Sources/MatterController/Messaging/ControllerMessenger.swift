@@ -63,6 +63,9 @@ public actor ControllerMessenger {
     struct Waiter {
         let continuation: CheckedContinuation<InboundMessage, any Error>
         var deadline: ContinuousClock.Instant
+        /// Identifies this `receive()` call, so a cancellation hop that
+        /// arrives after the waiter was resumed cannot fail a later one.
+        let token: UInt64
     }
 
     struct Outgoing: Sendable {
@@ -96,12 +99,22 @@ public actor ControllerMessenger {
     /// `send`/`receive` and cleared by `close()`.
     var failed: [ExchangeKey: MessagingError] = [:]
     var responderKeys: Set<ExchangeKey> = []
+    /// Closed by their owner while a reliable message was unacknowledged:
+    /// still in `manager` so MRP keeps retransmitting until it is acked or
+    /// exhausted, but nothing is delivered and no `receive()` may wait.
+    var closing: Set<ExchangeKey> = []
+    /// Random Ephemeral Initiator Node ID sent as the Source Node ID on every
+    /// frame of an unsecured exchange we opened (Matter Core §4.13.2.1).
+    var ephemeralNodeIDs: [ExchangeKey: NodeID] = [:]
+    var nextWaiterToken: UInt64 = 0
     var subscriptionHandlers: [SubscriptionID: UnsolicitedHandler] = [:]
     var unsolicitedHandler: UnsolicitedHandler?
     var receiveTask: Task<Void, Never>?
     var timerTask: Task<Void, Never>?
     var timerDeadline: ContinuousClock.Instant?
     var timerGeneration: UInt64 = 0
+    /// The armed timer is the idle fallback (nothing pending).
+    var timerIsIdleFallback = false
     var isStarted = false
     var isStopped = false
 
@@ -147,12 +160,18 @@ public actor ControllerMessenger {
                 guard let self else { return }
                 await self.handleDatagram(data, from: sender)
             }
+            await self?.receiveLoopEnded()
         }
         rearmTimer()
     }
 
     /// Stop for good: cancel both tasks and fail every pending `receive()`
     /// with ``MessagingError/stopped``.
+    ///
+    /// This permanently ends the transport's receive stream (a stream is
+    /// consumed once, and cancelling its reader finishes it): a stopped
+    /// messenger cannot be restarted, and a new messenger needs a new
+    /// transport.
     public func stop() async {
         guard !isStopped else { return }
         isStopped = true
@@ -161,12 +180,22 @@ public actor ControllerMessenger {
         timerTask?.cancel()
         timerTask = nil
         timerDeadline = nil
+        timerIsIdleFallback = false
         for key in Array(waiters.keys) {
             takeWaiter(key)?.resume(throwing: MessagingError.stopped)
         }
         inbound.removeAll()
         failed.removeAll()
         responderKeys.removeAll()
+        closing.removeAll()
+        ephemeralNodeIDs.removeAll()
+    }
+
+    /// The transport's receive stream finished. Expected only after `stop()`;
+    /// otherwise the messenger is deaf from here on.
+    func receiveLoopEnded() {
+        guard !isStopped else { return }
+        logger.error("Transport receive stream ended while the messenger is running; no further messages will be received")
     }
 
     // MARK: - Exchanges
@@ -177,12 +206,32 @@ public actor ControllerMessenger {
         start()
         let key = ExchangeKey(scope: .unsecured(peer: peer), exchangeID: manager.allocateExchangeID(), initiatedLocally: true)
         manager.open(key, peerAddress: peer, config: mrpConfig(for: mrp), now: clock.now)
+        ephemeralNodeIDs[key] = Self.randomEphemeralNodeID()
         return ControllerExchange(key: key, peerAddress: peer, messenger: self)
     }
 
-    /// Open exchanges, including peer-initiated ones.
+    /// Open exchanges, including peer-initiated ones. Exchanges closed by
+    /// their owner but still retransmitting an unacknowledged message are
+    /// not counted (see ``closingExchangeCount``).
     public var activeExchangeCount: Int {
-        manager.count
+        manager.count - closing.count
+    }
+
+    /// Exchanges closed by their owner whose last reliable message MRP is
+    /// still retransmitting.
+    var closingExchangeCount: Int {
+        closing.count
+    }
+
+    /// Open, and not closing: may send and receive.
+    func isOpen(_ key: ExchangeKey) -> Bool {
+        manager.exchange(for: key) != nil && !closing.contains(key)
+    }
+
+    /// A random 64-bit Ephemeral Initiator Node ID, drawn from the
+    /// operational node ID range.
+    static func randomEphemeralNodeID() -> NodeID {
+        NodeID(rawValue: UInt64.random(in: 1...0xFFFF_FFEF_FFFF_FFFF))
     }
 
     /// `receive()` calls currently waiting.
@@ -193,9 +242,9 @@ public actor ControllerMessenger {
     func send(_ key: ExchangeKey, protocolID: MatterProtocolID, opcode: UInt8, payload: Data, reliable: Bool) async throws {
         if isStopped { throw MessagingError.stopped }
         if let error = failed[key] { throw error }
-        guard manager.exchange(for: key) != nil else { throw MessagingError.exchangeClosed }
+        guard let exchange = manager.exchange(for: key), !closing.contains(key) else { throw MessagingError.exchangeClosed }
         guard let address = address(for: key.scope) else { throw MessagingError.sessionClosed }
-        defer { rearmTimer() }
+        if reliable, exchange.pendingMessage != nil { throw MessagingError.sendAlreadyPending }
 
         let header = ExchangeHeader(
             flags: ExchangeFlags(initiator: key.initiatedLocally, reliableDelivery: reliable),
@@ -204,10 +253,12 @@ public actor ControllerMessenger {
             protocolID: protocolID.rawValue,
             acknowledgedMessageCounter: manager.takePendingAck(key)
         )
-        let bytes = try encode(header, payload: payload, scope: key.scope)
+        let bytes = try encode(header, payload: payload, key: key)
         if reliable {
             try manager.trackTransmission(key, message: bytes, now: clock.now)
         }
+        // State is final: arm the timer before suspending in the send.
+        rearmTimer()
         do {
             try await transport.send(bytes, to: address)
         } catch where reliable {
@@ -223,49 +274,69 @@ public actor ControllerMessenger {
         }
         if let error = failed.removeValue(forKey: key) { throw error }
         if isStopped { throw MessagingError.stopped }
-        guard manager.exchange(for: key) != nil else { throw MessagingError.exchangeClosed }
+        guard isOpen(key) else { throw MessagingError.exchangeClosed }
         guard waiters[key] == nil else { throw MessagingError.receiveAlreadyPending }
 
         let deadline = clock.now + timeout
+        let token = nextWaiterToken
+        nextWaiterToken &+= 1
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<InboundMessage, any Error>) in
-                waiters[key] = Waiter(continuation: continuation, deadline: deadline)
+                waiters[key] = Waiter(continuation: continuation, deadline: deadline, token: token)
                 rearmTimer()
             }
         } onCancel: {
-            Task { await self.cancelReceive(key) }
+            Task { await self.cancelReceive(key, token: token) }
         }
     }
 
     func closeExchange(_ key: ExchangeKey) async {
         var outgoing: [Outgoing] = []
         finishExchange(key, failing: .exchangeClosed, into: &outgoing)
-        await transmit(outgoing)
         rearmTimer()
+        await transmit(outgoing)
     }
 
-    /// The task waiting in `receive` was cancelled: fail it and close the
-    /// exchange (flushing any owed ack).
-    func cancelReceive(_ key: ExchangeKey) async {
-        guard let continuation = takeWaiter(key) else { return }
+    /// The task waiting in `receive` (the call identified by `token`) was
+    /// cancelled: fail it and close the exchange (flushing any owed ack). A
+    /// hop that arrives after that waiter was already resumed — by a delivery,
+    /// a timeout or a close — finds a different token, or none, and does
+    /// nothing.
+    func cancelReceive(_ key: ExchangeKey, token: UInt64) async {
+        guard waiters[key]?.token == token, let continuation = takeWaiter(key) else { return }
         continuation.resume(throwing: CancellationError())
         var outgoing: [Outgoing] = []
         finishExchange(key, failing: .exchangeClosed, into: &outgoing)
-        await transmit(outgoing)
         rearmTimer()
+        await transmit(outgoing)
     }
 
-    /// Remove an exchange: fail its waiter with `error`, drop queued
-    /// messages, and queue a standalone ack for any ack still owed.
+    /// Close an exchange: fail its waiter with `error`, drop queued
+    /// messages, and queue a standalone ack for any ack still owed. If a
+    /// reliable message of ours is still unacknowledged the exchange moves to
+    /// `closing` instead of being removed — MRP keeps retransmitting it until
+    /// it is acked or exhausted — so a lost final message (say a
+    /// StatusResponse) is not abandoned.
     func finishExchange(_ key: ExchangeKey, failing error: MessagingError, into outgoing: inout [Outgoing]) {
         takeWaiter(key)?.resume(throwing: error)
         inbound[key] = nil
         failed[key] = nil
         responderKeys.remove(key)
-        guard let exchange = manager.close(key), let counter = exchange.pendingAckCounter else { return }
-        if let ack = standaloneAck(key: key, ackCounter: counter) {
+        if let counter = manager.takePendingAck(key), let ack = standaloneAck(key: key, ackCounter: counter) {
             outgoing.append(ack)
         }
+        if manager.exchange(for: key)?.pendingMessage != nil {
+            closing.insert(key)
+        } else {
+            removeExchange(key)
+        }
+    }
+
+    /// Forget an exchange entirely.
+    func removeExchange(_ key: ExchangeKey) {
+        manager.close(key)
+        closing.remove(key)
+        ephemeralNodeIDs[key] = nil
     }
 
     /// The single place a waiter leaves `waiters`; only the caller that gets
@@ -284,8 +355,8 @@ public actor ControllerMessenger {
         } catch {
             logger.debug("Dropping datagram from \(sender): \(error)")
         }
-        await transmit(outgoing)
         rearmTimer()
+        await transmit(outgoing)
     }
 
     /// Everything a datagram changes, synchronously; sends are queued in
@@ -326,6 +397,10 @@ public actor ControllerMessenger {
         let key = ExchangeKey(scope: scope, inbound: exchangeHeader)
         let counter = messageHeader.messageCounter
         let requiresAck = exchangeHeader.flags.reliableDelivery
+        if let ephemeral = ephemeralNodeIDs[key], let destination = messageHeader.destinationNodeID, destination != ephemeral {
+            // Matched by (peer, exchange, I flag) regardless; only noted.
+            logger.debug("Unsecured message on exchange \(key.exchangeID) addressed to \(destination), not our ephemeral ID \(ephemeral)")
+        }
 
         switch verdict {
         case .outOfWindow, .duplicate:
@@ -340,8 +415,20 @@ public actor ControllerMessenger {
         }
 
         manager.recordReceived(scope: scope, now: now)
-        if let acked = exchangeHeader.acknowledgedMessageCounter {
-            manager.recordAcknowledgment(key, ackedCounter: acked)
+        let wasClosing = closing.contains(key)
+        if let acked = exchangeHeader.acknowledgedMessageCounter,
+           manager.recordAcknowledgment(key, ackedCounter: acked),
+           wasClosing {
+            // The last message of a closed exchange is acknowledged: done.
+            removeExchange(key)
+        }
+        if wasClosing {
+            // Closed by its owner: acknowledge if asked, deliver nothing, and
+            // never let a late message re-open it as a new exchange.
+            if requiresAck, !isStandaloneAck(exchangeHeader), let ack = standaloneAck(key: key, ackCounter: counter) {
+                outgoing.append(ack)
+            }
+            return
         }
         if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue,
            exchangeHeader.protocolOpcode == SecureChannelOpcode.standaloneAck.rawValue {
@@ -394,6 +481,11 @@ public actor ControllerMessenger {
             await handler(message, exchange)
             await exchange.close()
         }
+    }
+
+    func isStandaloneAck(_ header: ExchangeHeader) -> Bool {
+        header.protocolID == MatterProtocolID.secureChannel.rawValue
+            && header.protocolOpcode == SecureChannelOpcode.standaloneAck.rawValue
     }
 
     /// `ReportData` carrying a subscription ID goes to that subscription's
@@ -456,12 +548,17 @@ public actor ControllerMessenger {
     /// deadline moved.
     func rearmTimer() {
         guard isStarted, !isStopped else { return }
-        let deadline = nextTimerDeadline() ?? clock.now + Self.idleTimerHorizon
+        let next = nextTimerDeadline()
+        // An idle fallback moves with `now`; replacing one idle sleep with
+        // another would only churn tasks on a real clock.
+        if timerTask != nil, next == nil, timerIsIdleFallback { return }
+        let deadline = next ?? clock.now + Self.idleTimerHorizon
         if timerTask != nil, timerDeadline == deadline { return }
         timerTask?.cancel()
         timerGeneration &+= 1
         let generation = timerGeneration
         timerDeadline = deadline
+        timerIsIdleFallback = next == nil
         let clock = self.clock
         timerTask = Task.detached { [weak self] in
             do {
@@ -477,14 +574,15 @@ public actor ControllerMessenger {
         guard generation == timerGeneration, !isStopped else { return }
         timerTask = nil
         timerDeadline = nil
+        timerIsIdleFallback = false
         let now = clock.now
         var outgoing: [Outgoing] = []
         collectRetransmissions(now: now, into: &outgoing)
         collectStandaloneAcks(now: now, into: &outgoing)
         expireWaiters(now: now)
         closeIdleResponders(now: now, into: &outgoing)
-        await transmit(outgoing)
         rearmTimer()
+        await transmit(outgoing)
     }
 
     /// Decide-first MRP: the manager either counts one more transmission
@@ -497,6 +595,10 @@ public actor ControllerMessenger {
                 // A secure session follows its peer's current address.
                 let address = address(for: key.scope) ?? recordedAddress
                 outgoing.append(Outgoing(bytes: message, address: address, note: "retransmission on exchange \(key.exchangeID)"))
+            case .exhausted where closing.contains(key):
+                // The owner already closed the exchange; nobody to tell.
+                logger.debug("Final message on closed exchange \(key.exchangeID) went unacknowledged")
+                removeExchange(key)
             case .exhausted:
                 // Exhaustion happens only once transmissions > maxRetransmissions,
                 // i.e. exactly maxRetransmissions + 1 copies went unacknowledged.
@@ -557,19 +659,21 @@ public actor ControllerMessenger {
             acknowledgedMessageCounter: ackCounter
         )
         do {
-            return Outgoing(bytes: try encode(header, payload: Data(), scope: key.scope), address: address, note: "standalone ack \(ackCounter)")
+            return Outgoing(bytes: try encode(header, payload: Data(), key: key), address: address, note: "standalone ack \(ackCounter)")
         } catch {
             logger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)")
             return nil
         }
     }
 
-    func encode(_ header: ExchangeHeader, payload: Data, scope: SessionScope) throws -> Data {
-        switch scope {
+    /// Encode one frame of exchange `key`. Unsecured frames of an exchange we
+    /// opened carry its ephemeral initiator node ID as the Source Node ID.
+    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey) throws -> Data {
+        switch key.scope {
         case .unsecured:
             unsecuredCounter &+= 1
             return MatterMessage.encodeUnsecured(
-                messageHeader: MessageHeader(sessionID: 0, messageCounter: unsecuredCounter),
+                messageHeader: MessageHeader(sessionID: 0, messageCounter: unsecuredCounter, sourceNodeID: ephemeralNodeIDs[key]),
                 exchangeHeader: header,
                 payload: payload
             )
