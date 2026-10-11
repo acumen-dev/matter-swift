@@ -17,25 +17,37 @@ extension ControllerMessenger {
     /// parameters (for exchanges opened from then on) but keeps its
     /// received-counter window, so a replay is still recognised. Passing
     /// `mrp: nil` when re-registering clears the parameters to the messenger
-    /// default. Registering a *different* session under a registered local
-    /// session ID first unregisters the old one: its exchanges cannot
-    /// continue under new keys.
+    /// default.
+    ///
+    /// A *different* session under a registered local session ID is refused
+    /// with ``MessagingError/sessionIDInUse(_:)``, leaving the registered one
+    /// untouched: replacing it would send its owner's later requests under
+    /// the newcomer's keys, to the newcomer's peer. Unregister the old
+    /// session first if replacing it is really meant.
     ///
     /// To change only the MRP parameters of a session that may have been
     /// unregistered concurrently, use ``updateSession(localSessionID:mrp:)``:
     /// it never registers.
-    public func registerSession(_ session: SecureSession, peerAddress: MatterAddress, mrp: MRPParameters? = nil) {
-        start()
+    ///
+    /// - Throws: ``MessagingError/sessionIDInUse(_:)``.
+    public func registerSession(_ session: SecureSession, peerAddress: MatterAddress, mrp: MRPParameters? = nil) throws {
         if var existing = sessions[session.localSessionID] {
-            if existing.session === session {
-                existing.peerAddress = peerAddress
-                existing.mrp = mrp
-                sessions[session.localSessionID] = existing
-                return
+            guard existing.session === session else {
+                throw MessagingError.sessionIDInUse(session.localSessionID)
             }
-            unregisterSession(localSessionID: session.localSessionID)
+            start()
+            existing.peerAddress = peerAddress
+            existing.mrp = mrp
+            sessions[session.localSessionID] = existing
+            return
         }
+        start()
         sessions[session.localSessionID] = SessionEntry(session: session, peerAddress: peerAddress, mrp: mrp)
+    }
+
+    /// Local session IDs currently registered.
+    var registeredSessionIDs: Set<UInt16> {
+        Set(sessions.keys)
     }
 
     /// Change the MRP parameters of a registered session, keeping its tracked

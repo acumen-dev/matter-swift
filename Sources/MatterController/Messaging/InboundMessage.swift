@@ -45,4 +45,7 @@ public enum MessagingError: Error, Sendable, Equatable {
     case stopped
     /// A reply arrived on an unexpected protocol.
     case unexpectedProtocol(protocolID: UInt16, opcode: UInt8)
+    /// A different secure session is already registered under this local
+    /// session ID.
+    case sessionIDInUse(UInt16)
 }

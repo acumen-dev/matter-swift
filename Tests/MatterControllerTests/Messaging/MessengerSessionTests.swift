@@ -20,12 +20,12 @@ struct MessengerSessionTests {
         let peerSession: SecureSession
     }
 
-    func makeRig() async -> Rig {
+    func makeRig() async throws -> Rig {
         let clock = ManualClock()
         let link = FaultInjectingLink(seed: 1)
         let messenger = makeMessenger(link: link, clock: clock)
         let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
-        await messenger.registerSession(controllerSession, peerAddress: link.b.address)
+        try await messenger.registerSession(controllerSession, peerAddress: link.b.address)
         return Rig(clock: clock, link: link, messenger: messenger, controllerSession: controllerSession, peerSession: peerSession)
     }
 
@@ -38,7 +38,7 @@ struct MessengerSessionTests {
 
     @Test("An encrypted request is answered on its secure exchange")
     func securedRequestResponse() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
         #expect(exchange.key.scope == .secured(localSessionID: 10))
@@ -66,7 +66,7 @@ struct MessengerSessionTests {
 
     @Test("A duplicate on a secure session is acked again and dropped")
     func securedDuplicate() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
 
@@ -90,7 +90,7 @@ struct MessengerSessionTests {
 
     @Test("A reliable message more than 32 counters below the session's highest is acked and never delivered")
     func outOfWindowIsAckedNotDelivered() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let handled = LockedValue(0)
         await rig.messenger.setUnsolicitedHandler { _, _ in
@@ -139,7 +139,7 @@ struct MessengerSessionTests {
 
     @Test("A reply from a new source port moves the session's peer address")
     func peerAddressFollowsSender() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let moved = MatterAddress(host: "10.0.0.2", port: 6000)
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
@@ -161,7 +161,7 @@ struct MessengerSessionTests {
 
     @Test("ReportData is routed by subscription ID; the StatusResponse piggybacks the ack; chunks follow on the exchange")
     func reportRoutedBySubscription() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let chunks = LockedValue<[Bool]>([])
         let returned = LockedValue(false)
@@ -216,7 +216,7 @@ struct MessengerSessionTests {
 
     @Test("A StatusResponse lost after the subscription handler returned is retransmitted until acked")
     func lostStatusResponseRetransmittedAfterHandlerReturned() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         let origin = rig.clock.now
         var peer = TestPeer(link: rig.link)
         let returned = LockedValue(false)
@@ -262,7 +262,7 @@ struct MessengerSessionTests {
 
     @Test("A report for an unknown subscription goes to the fallback handler and is acked when it returns")
     func unknownSubscriptionFallsBack() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let fallbackCalls = LockedValue(0)
         await rig.messenger.setUnsolicitedHandler { _, _ in
@@ -285,7 +285,7 @@ struct MessengerSessionTests {
 
     @Test("With no handler at all, an unsolicited message is acked and its exchange closed")
     func noHandlerAcksAndCloses() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let message = try ScriptedPeer.secured(
             session: rig.peerSession, exchangeID: 0x4200, initiator: true,
@@ -301,7 +301,7 @@ struct MessengerSessionTests {
 
     @Test("A message for an unregistered session is dropped without a reply")
     func unknownSessionDropped() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let (_, stranger) = ScriptedPeer.mirroredSessions(controllerSessionID: 99, peerSessionID: 98)
         try await peer.send(try ScriptedPeer.secured(
@@ -324,7 +324,7 @@ struct MessengerSessionTests {
 
     @Test("Unregistering a session fails its pending receives with .sessionClosed")
     func unregisterFailsReceives() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
         try await exchange.send(protocolID: .interactionModel, opcode: InteractionModelOpcode.readRequest.rawValue, payload: Data())
         let receiving = Task { try await exchange.receive(timeout: .seconds(5)) }
@@ -342,7 +342,7 @@ struct MessengerSessionTests {
 
     @Test("Unregistering drops a closing exchange outright: no further retransmission, count never negative")
     func unregisterDropsClosingExchange() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         let origin = rig.clock.now
         var peer = TestPeer(link: rig.link)
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
@@ -372,7 +372,7 @@ struct MessengerSessionTests {
 
     @Test("An initiator exchange with nothing waiting reports .sessionClosed on its next send and receive")
     func unregisterReportsToIdleInitiator() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
         try await exchange.send(protocolID: .interactionModel, opcode: InteractionModelOpcode.readRequest.rawValue, payload: Data())
@@ -394,7 +394,7 @@ struct MessengerSessionTests {
 
     @Test("Unregistering clears a responder exchange's queued messages and owed ack; its handler sees .sessionClosed")
     func unregisterClearsResponderState() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let (gate, release) = AsyncStream<Void>.makeStream()
         let handlerError = LockedValue<MessagingError?>(nil)
@@ -463,7 +463,7 @@ struct MessengerSessionTests {
         let link = FaultInjectingLink(seed: 1)
         let messenger = makeMessenger(link: link, clock: clock)
         let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
-        await messenger.registerSession(controllerSession, peerAddress: link.b.address)
+        try await messenger.registerSession(controllerSession, peerAddress: link.b.address)
         var peer = TestPeer(link: link)
 
         // The handler answers, then stays busy without receiving: the
@@ -502,7 +502,7 @@ struct MessengerSessionTests {
 
     @Test("Re-registering the same session keeps its counter window")
     func reregisterKeepsWindow() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let handled = LockedValue(0)
         await rig.messenger.setUnsolicitedHandler { _, _ in
@@ -517,7 +517,7 @@ struct MessengerSessionTests {
         #expect(firstAck.isStandaloneAck)
         #expect(handled.value == 1)
 
-        await rig.messenger.registerSession(rig.controllerSession, peerAddress: rig.link.b.address, mrp: testPeerParameters)
+        try await rig.messenger.registerSession(rig.controllerSession, peerAddress: rig.link.b.address, mrp: testPeerParameters)
         try await peer.send(first)                                             // replay after re-registration
         let replayAck = try await peer.nextSecured(session: rig.peerSession)
         #expect(replayAck.isStandaloneAck)
@@ -527,14 +527,14 @@ struct MessengerSessionTests {
 
     @Test("Re-registering the same session updates its address and MRP parameters")
     func reregisterUpdatesAddressAndMRP() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         let moved = MatterAddress(host: "10.0.0.3", port: 6001)
         let sleepy = MRPParameters(
             sessionIdleInterval: .milliseconds(5000),
             sessionActiveInterval: .milliseconds(300),
             sessionActiveThreshold: .milliseconds(4000)
         )
-        await rig.messenger.registerSession(rig.controllerSession, peerAddress: moved, mrp: sleepy)
+        try await rig.messenger.registerSession(rig.controllerSession, peerAddress: moved, mrp: sleepy)
         #expect(await rig.messenger.peerAddress(forSession: 10) == moved)
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
         #expect(exchange.peerAddress == moved)
@@ -544,7 +544,7 @@ struct MessengerSessionTests {
 
     @Test("updateSession changes a registered session's MRP parameters for new exchanges, keeping its address")
     func updateSessionChangesMRP() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         let sleepy = MRPParameters(
             sessionIdleInterval: .milliseconds(5000),
             sessionActiveInterval: .milliseconds(300),
@@ -562,7 +562,7 @@ struct MessengerSessionTests {
 
     @Test("updateSession after unregisterSession returns false and registers nothing")
     func updateSessionAfterUnregister() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         await rig.messenger.unregisterSession(localSessionID: 10)
         #expect(await rig.messenger.updateSession(localSessionID: 10, mrp: testPeerParameters) == false)
         #expect(await rig.messenger.sessions.isEmpty)
@@ -573,7 +573,7 @@ struct MessengerSessionTests {
 
     @Test("updateSession keeps the counter window: a replay afterwards is acked, not handled")
     func updateSessionKeepsWindow() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
         let handled = LockedValue(0)
         await rig.messenger.setUnsolicitedHandler { _, _ in
@@ -599,33 +599,86 @@ struct MessengerSessionTests {
 
     @Test("unregisterSession on a stopped messenger is a no-op")
     func unregisterAfterStopIsNoOp() async throws {
-        let rig = await makeRig()
+        let rig = try await makeRig()
         await rig.messenger.stop()
         await rig.messenger.unregisterSession(localSessionID: 10)
         #expect(await rig.messenger.sessions[10] != nil)
     }
 
-    @Test("Registering a different session under a registered ID first closes the old session's exchanges")
-    func registerReplacementSessionClosesOld() async throws {
-        let rig = await makeRig()
+    @Test("Registering a different session under a registered ID is refused; the registered one is untouched")
+    func registerDifferentSessionUnderLiveIDIsRefused() async throws {
+        let rig = try await makeRig()
         let exchange = try await rig.messenger.openExchange(sessionID: 10)
         let receiving = Task { try await exchange.receive(timeout: .seconds(5)) }
         #expect(await eventually { await rig.messenger.pendingReceiveCount == 1 })
 
-        let (replacement, replacementPeer) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 21)
-        await rig.messenger.registerSession(replacement, peerAddress: rig.link.b.address)
-        await #expect(throws: MessagingError.sessionClosed) { try await receiving.value }
-        #expect(await rig.messenger.activeExchangeCount == 0)
+        let (other, _) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 21)
+        await #expect(throws: MessagingError.sessionIDInUse(10)) {
+            try await rig.messenger.registerSession(other, peerAddress: rig.link.b.address)
+        }
+        #expect(await rig.messenger.sessions[10]?.session === rig.controllerSession)
+        #expect(await rig.messenger.pendingReceiveCount == 1, "the registered session's exchange is still open")
 
-        // The replacement is live, with its own counter window.
-        var peer = TestPeer(link: rig.link)
+        // The registered session still routes: a reply under its keys reaches the waiter.
+        let peer = TestPeer(link: rig.link)
         try await peer.send(try ScriptedPeer.secured(
-            session: replacementPeer, exchangeID: 0x4900, initiator: true,
-            protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue
+            session: rig.peerSession, exchangeID: exchange.key.exchangeID, initiator: false,
+            protocolID: .interactionModel, opcode: InteractionModelOpcode.statusResponse.rawValue
         ))
-        let ack = try await peer.nextSecured(session: replacementPeer)
-        #expect(ack.isStandaloneAck)
-        #expect(ack.messageHeader.sessionID == 21)
+        let received = try await receiving.value
+        #expect(received.opcode == InteractionModelOpcode.statusResponse.rawValue)
+        await rig.messenger.stop()
+    }
+
+    @Test("Across a forced wrap, the allocator never hands out an ID registered with the messenger or cached")
+    func allocatorSkipsLiveIDsAcrossWrap() async throws {
+        let rig = try await makeRig()   // session 10 registered (outside the allocator's range)
+        var cache = SessionCache(nextSessionID: UInt16.max)
+
+        // Node A takes the last ID; its session is registered and cached.
+        let nodeA = NodeID(rawValue: 0xA)
+        let reservedA = cache.reserveSessionID(excluding: await rig.messenger.registeredSessionIDs)
+        let idA = try #require(reservedA)
+        #expect(idA == UInt16.max)
+        let (sessionA, _) = ScriptedPeer.mirroredSessions(controllerSessionID: idA, peerSessionID: 30)
+        try await rig.messenger.registerSession(sessionA, peerAddress: rig.link.b.address)
+        cache.store(sessionA, for: nodeA)
+        cache.releaseSessionID(idA)
+
+        // Node B wraps to the first ID; registered, but (as after an
+        // invalidation in progress) not cached.
+        let reservedB = cache.reserveSessionID(excluding: await rig.messenger.registeredSessionIDs)
+        let idB = try #require(reservedB)
+        #expect(idB == SessionCache.firstSessionID)
+        let (sessionB, _) = ScriptedPeer.mirroredSessions(controllerSessionID: idB, peerSessionID: 31)
+        try await rig.messenger.registerSession(sessionB, peerAddress: rig.link.b.address)
+        cache.releaseSessionID(idB)
+
+        // Node C's session is cached but not registered (as when it was
+        // unregistered behind the cache's back): still in use.
+        let nodeC = NodeID(rawValue: 0xC)
+        let (sessionC, _) = ScriptedPeer.mirroredSessions(controllerSessionID: 150, peerSessionID: 32)
+        cache.store(sessionC, for: nodeC)
+
+        // Force a full cycle through the ID space, twice over the wrap.
+        let registered = await rig.messenger.registeredSessionIDs
+        var handedOut: Set<UInt16> = []
+        for _ in 0..<(2 * (Int(UInt16.max) - Int(SessionCache.firstSessionID) + 1)) {
+            let reserved = cache.reserveSessionID(excluding: registered)
+            let id = try #require(reserved)
+            handedOut.insert(id)
+            cache.releaseSessionID(id)
+        }
+        #expect(!handedOut.contains(idA), "cached and registered")
+        #expect(!handedOut.contains(idB), "registered")
+        #expect(!handedOut.contains(150), "cached")
+        #expect(handedOut.count == Int(UInt16.max) - Int(SessionCache.firstSessionID) + 1 - 3)
+
+        // And the messenger refuses B's session under A's ID.
+        let (impostor, _) = ScriptedPeer.mirroredSessions(controllerSessionID: idA, peerSessionID: 33)
+        await #expect(throws: MessagingError.sessionIDInUse(idA)) {
+            try await rig.messenger.registerSession(impostor, peerAddress: rig.link.b.address)
+        }
         await rig.messenger.stop()
     }
 }

@@ -22,7 +22,7 @@ struct ControllerIMStatusTests {
             configuration: .init(fabricID: FabricID(rawValue: 1))
         )
         let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
-        await controller.messenger.registerSession(controllerSession, peerAddress: link.b.address)
+        try await controller.messenger.registerSession(controllerSession, peerAddress: link.b.address)
 
         do {
             async let reply = controller.imRequest(

@@ -309,8 +309,13 @@ public actor MatterController {
 
         logger.info("Beginning commissioning to \(address.host):\(address.port)")
 
-        // Step 1: PASE on one unsecured exchange
-        let sessionID = sessionCache.allocateSessionID()
+        // Step 1: PASE on one unsecured exchange. The local session ID stays
+        // reserved until commissioning ends (the PASE session is unregistered
+        // by then on every path).
+        guard let sessionID = await reserveSessionID() else {
+            throw ControllerError.paseHandshakeFailed("No free local session ID")
+        }
+        defer { sessionCache.releaseSessionID(sessionID) }
         let (pbkdfReq, ctx1) = commissioning.beginPASE(
             passcode: setupCode,
             initiatorSessionID: sessionID
@@ -369,7 +374,11 @@ public actor MatterController {
 
         // Steps 2-7 over the encrypted PASE session. Register it before the
         // first encrypted request so the reply can be decrypted and routed.
-        await messenger.registerSession(paseSession, peerAddress: address, mrp: mrp)
+        do {
+            try await messenger.registerSession(paseSession, peerAddress: address, mrp: mrp)
+        } catch {
+            throw Self.commissioningError(error)
+        }
         var device: CommissionedDevice
         do {
             device = try await commissionOverPASE(session: paseSession, context: paseContext)
@@ -682,7 +691,12 @@ public actor MatterController {
             throw ControllerError.noOperationalAddress
         }
 
-        let sessionID = sessionCache.allocateSessionID()
+        // Reserved until this establishment ends; once cached, the session
+        // itself keeps the ID in use.
+        guard let sessionID = await reserveSessionID() else {
+            throw ControllerError.caseSessionFailed("No free local session ID")
+        }
+        defer { sessionCache.releaseSessionID(sessionID) }
         let timeout = configuration.operationTimeout
 
         logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
@@ -738,12 +752,24 @@ public actor MatterController {
         guard let current = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
         }
-        await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
+        do {
+            try await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
+        } catch {
+            throw Self.operationalError(error, nodeID: nodeID)
+        }
         sessionCache.store(session, for: nodeID)
 
         logger.debug("CASE session established to node \(nodeID.rawValue)")
 
         return session
+    }
+
+    /// Reserve a local session ID that no registered, cached or in-flight
+    /// session holds (see ``SessionCache/reserveSessionID(excluding:)``).
+    /// The only suspension is the snapshot, before the synchronous reserve.
+    private func reserveSessionID() async -> UInt16? {
+        let registered = await messenger.registeredSessionIDs
+        return sessionCache.reserveSessionID(excluding: registered)
     }
 
     /// Run `operation` **once** on the node's CASE session (established if
@@ -824,7 +850,7 @@ public actor MatterController {
             return ControllerError.timeout("No response from node \(nodeID.rawValue)")
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
-        case .unknownSession, .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped:
+        case .unknownSession, .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
             return ControllerError.transportError("\(messaging)")
         }
     }

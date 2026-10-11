@@ -249,13 +249,60 @@ struct SessionCacheTests {
     func sessionIDAllocation() {
         var cache = SessionCache()
 
-        let id1 = cache.allocateSessionID()
-        let id2 = cache.allocateSessionID()
-        let id3 = cache.allocateSessionID()
+        let id1 = cache.reserveSessionID(excluding: [])
+        let id2 = cache.reserveSessionID(excluding: [])
+        let id3 = cache.reserveSessionID(excluding: [])
 
         #expect(id1 == 100)
         #expect(id2 == 101)
         #expect(id3 == 102)
+    }
+
+    @Test("Allocation near the wrap skips registered, cached and reserved IDs")
+    func allocationSkipsInUseIDsAcrossWrap() {
+        var cache = SessionCache(nextSessionID: UInt16.max - 2)
+        let cached = SecureSession(
+            localSessionID: UInt16.max - 1,
+            peerSessionID: 200,
+            establishment: .case,
+            peerNodeID: NodeID(rawValue: 42)
+        )
+        cache.store(cached, for: NodeID(rawValue: 42))
+        let registered: Set<UInt16> = [UInt16.max, 100]
+
+        let first = cache.reserveSessionID(excluding: registered)
+        #expect(first == UInt16.max - 2)
+        // max-1 cached, max registered, wrap, 100 registered.
+        let second = cache.reserveSessionID(excluding: registered)
+        #expect(second == 101)
+
+        // A further cycle skips the two reserved IDs as well.
+        var handedOut: [UInt16] = []
+        for _ in 0..<(Int(UInt16.max) - 100 + 1) {
+            if let id = cache.reserveSessionID(excluding: registered) {
+                handedOut.append(id)
+                cache.releaseSessionID(id)
+            }
+        }
+        let inUse: Set<UInt16> = [UInt16.max - 2, UInt16.max - 1, UInt16.max, 100, 101]
+        #expect(!handedOut.contains { inUse.contains($0) })
+        #expect(Set(handedOut).count == Int(UInt16.max) - 100 + 1 - inUse.count)
+
+        // Released, an ID is free again.
+        cache.releaseSessionID(101)
+        var sawReleased = false
+        for _ in 0..<(Int(UInt16.max) - 100 + 1) {
+            guard let id = cache.reserveSessionID(excluding: registered) else { break }
+            cache.releaseSessionID(id)
+            if id == 101 { sawReleased = true; break }
+        }
+        #expect(sawReleased)
+    }
+
+    @Test("Allocation returns nil when every ID is in use")
+    func allocationExhausted() {
+        var cache = SessionCache()
+        #expect(cache.reserveSessionID(excluding: Set(100...UInt16.max)) == nil)
     }
 }
 
