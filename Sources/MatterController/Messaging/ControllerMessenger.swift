@@ -106,6 +106,9 @@ public actor ControllerMessenger {
     /// Random Ephemeral Initiator Node ID sent as the Source Node ID on every
     /// frame of an unsecured exchange we opened (Matter Core §4.13.2.1).
     var ephemeralNodeIDs: [ExchangeKey: NodeID] = [:]
+    /// The peer's ephemeral initiator node ID on an unsecured exchange it
+    /// initiated; our frames on that exchange carry it as Destination Node ID.
+    var peerEphemeralNodeIDs: [ExchangeKey: NodeID] = [:]
     var nextWaiterToken: UInt64 = 0
     var subscriptionHandlers: [SubscriptionID: UnsolicitedHandler] = [:]
     var unsolicitedHandler: UnsolicitedHandler?
@@ -189,6 +192,7 @@ public actor ControllerMessenger {
         responderKeys.removeAll()
         closing.removeAll()
         ephemeralNodeIDs.removeAll()
+        peerEphemeralNodeIDs.removeAll()
     }
 
     /// The transport's receive stream finished. Expected only after `stop()`;
@@ -298,7 +302,9 @@ public actor ControllerMessenger {
     }
 
     /// The task waiting in `receive` (the call identified by `token`) was
-    /// cancelled: fail it and close the exchange (flushing any owed ack). A
+    /// cancelled: fail it and close the exchange as `close()` does (flushing
+    /// any owed ack; an unacknowledged reliable message stays under MRP until
+    /// acked or exhausted). A
     /// hop that arrives after that waiter was already resumed — by a delivery,
     /// a timeout or a close — finds a different token, or none, and does
     /// nothing.
@@ -337,6 +343,7 @@ public actor ControllerMessenger {
         manager.close(key)
         closing.remove(key)
         ephemeralNodeIDs[key] = nil
+        peerEphemeralNodeIDs[key] = nil
     }
 
     /// The single place a waiter leaves `waiters`; only the caller that gets
@@ -406,7 +413,7 @@ public actor ControllerMessenger {
         case .outOfWindow, .duplicate:
             // Matter Core §4.6.5: acknowledge again if asked, never process twice.
             logger.debug("Dropping \(verdict == .duplicate ? "duplicate" : "out-of-window") counter \(counter) on exchange \(key.exchangeID)")
-            if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter) {
+            if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                 outgoing.append(ack)
             }
             return
@@ -424,7 +431,7 @@ public actor ControllerMessenger {
             // Closed by its owner: acknowledge if asked, deliver nothing, and
             // never let a late message re-open it as a new exchange. The ack
             // is encoded while the exchange (and its ephemeral ID) still exists.
-            if requiresAck, !isStandaloneAck(exchangeHeader), let ack = standaloneAck(key: key, ackCounter: counter) {
+            if requiresAck, !isStandaloneAck(exchangeHeader), let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                 outgoing.append(ack)
             }
             if acknowledgedOurs {
@@ -453,7 +460,7 @@ public actor ControllerMessenger {
             // I=0: only ever a message on an exchange we opened and still hold.
             guard manager.exchange(for: key) != nil else {
                 logger.debug("Stale message on closed exchange \(key.exchangeID) (counter \(counter)); acknowledging and dropping")
-                if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter) {
+                if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                     outgoing.append(ack)
                 }
                 return
@@ -471,6 +478,9 @@ public actor ControllerMessenger {
         }
         let peerAddress = address(for: scope) ?? sender
         manager.open(key, peerAddress: peerAddress, config: mrpConfig(for: parameters(for: scope)), now: now)
+        if case .unsecured = scope, let peerEphemeral = messageHeader.sourceNodeID {
+            peerEphemeralNodeIDs[key] = peerEphemeral
+        }
         responderKeys.insert(key)
         if requiresAck { recordOwedAck(key, counter: counter, now: now, into: &outgoing) }
 
@@ -652,7 +662,10 @@ public actor ControllerMessenger {
         }
     }
 
-    func standaloneAck(key: ExchangeKey, ackCounter: UInt32) -> Outgoing? {
+    /// A standalone ack on exchange `key`. `inbound` is the header of the
+    /// frame being acknowledged, used for unsecured node IDs when the
+    /// exchange is no longer held (see ``unsecuredNodeIDs(for:inbound:)``).
+    func standaloneAck(key: ExchangeKey, ackCounter: UInt32, inbound: MessageHeader? = nil) -> Outgoing? {
         guard let address = address(for: key.scope) else { return nil }
         let header = ExchangeHeader(
             flags: ExchangeFlags(initiator: key.initiatedLocally, reliableDelivery: false),
@@ -662,21 +675,27 @@ public actor ControllerMessenger {
             acknowledgedMessageCounter: ackCounter
         )
         do {
-            return Outgoing(bytes: try encode(header, payload: Data(), key: key), address: address, note: "standalone ack \(ackCounter)")
+            return Outgoing(bytes: try encode(header, payload: Data(), key: key, inbound: inbound), address: address, note: "standalone ack \(ackCounter)")
         } catch {
             logger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)")
             return nil
         }
     }
 
-    /// Encode one frame of exchange `key`. Unsecured frames of an exchange we
-    /// opened carry its ephemeral initiator node ID as the Source Node ID.
-    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey) throws -> Data {
+    /// Encode one frame of exchange `key`; `inbound` is the header of the
+    /// frame it answers, if any (see ``unsecuredNodeIDs(for:inbound:)``).
+    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey, inbound: MessageHeader? = nil) throws -> Data {
         switch key.scope {
         case .unsecured:
             unsecuredCounter &+= 1
+            let nodeIDs = unsecuredNodeIDs(for: key, inbound: inbound)
             return MatterMessage.encodeUnsecured(
-                messageHeader: MessageHeader(sessionID: 0, messageCounter: unsecuredCounter, sourceNodeID: ephemeralNodeIDs[key]),
+                messageHeader: MessageHeader(
+                    sessionID: 0,
+                    messageCounter: unsecuredCounter,
+                    sourceNodeID: nodeIDs.source,
+                    destinationNodeID: nodeIDs.destination
+                ),
                 exchangeHeader: header,
                 payload: payload
             )
@@ -686,6 +705,19 @@ public actor ControllerMessenger {
             }
             return try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID)
         }
+    }
+
+    /// Node IDs for an unsecured frame (Matter Core §4.13.2.1): on an
+    /// exchange we initiated, our ephemeral initiator ID as Source; on one
+    /// the peer initiated, its ephemeral ID as Destination. Once the exchange
+    /// is gone (a re-ack after close, a stale reply) the IDs come from the
+    /// frame being acknowledged — its Destination is our ID, its Source the
+    /// peer's — so the ack still names the exchange's initiator.
+    func unsecuredNodeIDs(for key: ExchangeKey, inbound: MessageHeader?) -> (source: NodeID?, destination: NodeID?) {
+        if key.initiatedLocally {
+            return (ephemeralNodeIDs[key] ?? inbound?.destinationNodeID, nil)
+        }
+        return (nil, peerEphemeralNodeIDs[key] ?? inbound?.sourceNodeID)
     }
 
     /// Where to send for a scope: the unsecured peer, or the secure session's

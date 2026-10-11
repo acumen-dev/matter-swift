@@ -56,10 +56,15 @@ public enum ScriptedPeer {
         payload: Data = Data(),
         counter: UInt32,
         ack: UInt32? = nil,
-        reliable: Bool = true
+        reliable: Bool = true,
+        sourceNodeID: NodeID? = nil,
+        destinationNodeID: NodeID? = nil
     ) -> Data {
         MatterMessage.encodeUnsecured(
-            messageHeader: MessageHeader(sessionID: 0, messageCounter: counter),
+            messageHeader: MessageHeader(
+                sessionID: 0, messageCounter: counter,
+                sourceNodeID: sourceNodeID, destinationNodeID: destinationNodeID
+            ),
             exchangeHeader: ExchangeHeader(
                 flags: ExchangeFlags(initiator: initiator, reliableDelivery: reliable),
                 protocolOpcode: opcode,
@@ -72,7 +77,8 @@ public enum ScriptedPeer {
     }
 
     /// A message on `frame`'s exchange from the other side, piggybacking an
-    /// ack of `frame` if it asked for one.
+    /// ack of `frame` if it asked for one, and addressed (Destination Node ID)
+    /// to `frame`'s Source Node ID, as a Matter responder does.
     public static func unsecuredReply(
         to frame: PeerFrame,
         protocolID: MatterProtocolID,
@@ -89,7 +95,8 @@ public enum ScriptedPeer {
             payload: payload,
             counter: counter,
             ack: frame.exchangeHeader.flags.reliableDelivery ? frame.counter : nil,
-            reliable: reliable
+            reliable: reliable,
+            destinationNodeID: frame.messageHeader.sourceNodeID
         )
     }
 

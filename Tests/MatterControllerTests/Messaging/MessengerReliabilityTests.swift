@@ -154,6 +154,62 @@ struct MessengerReliabilityTests {
         await messenger.stop()
     }
 
+    @Test("A re-ack after the exchange is gone still carries our ephemeral ID, taken from the reply's destination")
+    func reAckAfterCloseEchoesDestination() async throws {
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: ManualClock())
+        var peer = TestPeer(link: link)
+        let exchange = await messenger.openExchange(peer: link.b.address)
+
+        async let reply = exchange.request(protocolID: .echo, opcode: echoRequest, payload: Data(), timeout: .seconds(5))
+        let request = try await peer.next()
+        let replyBytes = ScriptedPeer.unsecuredReply(to: request, protocolID: .echo, opcode: echoResponse, counter: 70)
+        try await peer.send(replyBytes)
+        _ = try await reply
+        await exchange.close()
+        let flushedAck = try await peer.next()
+        #expect(await messenger.ephemeralNodeIDs.isEmpty)
+
+        // Our flushed ack was lost: the peer retransmits its reply.
+        try await peer.send(replyBytes)
+        let reAck = try await peer.next()
+        let ephemeral = try #require(request.messageHeader.sourceNodeID)
+        #expect(reAck.isStandaloneAck)
+        #expect(reAck.exchangeHeader.acknowledgedMessageCounter == 70)
+        #expect(flushedAck.messageHeader.sourceNodeID == ephemeral)
+        #expect(reAck.messageHeader.sourceNodeID == ephemeral)
+        await messenger.stop()
+    }
+
+    @Test("Acks on a peer-initiated unsecured exchange are addressed to the peer's ephemeral ID")
+    func peerInitiatedAcksEchoSource() async throws {
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: ManualClock())
+        var peer = TestPeer(link: link)
+        await messenger.start()
+        let peerEphemeral = NodeID(rawValue: 0x1234_5678_9ABC_DEF0)
+
+        // No handler: acknowledged and closed at once.
+        let unsolicited = ScriptedPeer.unsecured(
+            exchangeID: 0x4242, initiator: true, protocolID: .echo, opcode: echoRequest,
+            counter: 500, sourceNodeID: peerEphemeral
+        )
+        try await peer.send(unsolicited)
+        let ack = try await peer.next()
+        #expect(ack.isStandaloneAck)
+        #expect(ack.exchangeHeader.acknowledgedMessageCounter == 500)
+        #expect(ack.messageHeader.destinationNodeID == peerEphemeral)
+        #expect(ack.messageHeader.sourceNodeID == nil)
+
+        // Its duplicate, after the exchange is gone, is addressed the same way.
+        try await peer.send(unsolicited)
+        let reAck = try await peer.next()
+        #expect(reAck.isStandaloneAck)
+        #expect(reAck.messageHeader.destinationNodeID == peerEphemeral)
+        #expect(await messenger.activeExchangeCount == 0)
+        await messenger.stop()
+    }
+
     // MARK: - Waiter tokens
 
     @Test("A cancellation hop that lost the race to delivery does not fail a later receive")

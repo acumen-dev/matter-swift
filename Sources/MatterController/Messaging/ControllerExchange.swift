@@ -26,6 +26,11 @@ public struct ControllerExchange: Sendable {
     /// The next message on the exchange. While our last reliable message is
     /// still unacknowledged the wait extends to the MRP exhaustion horizon,
     /// so the effective wait is `max(timeout, horizon)`.
+    ///
+    /// Cancelling the calling task fails the receive with `CancellationError`
+    /// and closes the exchange exactly as ``close()`` does: an
+    /// unacknowledged reliable message keeps being retransmitted until
+    /// acknowledged or exhausted.
     public func receive(timeout: Duration) async throws -> InboundMessage {
         try await messenger.receive(key, timeout: timeout)
     }
@@ -36,8 +41,12 @@ public struct ControllerExchange: Sendable {
         return try await receive(timeout: timeout)
     }
 
-    /// Close: send any owed ack now, stop retransmitting, and fail a pending
-    /// ``receive(timeout:)`` with ``MessagingError/exchangeClosed``. Idempotent.
+    /// Close: send any owed ack now, stop delivering messages, and fail a
+    /// pending ``receive(timeout:)`` with ``MessagingError/exchangeClosed``.
+    /// An unacknowledged reliable message is *not* abandoned: MRP keeps
+    /// retransmitting it until it is acknowledged or exhausted (silently),
+    /// and late messages on the exchange are acknowledged but not delivered.
+    /// Idempotent.
     public func close() async {
         await messenger.closeExchange(key)
     }
