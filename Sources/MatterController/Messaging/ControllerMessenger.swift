@@ -281,7 +281,9 @@ public actor ControllerMessenger {
         guard isOpen(key) else { throw MessagingError.exchangeClosed }
         guard waiters[key] == nil else { throw MessagingError.receiveAlreadyPending }
 
-        let deadline = clock.now + timeout
+        // Never shorter than MRP's exhaustion horizon: a silent (sleepy) peer
+        // surfaces as peerUnreachable, not as a premature responseTimeout.
+        let deadline = clock.now + max(timeout, exhaustionHorizon(for: key))
         let token = nextWaiterToken
         nextWaiterToken &+= 1
         return try await withTaskCancellationHandler {
@@ -592,7 +594,7 @@ public actor ControllerMessenger {
         var outgoing: [Outgoing] = []
         collectRetransmissions(now: now, into: &outgoing)
         collectStandaloneAcks(now: now, into: &outgoing)
-        expireWaiters(now: now)
+        expireWaiters(now: now, into: &outgoing)
         closeIdleResponders(now: now, into: &outgoing)
         rearmTimer()
         await transmit(outgoing)
@@ -636,11 +638,23 @@ public actor ControllerMessenger {
         }
     }
 
-    func expireWaiters(now: ContinuousClock.Instant) {
+    /// A receive whose deadline passed fails with `responseTimeout` and its
+    /// exchange closes through the same path as `close()` (owed ack flushed;
+    /// an unacknowledged reliable message stays under MRP in `closing`).
+    func expireWaiters(now: ContinuousClock.Instant, into outgoing: inout [Outgoing]) {
         let expired = waiters.filter { $0.value.deadline <= now }.map(\.key)
         for key in expired {
-            takeWaiter(key)?.resume(throwing: MessagingError.responseTimeout(key))
+            finishExchange(key, failing: .responseTimeout(key), into: &outgoing)
         }
+    }
+
+    /// The longest MRP may keep the exchange's message unacknowledged: the
+    /// larger of its idle and active horizons (the peer may change state).
+    /// For a sleepy peer with a long SII that is tens of seconds;
+    /// subscription liveness, not command failure, is the fast signal.
+    func exhaustionHorizon(for key: ExchangeKey) -> Duration {
+        let config = manager.exchange(for: key)?.config ?? configuration.mrp
+        return max(config.exhaustionHorizon(peerActive: false), config.exhaustionHorizon(peerActive: true))
     }
 
     func closeIdleResponders(now: ContinuousClock.Instant, into outgoing: inout [Outgoing]) {
