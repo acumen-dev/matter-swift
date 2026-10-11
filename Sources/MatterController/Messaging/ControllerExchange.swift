@@ -25,7 +25,7 @@ public struct ControllerExchange: Sendable {
 
     /// The next message on the exchange. The effective wait is always
     /// `max(timeout, MRP exhaustion horizon)` -- the larger of the idle and
-    /// active horizons (up to ~108 s for a peer with SII 5000). On expiry it
+    /// active horizons (up to ~109 s for a peer with SII 5000). On expiry it
     /// fails with ``MessagingError/responseTimeout(_:)`` and closes the
     /// exchange exactly as ``close()`` does (a pending reliable message keeps
     /// retransmitting until acked or exhausted). The deadline is fixed when

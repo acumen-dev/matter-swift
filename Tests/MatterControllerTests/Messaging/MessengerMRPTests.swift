@@ -263,7 +263,7 @@ struct MessengerMRPTests {
         await #expect(throws: MessagingError.responseTimeout(exchange.key)) { try await waiting.value }
         #expect(await messenger.activeExchangeCount == 0)
         #expect(await messenger.closingExchangeCount == 1)
-        #expect(link.sent(from: .a).count == 5)
+        #expect(await eventually { link.sent(from: .a).count == 5 })
 
         // Exhaustion of the closed exchange's message (5000 + 8695.28 ms) removes it silently.
         await clock.advance(by: .microseconds(2_826_180))
