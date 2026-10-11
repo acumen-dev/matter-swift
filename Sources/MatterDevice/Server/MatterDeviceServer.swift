@@ -441,6 +441,13 @@ public actor MatterDeviceServer {
     /// to be retransmitted until the peer acknowledges them. Intervals follow
     /// `MRPConfig.retransmissionInterval` (Matter Core §4.12.2.1), with this server's
     /// `maxRetransmissions` of 10.
+    ///
+    /// With default peer parameters the base is SAI (300 ms) only while the peer
+    /// spoke within the last 4 s (SAT); after that it is SII (500 ms). So for a
+    /// peer that falls silent, the 10 retransmissions land at about 0.3 s … 96.4 s
+    /// after the first send and the exchange is given up at about 157 s (no
+    /// jitter) to 196 s (full jitter). Before the move to `retransmissionInterval`
+    /// the same 10 retransmissions ended at about 37.5 s.
     private func mrpLoop() async {
         while !Task.isCancelled {
             do {
