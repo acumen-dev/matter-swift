@@ -7,7 +7,7 @@ import MatterTypes
 import MatterModel
 import MatterProtocol
 import MatterTransport
-import MatterController
+@testable import MatterController
 import MatterDevice
 import MatterTestSupport
 
@@ -122,6 +122,90 @@ struct FaultyLinkTests {
             #expect(!recoveryCounters.contains { failedCounters.contains($0) })
             let recoveryHeaders = try afterRecovery.map { try MessageHeader.decode(from: $0).header }
             #expect(recoveryHeaders.contains { $0.isUnsecured }, "the next call re-established CASE")
+        } catch {
+            await controller.stop()
+            await server.stop()
+            throw error
+        }
+        await controller.stop()
+        await server.stop()
+    }
+
+    @Test("Concurrent operations on a node share one CASE handshake, and all succeed")
+    func concurrentOperationsShareOneSession() async throws {
+        let link = FaultInjectingLink(seed: 11)
+        let toggles = LockedValue(0)
+        let (server, light) = try await startServer(on: link, toggles: toggles)
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let sentBefore = link.sent(from: .a).count
+
+            // Overlapping reads and one invoke, all issued before any CASE session exists.
+            let results = try await withThrowingTaskGroup(of: Bool.self) { group in
+                for _ in 0..<6 {
+                    group.addTask {
+                        _ = try await controller.readAttribute(
+                            nodeID: device.nodeID, endpointID: light.endpointID,
+                            clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
+                        )
+                        return true
+                    }
+                }
+                group.addTask {
+                    _ = try await controller.invokeCommand(
+                        nodeID: device.nodeID, endpointID: light.endpointID,
+                        clusterID: .onOff, commandID: OnOffCluster.Command.toggle
+                    )
+                    return true
+                }
+                var all: [Bool] = []
+                for try await ok in group { all.append(ok) }
+                return all
+            }
+            #expect(results.count == 7)
+            #expect(toggles.value == 1)
+
+            // One Sigma1 exchange on the wire (MRP may resend its Sigma1; same exchange).
+            let sigma1Exchanges = Set(link.sent(from: .a).dropFirst(sentBefore).compactMap { data -> UInt16? in
+                guard let frame = try? ScriptedPeer.decodeUnsecured(data),
+                      frame.exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue,
+                      frame.exchangeHeader.protocolOpcode == SecureChannelOpcode.caseSigma1.rawValue else { return nil }
+                return frame.exchangeHeader.exchangeID
+            })
+            #expect(sigma1Exchanges.count == 1)
+            #expect(await controller.messenger.sessions.count == 1, "exactly one registered session for the node")
+
+            // The session survives its operations: still cached, still the same one.
+            let session = try await controller.session(for: device.nodeID)
+            #expect(await controller.messenger.sessions[session.localSessionID]?.session === session)
+        } catch {
+            await controller.stop()
+            await server.stop()
+            throw error
+        }
+        await controller.stop()
+        await server.stop()
+    }
+
+    @Test("setMRPParameters on a live CASE session reaches the messenger")
+    func mrpParametersReachLiveSession() async throws {
+        let link = FaultInjectingLink(seed: 13)
+        let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let session = try await controller.session(for: device.nodeID)
+            let scope = SessionScope.secured(localSessionID: session.localSessionID)
+            #expect(await controller.messenger.parameters(for: scope) == nil)
+
+            await controller.setMRPParameters(Self.fast, for: device.nodeID)
+            #expect(await controller.messenger.parameters(for: scope) == Self.fast)
+
+            await controller.setMRPParameters(nil, for: device.nodeID)
+            #expect(await controller.messenger.parameters(for: scope) == nil)
         } catch {
             await controller.stop()
             await server.stop()

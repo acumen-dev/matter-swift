@@ -8,39 +8,32 @@ import MatterProtocol
 /// Internal CASE session cache — accessed only within `MatterController` actor isolation.
 ///
 /// Stores established secure sessions keyed by peer node ID, with
-/// expiry checking and sequential session ID allocation.
+/// sequential session ID allocation.
+///
+/// A cached session never expires by age: it stays until the controller
+/// invalidates it (the device stopped acknowledging, or the session was
+/// closed). Evicting by wall-clock age would unregister a healthy session
+/// out from under operations still running on it, failing them after the
+/// device may already have acted.
 struct SessionCache: Sendable {
 
     // MARK: - Storage
 
-    private struct Entry: Sendable {
-        let session: SecureSession
-        let storedAt: Date
-    }
-
-    private var entries: [NodeID: Entry] = [:]
+    private var entries: [NodeID: SecureSession] = [:]
     private var nextID: UInt16 = 100
 
     // MARK: - Lookup
 
-    /// Retrieve a cached session for a node, or `nil` if expired/absent.
+    /// Retrieve the cached session for a node, or `nil` if absent.
     func session(for nodeID: NodeID) -> SecureSession? {
-        guard let entry = entries[nodeID] else { return nil }
-        guard !isExpired(entry) else { return nil }
-        return entry.session
-    }
-
-    /// The cached session for a node whether or not it has expired: an
-    /// expired session may still be registered with the message layer.
-    func storedSession(for nodeID: NodeID) -> SecureSession? {
-        entries[nodeID]?.session
+        entries[nodeID]
     }
 
     // MARK: - Store / Remove
 
     /// Cache a session for a node, replacing any existing entry.
     mutating func store(_ session: SecureSession, for nodeID: NodeID) {
-        entries[nodeID] = Entry(session: session, storedAt: Date())
+        entries[nodeID] = session
     }
 
     /// Remove the cached session for a node.
@@ -57,23 +50,10 @@ struct SessionCache: Sendable {
         return id
     }
 
-    // MARK: - Maintenance
+    // MARK: - Queries
 
-    /// Remove all expired sessions.
-    mutating func pruneExpired() {
-        entries = entries.filter { !isExpired($0.value) }
-    }
-
-    /// The number of cached sessions (including potentially expired ones).
+    /// The number of cached sessions.
     var count: Int {
         entries.count
-    }
-
-    // MARK: - Private
-
-    private func isExpired(_ entry: Entry) -> Bool {
-        let elapsed = Date().timeIntervalSince(entry.storedAt)
-        let timeoutSeconds = Double(entry.session.timeout.components.seconds)
-        return elapsed >= timeoutSeconds
     }
 }

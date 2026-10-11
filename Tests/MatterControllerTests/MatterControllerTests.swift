@@ -225,12 +225,12 @@ struct SessionCacheTests {
         #expect(cache.session(for: nodeID) == nil)
     }
 
-    @Test("Expired session returns nil")
-    func expiredSession() {
+    @Test("A session's timeout does not evict it: cached sessions live until removed")
+    func timeoutDoesNotEvict() {
         var cache = SessionCache()
         let nodeID = NodeID(rawValue: 42)
 
-        // Create a session with a 0-second timeout (immediately expired)
+        // A 0-second timeout used to read as immediately expired.
         let session = SecureSession(
             localSessionID: 100,
             peerSessionID: 200,
@@ -240,6 +240,8 @@ struct SessionCacheTests {
         )
 
         cache.store(session, for: nodeID)
+        #expect(cache.session(for: nodeID) === session)
+        cache.remove(for: nodeID)
         #expect(cache.session(for: nodeID) == nil)
     }
 
@@ -254,36 +256,6 @@ struct SessionCacheTests {
         #expect(id1 == 100)
         #expect(id2 == 101)
         #expect(id3 == 102)
-    }
-
-    @Test("Prune removes expired sessions")
-    func pruneExpired() {
-        var cache = SessionCache()
-
-        // Store an expired session
-        let expired = SecureSession(
-            localSessionID: 1,
-            peerSessionID: 2,
-            establishment: .case,
-            peerNodeID: NodeID(rawValue: 10),
-            timeout: .seconds(0)
-        )
-        cache.store(expired, for: NodeID(rawValue: 10))
-
-        // Store a valid session
-        let valid = SecureSession(
-            localSessionID: 3,
-            peerSessionID: 4,
-            establishment: .case,
-            peerNodeID: NodeID(rawValue: 20),
-            timeout: .seconds(3600)
-        )
-        cache.store(valid, for: NodeID(rawValue: 20))
-
-        #expect(cache.count == 2)
-        cache.pruneExpired()
-        #expect(cache.count == 1)
-        #expect(cache.session(for: NodeID(rawValue: 20)) != nil)
     }
 }
 

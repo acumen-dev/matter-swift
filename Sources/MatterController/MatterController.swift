@@ -14,9 +14,9 @@ import MatterTransport
 /// operational device interaction.
 ///
 /// Wires together the pure data-transformation components
-/// (`CommissioningController`, `ControllerSession`, `OperationalController`)
-/// with injected transport and discovery protocols to provide a practical
-/// async/await API.
+/// (`CommissioningController`, `ControllerSession`) with a
+/// ``ControllerMessenger`` over the injected transport, and the injected
+/// discovery, to provide a practical async/await API.
 ///
 /// ```swift
 /// let controller = try MatterController(
@@ -103,6 +103,10 @@ public actor MatterController {
     public let messenger: ControllerMessenger
 
     private var sessionCache = SessionCache()
+
+    /// CASE establishments in flight, one per node: concurrent callers of
+    /// ``session(for:)`` await the same handshake.
+    private var establishing: [NodeID: Task<SecureSession, any Error>] = [:]
 
     // MARK: - Init
 
@@ -442,25 +446,30 @@ public actor MatterController {
 
     /// Get or establish a CASE session to a commissioned device.
     ///
-    /// Returns a cached session if one exists and has not expired;
-    /// otherwise establishes a new CASE session via Sigma1/2/3.
+    /// Returns the cached session if there is one; otherwise establishes a
+    /// new CASE session via Sigma1/2/3. Concurrent callers for the same node
+    /// share one handshake. A cached session stays until it is invalidated
+    /// (the device stopped acknowledging, or ``invalidateSession(for:)``).
     public func session(for nodeID: NodeID) async throws -> SecureSession {
-        // Check cache first
         if let cached = sessionCache.session(for: nodeID) {
             return cached
         }
-
-        // An expired session is still registered with the message layer.
-        await invalidateSession(for: nodeID)
-
-        // Need to establish a new CASE session
-        return try await establishCASESession(nodeID: nodeID)
+        if let inFlight = establishing[nodeID] {
+            return try await inFlight.value
+        }
+        // Isolated to this actor: it cannot start before the entry is stored.
+        let task = Task {
+            defer { self.establishing[nodeID] = nil }
+            return try await self.establishCASESession(nodeID: nodeID)
+        }
+        establishing[nodeID] = task
+        return try await task.value
     }
 
     /// Invalidate the cached session for a node (e.g., after a communication
     /// error) and unregister it from the message layer.
     public func invalidateSession(for nodeID: NodeID) async {
-        guard let session = sessionCache.storedSession(for: nodeID) else { return }
+        guard let session = sessionCache.session(for: nodeID) else { return }
         // Out of the cache before suspending, so a session established
         // meanwhile is never the one removed.
         sessionCache.remove(for: nodeID)
@@ -472,6 +481,11 @@ public actor MatterController {
     /// including on its cached session.
     public func setMRPParameters(_ parameters: MRPParameters?, for nodeID: NodeID) async {
         await registry.updateMRPParameters(for: nodeID, parameters: parameters)
+        // A CASE handshake in flight may have read the old parameters; let it
+        // finish, then update the session it produced.
+        if let inFlight = establishing[nodeID] {
+            _ = try? await inFlight.value
+        }
         if let session = sessionCache.session(for: nodeID) {
             // Never re-registers: a session unregistered meanwhile stays gone.
             await messenger.updateSession(localSessionID: session.localSessionID, mrp: parameters)
@@ -618,7 +632,7 @@ public actor MatterController {
     /// Send one Interaction Model request on a fresh exchange of `sessionID`
     /// and return the reply. The exchange is closed (owed ack flushed) on
     /// every path.
-    private func imRequest(
+    func imRequest(
         sessionID: UInt16,
         opcode: InteractionModelOpcode,
         payload: Data
@@ -634,6 +648,12 @@ public actor MatterController {
             await exchange.close()
             guard response.protocolID == MatterProtocolID.interactionModel.rawValue else {
                 throw MessagingError.unexpectedProtocol(protocolID: response.protocolID, opcode: response.opcode)
+            }
+            // A StatusResponse in place of the reply is the device refusing
+            // the request (UnsupportedAccess, Busy, NeedsTimedInteraction, ...).
+            if response.opcode == InteractionModelOpcode.statusResponse.rawValue {
+                let status = try IMStatusResponse.fromTLV(response.payload)
+                throw ControllerError.imStatus(status.status)
             }
             return response
         } catch {
@@ -703,7 +723,10 @@ public actor MatterController {
         await handshake.close()
 
         // Register before caching so the first request's reply is routable.
-        await messenger.registerSession(session, peerAddress: address, mrp: device.mrpParameters)
+        // Parameters re-read now: setMRPParameters may have run during the
+        // handshake (it then waits for this establishment to finish).
+        let mrp = await registry.device(for: nodeID)?.mrpParameters
+        await messenger.registerSession(session, peerAddress: address, mrp: mrp)
         sessionCache.store(session, for: nodeID)
 
         logger.debug("CASE session established to node \(nodeID.rawValue)")
@@ -741,7 +764,7 @@ public actor MatterController {
                 logger.info("Node \(nodeID.rawValue) unreachable; invalidating its session (the request is not re-sent)")
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
-                if sessionCache.storedSession(for: nodeID) === activeSession {
+                if sessionCache.session(for: nodeID) === activeSession {
                     await invalidateSession(for: nodeID)
                 }
             }
