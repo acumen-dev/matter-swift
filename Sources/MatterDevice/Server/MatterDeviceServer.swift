@@ -112,6 +112,13 @@ public actor MatterDeviceServer {
     /// are sent one at a time as the client acknowledges each with a StatusResponse.
     private var pendingChunkedReports: [UInt16: ChunkedReportContext] = [:]
 
+    /// Wire bytes of each handshake reply, keyed by the request it answered,
+    /// so an MRP retransmission of that request (same counter) is answered
+    /// byte-for-byte. Bounded to the most recent `unsecuredReplyLimit`.
+    private var unsecuredReplies: [UnsecuredRequestKey: Data] = [:]
+    private var unsecuredReplyOrder: [UnsecuredRequestKey] = []
+    private static let unsecuredReplyLimit = 32
+
     /// Established sessions keyed by local session ID.
     private var sessions: [UInt16: SessionEntry] = [:]
 
@@ -316,6 +323,8 @@ public actor MatterDeviceServer {
 
         paseHandshakes.removeAll()
         sessions.removeAll()
+        unsecuredReplies.removeAll()
+        unsecuredReplyOrder.removeAll()
 
         logger.info("Device server stopped")
     }
@@ -623,6 +632,18 @@ public actor MatterDeviceServer {
             logger.trace("MRP ACK received for exchange \(exchangeHeader.exchangeID) counter=\(ackedCounter)")
         }
 
+        // An MRP retransmission repeats the request's message counter. Answer it
+        // with the byte-identical reply (same counter): the initiator's duplicate
+        // detection then drops the copy instead of reading it as a new message
+        // on the exchange, and a lost final StatusReport (Pake3/Sigma3) is
+        // recoverable.
+        let requestKey = UnsecuredRequestKey(peer: sender, exchangeID: exchangeHeader.exchangeID, messageCounter: header.messageCounter)
+        if let reply = unsecuredReplies[requestKey] {
+            try await transport.send(reply, to: sender)
+            logger.trace("Replayed stored reply to \(opcode) on exchange \(exchangeHeader.exchangeID) counter=\(header.messageCounter)")
+            return
+        }
+
         logger.trace("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) bodyLen=\(body.count)")
 
         switch opcode {
@@ -678,7 +699,7 @@ public actor MatterDeviceServer {
                 destinationNodeID: existing.initiatorNodeID
             )
             logger.trace("Resend PBKDFParamResponse exchange=\(exchangeID) counter=\(messageCounter) bytes=\(message.hexDump)")
-            try await transport.send(message, to: sender)
+            try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
             logger.trace("Resent PBKDFParamResponse (duplicate) on exchange \(exchangeID)")
             return
         }
@@ -743,7 +764,7 @@ public actor MatterDeviceServer {
         )
 
         logger.trace("PBKDFParamResponse exchange=\(exchangeID) tlvLen=\(responseTLV.count) includePBKDF=\(!request.hasPBKDFParameters) ackCounter=\(messageCounter) wire(\(message.count)B): \(message.hexDump)")
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.trace("Sent PBKDFParamResponse on exchange \(exchangeID) to \(sender.host):\(sender.port) includedPBKDFParams=\(!request.hasPBKDFParameters) tlvLen=\(responseTLV.count) msgLen=\(message.count)")
     }
 
@@ -774,7 +795,7 @@ public actor MatterDeviceServer {
                 ackMessageCounter: messageCounter,
                 destinationNodeID: handshake.initiatorNodeID
             )
-            try await transport.send(message, to: sender)
+            try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
             logger.trace("Resent Pake2 (duplicate Pake1) on exchange \(exchangeID)")
             return
         }
@@ -815,7 +836,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.debug("Sent Pake2 on exchange \(exchangeID)")
     }
 
@@ -891,7 +912,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.info("PASE session established: local=\(handshake.responderSessionID) peer=\(handshake.initiatorSessionID)")
 
         // Record the interface the commissioner used so CASE address resolution is
@@ -931,7 +952,7 @@ public actor MatterDeviceServer {
                 ackMessageCounter: messageCounter,
                 destinationNodeID: existing.initiatorNodeID
             )
-            try await transport.send(message, to: sender)
+            try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
             return
         }
 
@@ -968,7 +989,7 @@ public actor MatterDeviceServer {
             destinationNodeID: initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.debug("Sent Sigma2 on exchange \(exchangeID)")
     }
 
@@ -1028,7 +1049,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.info("CASE session established: local=\(handshake.responderSessionID) fabric=\(handshake.fabricInfo.fabricIndex)")
     }
 
@@ -1307,6 +1328,22 @@ public actor MatterDeviceServer {
             data: rawData,
             session: session
         )
+
+        // Duplicate detection (Matter Core §4.6.5) — after decryption, so a forged
+        // header cannot move the window. A retransmitted request is acknowledged
+        // again but never executed twice; the MRP loop re-sends our original reply.
+        // A counter behind the window is treated the same way (as the Matter SDK
+        // does): acked if reliable, never processed, so the peer stops retransmitting.
+        switch sessions[session.localSessionID]?.dedup.check(msgHeader.messageCounter) ?? .accepted {
+        case .accepted:
+            break
+        case .duplicate, .outOfWindow:
+            logger.debug("Duplicate/out-of-window secured message: session=\(session.localSessionID) exchange=\(exchangeHeader.exchangeID) counter=\(msgHeader.messageCounter)")
+            if exchangeHeader.flags.reliableDelivery {
+                try await sendStandaloneAck(answering: exchangeHeader, counter: msgHeader.messageCounter, session: session, to: address)
+            }
+            return
+        }
 
         // Peer activity selects SAI over SII for this session's retransmissions
         // (the old fixed 300 ms base is now 330 ms while the peer is active).
@@ -1649,6 +1686,48 @@ public actor MatterDeviceServer {
         return message
     }
 
+    /// Send a handshake reply and keep its exact bytes for replay to a
+    /// retransmission of the same request (see ``unsecuredReplies``).
+    private func sendUnsecuredReply(
+        _ message: Data,
+        to sender: MatterAddress,
+        exchangeID: UInt16,
+        requestCounter: UInt32
+    ) async throws {
+        let key = UnsecuredRequestKey(peer: sender, exchangeID: exchangeID, messageCounter: requestCounter)
+        if unsecuredReplies.updateValue(message, forKey: key) == nil {
+            unsecuredReplyOrder.append(key)
+            if unsecuredReplyOrder.count > Self.unsecuredReplyLimit {
+                unsecuredReplies.removeValue(forKey: unsecuredReplyOrder.removeFirst())
+            }
+        }
+        try await transport.send(message, to: sender)
+    }
+
+    /// Acknowledge a received secured message on its exchange with a
+    /// standalone ack (our I flag is the opposite of the sender's).
+    private func sendStandaloneAck(
+        answering exchangeHeader: ExchangeHeader,
+        counter: UInt32,
+        session: SecureSession,
+        to address: MatterAddress
+    ) async throws {
+        let ackHeader = ExchangeHeader(
+            flags: ExchangeFlags(initiator: !exchangeHeader.flags.initiator, reliableDelivery: false),
+            protocolOpcode: SecureChannelOpcode.standaloneAck.rawValue,
+            exchangeID: exchangeHeader.exchangeID,
+            protocolID: MatterProtocolID.secureChannel.rawValue,
+            acknowledgedMessageCounter: counter
+        )
+        let encrypted = try SecureMessageCodec.encode(
+            exchangeHeader: ackHeader,
+            payload: Data(),
+            session: session,
+            sourceNodeID: NodeID(rawValue: 0)
+        )
+        try await transport.send(encrypted, to: address)
+    }
+
     // MARK: - Helpers
 
     private func nextUnsecuredCounter() -> UInt32 {
@@ -1777,6 +1856,16 @@ extension MatterDeviceServer {
         let session: SecureSession
         let address: MatterAddress
         let fabricIndex: FabricIndex
+        /// Received-counter window for duplicate detection.
+        var dedup = CounterDeduplication(encrypted: true)
+    }
+
+    /// The request a handshake reply answered: an MRP retransmission repeats
+    /// the peer, exchange and message counter.
+    struct UnsecuredRequestKey: Hashable {
+        let peer: MatterAddress
+        let exchangeID: UInt16
+        let messageCounter: UInt32
     }
 
     /// Active CASE handshake state.
