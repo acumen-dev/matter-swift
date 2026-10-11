@@ -32,6 +32,7 @@ struct MessengerMRPTests {
         #expect(await eventually { link.sent(from: .a).count == 2 })
 
         let sent = link.sent(from: .a)
+        try #require(sent.count >= 2)
         #expect(sent[0] == sent[1])
         let delivered = try await peer.next()
         #expect(try ScriptedPeer.decodeUnsecured(sent[0]).counter == delivered.counter)
