@@ -105,6 +105,10 @@ public actor MatterController {
 
     private var sessionCache = SessionCache()
 
+    /// Subscriptions created by ``subscribe(nodeID:_:)``. A subscription keeps
+    /// itself alive until cancelled, so ``stop()`` cancels each one.
+    private var subscriptions: [ControllerSubscription] = []
+
     /// CASE establishments in flight, one per node: concurrent callers of
     /// ``session(for:)`` await the same handshake.
     private var establishing: [NodeID: Task<SecureSession, any Error>] = [:]
@@ -517,6 +521,9 @@ public actor MatterController {
     /// Stop the message layer: pending requests fail with
     /// `MessagingError.stopped`. Terminal for this controller instance.
     public func stop() async {
+        let tracked = subscriptions
+        subscriptions = []
+        for subscription in tracked { await subscription.cancel() }
         await messenger.stop()
     }
 
@@ -607,6 +614,44 @@ public actor MatterController {
             return try IMClient.parseInvokeResponse(response.payload)
         }
     }
+
+    /// Subscribe to attributes and events on a commissioned device.
+    ///
+    /// Returns once the first subscription is established (its priming report
+    /// is already on ``ControllerSubscription/events``). Liveness is judged on
+    /// the max interval the device granted plus the MRP exhaustion horizon for
+    /// the peer; a dead subscription is re-established with backoff, asking only
+    /// for events not yet delivered. Cancel it with ``ControllerSubscription/cancel()``;
+    /// ``stop()`` cancels any still running.
+    public func subscribe(nodeID: NodeID, _ request: SubscriptionRequest) async throws -> ControllerSubscription {
+        guard let device = await registry.device(for: nodeID) else {
+            throw ControllerError.deviceNotFound
+        }
+        let margin = MRPConfig(
+            peer: device.mrpParameters ?? .default,
+            maxRetransmissions: configuration.mrp.maxRetransmissions
+        ).exhaustionHorizon(peerActive: false)
+        let subscription = ControllerSubscription(
+            nodeID: nodeID,
+            request: request,
+            messenger: messenger,
+            client: subscriptionClient,
+            sessionProvider: { [weak self] in
+                guard let self else { throw MessagingError.stopped }
+                return try await self.session(for: nodeID).localSessionID
+            },
+            livenessMargin: margin,
+            operationTimeout: configuration.operationTimeout
+        )
+        do {
+            try await subscription.start()
+        } catch {
+            throw Self.operationalError(error, nodeID: nodeID)
+        }
+        subscriptions.append(subscription)
+        return subscription
+    }
+
 
 
     // MARK: - Device Registry
