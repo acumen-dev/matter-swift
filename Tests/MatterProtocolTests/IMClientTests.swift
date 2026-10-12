@@ -70,3 +70,29 @@ struct IMClientTests {
         #expect(try TimedRequest.fromTLV(data).timeoutMs == 1500)
     }
 }
+
+@Suite("IMClient write responses")
+struct IMClientWriteResponseTests {
+
+    private let path1 = AttributePath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006), attributeID: AttributeID(rawValue: 0x0000))
+    private let path2 = AttributePath(endpointID: EndpointID(rawValue: 2), clusterID: ClusterID(rawValue: 0x0006), attributeID: AttributeID(rawValue: 0x0000))
+
+    private func encode(_ statuses: [StatusIB]) -> Data {
+        let paths = [path1, path2]
+        return WriteResponse(writeResponses: statuses.enumerated().map {
+            AttributeStatusIB(path: paths[$0.offset], status: $0.element)
+        }).tlvEncode()
+    }
+
+    @Test("SUCCESS carrying a cluster status is success")
+    func successWithClusterStatusIsSuccess() throws {
+        let data = encode([StatusIB(status: 0, clusterStatus: 3)])
+        #expect(try IMClient.parseWriteResponse(data) == true)
+    }
+
+    @Test("A failure alongside a SUCCESS is reported as failure")
+    func mixedSuccessAndFailureIsFailure() throws {
+        let data = encode([StatusIB(status: 0), StatusIB(status: 0x87)])
+        #expect(try IMClient.parseWriteResponse(data) == false)
+    }
+}

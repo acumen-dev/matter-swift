@@ -83,7 +83,7 @@ public enum IMClient {
     /// Returns `true` if all writes succeeded, `false` otherwise.
     public static func parseWriteResponse(_ data: Data) throws -> Bool {
         let resp = try WriteResponse.fromTLV(data)
-        return resp.writeResponses.allSatisfy { $0.status == .success }
+        return resp.writeResponses.allSatisfy { $0.status.status == StatusIB.success.status }
     }
 
     // MARK: - Invoke
