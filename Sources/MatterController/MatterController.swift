@@ -500,8 +500,12 @@ public actor MatterController {
         }
         try commissioningFailureInjection?(.afterArmFailSafe)
 
-        // Step 3: SetRegulatoryConfig
-        let regMsg = commissioning.buildSetRegulatoryConfig(context: ctx5)
+        // Step 3: SetRegulatoryConfig, with a location the device supports
+        let capabilityResp = try await imRequest(
+            sessionID: paseSessionID, opcode: .readRequest, payload: commissioning.buildReadLocationCapability()
+        )
+        let location = try commissioning.handleLocationCapabilityResponse(capabilityResp.payload)
+        let regMsg = commissioning.buildSetRegulatoryConfig(context: ctx5, locationType: location)
         let regResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: regMsg)
         try commissioning.handleSetRegulatoryConfigResponse(response: regResp.payload)
 

@@ -95,4 +95,22 @@ struct IMClientWriteResponseTests {
         let data = encode([StatusIB(status: 0), StatusIB(status: 0x87)])
         #expect(try IMClient.parseWriteResponse(data) == false)
     }
+
+    // A real device refuses a write conditional on a stale data version
+    // (connectedhomeip: "Write Version mismatch" → DataVersionMismatch), so
+    // writes carry no DataVersion unless the caller asks for one.
+    @Test("A write request is unconditional unless a data version is given")
+    func writeIsUnconditionalByDefault() throws {
+        let plain = try WriteRequest.fromTLV(IMClient.writeAttributeRequest(
+            endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006),
+            attributeID: AttributeID(rawValue: 0x0000), value: .bool(true)
+        ))
+        #expect(plain.writeRequests.first?.dataVersion == nil)
+
+        let conditional = try WriteRequest.fromTLV(IMClient.writeAttributeRequest(
+            endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006),
+            attributeID: AttributeID(rawValue: 0x0000), dataVersion: DataVersion(rawValue: 7), value: .bool(true)
+        ))
+        #expect(conditional.writeRequests.first?.dataVersion == DataVersion(rawValue: 7))
+    }
 }

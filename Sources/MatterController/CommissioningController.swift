@@ -207,6 +207,31 @@ public struct CommissioningController: Sendable {
 
     // MARK: - Step 5: SetRegulatoryConfig
 
+    /// Build a read of the device's GeneralCommissioning LocationCapability.
+    public func buildReadLocationCapability() -> Data {
+        IMClient.readAttributeRequest(
+            endpointID: .root,
+            clusterID: GeneralCommissioningCluster.id,
+            attributeID: GeneralCommissioningCluster.Attribute.locationCapability
+        )
+    }
+
+    /// The regulatory location to send, given the device's LocationCapability
+    /// read response: the device's own value unless it supports both, in which
+    /// case `preferred`. A device fixed to Indoor or Outdoor refuses any other
+    /// value (connectedhomeip answers ValueOutsideRange).
+    public func handleLocationCapabilityResponse(
+        _ response: Data,
+        preferred: GeneralCommissioningCluster.RegulatoryLocationType = .indoorOutdoor
+    ) throws -> GeneralCommissioningCluster.RegulatoryLocationType {
+        let value = try IMClient.parseReadResponse(response)
+        guard let raw = value.uintValue, raw <= UInt64(UInt8.max),
+              let capability = GeneralCommissioningCluster.RegulatoryLocationType(rawValue: UInt8(raw)) else {
+            throw ControllerError.commissioningFailed("LocationCapability: unexpected value \(value)")
+        }
+        return capability == .indoorOutdoor ? preferred : capability
+    }
+
     /// Build a SetRegulatoryConfig invoke request.
     public func buildSetRegulatoryConfig(
         context: CommissioningContext,

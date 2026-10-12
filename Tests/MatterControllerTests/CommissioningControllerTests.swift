@@ -188,6 +188,59 @@ struct CommissioningControllerTests {
         #expect(message.count > 0)
     }
 
+    private func locationCapabilityReport(_ value: UInt64) -> Data {
+        ReportData(
+            attributeReports: [AttributeReportIB(attributeData: AttributeDataIB(
+                path: AttributePath(
+                    endpointID: .root,
+                    clusterID: GeneralCommissioningCluster.id,
+                    attributeID: GeneralCommissioningCluster.Attribute.locationCapability
+                ),
+                data: .unsignedInt(value)
+            ))],
+            suppressResponse: true
+        ).tlvEncode()
+    }
+
+    @Test("SetRegulatoryConfig location follows the device's LocationCapability",
+          arguments: [
+            (UInt64(0), GeneralCommissioningCluster.RegulatoryLocationType.indoor),
+            (1, .outdoor),
+            (2, .indoorOutdoor),
+          ])
+    func locationFollowsCapability(capability: UInt64, expected: GeneralCommissioningCluster.RegulatoryLocationType) throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(try cc.handleLocationCapabilityResponse(locationCapabilityReport(capability)) == expected)
+    }
+
+    @Test("An IndoorOutdoor device gets the preferred location")
+    func indoorOutdoorUsesPreferred() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(try cc.handleLocationCapabilityResponse(locationCapabilityReport(2), preferred: .outdoor) == .outdoor)
+    }
+
+    @Test("An out-of-range LocationCapability fails commissioning")
+    func unknownCapabilityThrows() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(throws: ControllerError.self) {
+            try cc.handleLocationCapabilityResponse(locationCapabilityReport(3))
+        }
+        #expect(throws: ControllerError.self) {
+            try cc.handleLocationCapabilityResponse(locationCapabilityReport(0x1_00))
+        }
+    }
+
+    @Test("The LocationCapability read targets GeneralCommissioning on the root endpoint")
+    func readLocationCapabilityRequest() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let request = try ReadRequest.fromTLV(cc.buildReadLocationCapability())
+        #expect(request.attributeRequests == [AttributePath(
+            endpointID: .root,
+            clusterID: GeneralCommissioningCluster.id,
+            attributeID: GeneralCommissioningCluster.Attribute.locationCapability
+        )])
+    }
+
     @Test("Build CSR request produces valid invoke request")
     func buildCSRRequest() throws {
         let mgr = try makeFabricManager()
