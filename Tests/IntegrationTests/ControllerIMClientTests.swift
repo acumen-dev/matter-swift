@@ -108,8 +108,8 @@ struct ControllerIMClientTests {
                     switch event {
                     case .established: log.withLock { $0.append("established") }
                     case .lost(let reason):
-                        log.withLock { $0.append("lost") }
                         if first.value == nil { first.withLock { $0 = reason } }
+                        log.withLock { $0.append("lost") }
                     case .report: break
                     }
                 }
@@ -207,5 +207,45 @@ struct ControllerIMClientTests {
             throw error
         }
         await controller.stop(); await server.stop()
+    }
+
+    @Test("stop() cancels every subscription created by concurrent subscribe calls")
+    func concurrentSubscribesAreAllCancelledByStop() async throws {
+        let link = FaultInjectingLink(seed: 17)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let nodeID = device.nodeID
+            let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
+            // One already tracked, so concurrent calls have an entry to prune-check.
+            let first = try await controller.subscribe(nodeID: nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
+            var subscriptions = try await withThrowingTaskGroup(of: ControllerSubscription.self) { group in
+                for _ in 0..<4 {
+                    group.addTask {
+                        try await controller.subscribe(nodeID: nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
+                    }
+                }
+                var all: [ControllerSubscription] = []
+                for try await subscription in group { all.append(subscription) }
+                return all
+            }
+            subscriptions.append(first)
+            #expect(subscriptions.count == 5)
+            let finished = LockedValue(0)
+            let readers = subscriptions.map { subscription in
+                Task {
+                    for await _ in subscription.events {}
+                    finished.withLock { $0 += 1 }
+                }
+            }
+            await controller.stop()
+            #expect(try await waitUntil { finished.value == 5 }, "every subscription's events finishes")
+            readers.forEach { $0.cancel() }
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await server.stop()
     }
 }

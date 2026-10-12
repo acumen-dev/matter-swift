@@ -652,10 +652,15 @@ public actor MatterController {
             }
         )
         // Tracked before start() suspends, so a concurrent stop() cancels it.
-        var live: [ControllerSubscription] = []
-        for existing in subscriptions where !(await existing.isCancelled) { live.append(existing) }
+        // Prune cancelled entries by removal only: the array is re-read after
+        // every suspension, never rebuilt from a snapshot.
+        var cancelledIDs: Set<ObjectIdentifier> = []
+        for existing in subscriptions where await existing.isCancelled {
+            cancelledIDs.insert(ObjectIdentifier(existing))
+        }
+        subscriptions.removeAll { cancelledIDs.contains(ObjectIdentifier($0)) }
         guard !stopped else { throw MessagingError.stopped }
-        subscriptions = live + [subscription]
+        subscriptions.append(subscription)   // no suspension since the guard
         do {
             try await subscription.start()
         } catch {
