@@ -248,18 +248,14 @@ public struct MatterCertificate: Sendable, Equatable {
         }
     }
 
-    /// Encode a serial number as a DER integer.
+    /// Encode a serial number as the content of a DER INTEGER.
     ///
-    /// The CHIP SDK encodes certificate serial numbers as raw byte sequences
-    /// without the positive-integer 0x00 prefix that standard DER requires.
-    /// We match this behavior for interoperability.
+    /// The Matter-to-X.509 mapping (and the CHIP SDK) copies the serial's
+    /// octets into the INTEGER as they are: no leading zeros stripped, no
+    /// positive-integer 0x00 prefix added. The TBS must match what the
+    /// verifier rebuilds byte for byte, or the signature is invalid.
     private static func encodeSerialNumberDERInteger(_ bytes: Data) -> [UInt8] {
-        var b = [UInt8](bytes)
-        // Strip leading zeros (but keep at least one byte)
-        while b.count > 1 && b[0] == 0x00 { b.removeFirst() }
-        // Note: Matter/CHIP SDK does NOT add the 0x00 positive-integer prefix
-        // that standard DER requires. This matches chip-cert behavior.
-        return b
+        [UInt8](bytes)
     }
 
     // MARK: - TLV Decoding
@@ -1031,9 +1027,13 @@ extension MatterCertificate {
     }
 
     /// Generate a random serial number (20 bytes).
-    private static func generateSerialNumber() -> Data {
+    /// A random 20-byte serial whose first byte is 0x01...0x7F, so its
+    /// octets are also a minimal, positive DER INTEGER: any X.509 parser
+    /// reads the same TBS.
+    static func generateSerialNumber() -> Data {
         var bytes = [UInt8](repeating: 0, count: 20)
-        for i in 0..<20 { bytes[i] = UInt8.random(in: 0...255) }
+        bytes[0] = UInt8.random(in: 0x01...0x7F)
+        for i in 1..<20 { bytes[i] = UInt8.random(in: 0...255) }
         return Data(bytes)
     }
 

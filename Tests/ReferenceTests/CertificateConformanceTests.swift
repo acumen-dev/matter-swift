@@ -105,6 +105,56 @@ struct CertificateConformanceTests {
             "TBS mismatch:\n  ours:      \(ourTBS.hex)\n  chip-cert: \(chipCertTBS.hex)")
     }
 
+    /// Serial numbers are octets copied as-is into the DER TBS's INTEGER, by
+    /// chip-cert and by a CHIP device alike. A high first bit must not change
+    /// our TBS, or the device sees an invalid signature.
+    @Test("Our DER TBS matches chip-cert for serials chip-cert can convert", arguments: [
+        Data([0x80, 0x11, 0x22, 0x33]),
+        Data([0x00]),
+        Data([0x7F] + [UInt8](repeating: 0xAB, count: 19)),
+    ])
+    func tbsMatchesChipCertForSerial(_ serial: Data) throws {
+        guard let runner = ChipCertRunner.findBinary() else { return }
+        let rcac = try MatterCertificate.generateRCAC(
+            key: P256.Signing.PrivateKey(),
+            fabricID: FabricID(rawValue: 0x0000000000000001),
+            serialNumber: serial
+        )
+        let tlv = rcac.tlvEncode()
+        let chipCertTBS = try extractTBSFromDER(try runner.convertTLVtoDER(tlv))
+        #expect(try MatterCertificate.fromTLV(tlv).tbsData() == chipCertTBS,
+                "TBS mismatch for serial \(serial.hex)")
+    }
+
+    /// A serial with leading zero octets is not minimal DER, so chip-cert's
+    /// OpenSSL step refuses it; a CHIP device still verifies over the octets
+    /// as-is. Stripping them made chip-all-clusters-app reject our RCAC with
+    /// "Invalid signature" whenever the random serial began with 0x00.
+    @Test("A serial's leading zero octets are kept in the DER TBS")
+    func leadingZeroSerialKeptInTBS() throws {
+        let serial = Data([0x00, 0x00, 0x80, 0x01, 0x02])
+        let rcac = try MatterCertificate.generateRCAC(
+            key: P256.Signing.PrivateKey(),
+            fabricID: FabricID(rawValue: 0x0000000000000001),
+            serialNumber: serial
+        )
+        let tbs = try MatterCertificate.fromTLV(rcac.tlvEncode()).tbsData()
+        let expected = Data([0x02, UInt8(serial.count)]) + serial
+        #expect(tbs.range(of: expected) != nil, "serial INTEGER is not the raw octets: \(tbs.hex)")
+        #expect(rcac.verifySelfSigned())
+    }
+
+    /// Generated serials are also minimal positive DER INTEGERs, so every
+    /// X.509 parser (not only CHIP's raw-octet mapping) reads the same TBS.
+    @Test("Generated serials start with 0x01...0x7F")
+    func generatedSerialsAreMinimalPositive() {
+        for _ in 0..<2000 {
+            let serial = MatterCertificate.generateSerialNumber()
+            #expect(serial.count == 20)
+            #expect((0x01...0x7F).contains(serial.first!), "serial \(serial.hex)")
+        }
+    }
+
     // MARK: - Self-signed RCAC verification (our own implementation)
 
     @Test("Self-signed RCAC verifies with DER TBS")
