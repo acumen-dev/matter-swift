@@ -46,6 +46,7 @@ public actor ControllerSubscription {
     /// Highest event number delivered across every subscription this object has held.
     private var highestEventNumber: EventNumber?
     private var cancelled = false
+    private var monitor: Task<Void, Never>?
 
     init(
         nodeID: NodeID,
@@ -67,9 +68,10 @@ public actor ControllerSubscription {
     }
 
     /// Establish the first subscription. Throws if that fails; later
-    /// re-establishments are retried internally (Task 5).
+    /// re-establishments are retried internally by the liveness monitor.
     func start() async throws {
         try await establish()
+        startMonitor()
     }
 
     public func cancel() async {
@@ -80,10 +82,69 @@ public actor ControllerSubscription {
         let sessionID = currentSessionID
         currentSubscriptionID = nil
         currentSessionID = nil
+        monitor?.cancel()
+        monitor = nil
         continuation.finish()
         if let id, let sessionID {
             await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
             await client.remove(subscriptionID: id, peerNodeID: nodeID)
+        }
+    }
+
+    // MARK: - Liveness
+
+    /// Re-subscribe delay after `attempt` consecutive failures: 1 s doubling, capped at 300 s.
+    static func backoff(attempt: Int) -> Duration {
+        let seconds = attempt >= 9 ? 300 : min(300, 1 << max(0, attempt))
+        return .seconds(seconds)
+    }
+
+    /// Watch the current subscription's liveness; re-subscribe when it dies.
+    private func startMonitor() {
+        guard !cancelled else { return }
+        monitor?.cancel()
+        monitor = Task { [weak self] in
+            await self?.monitorLoop()
+        }
+    }
+
+    private func monitorLoop() async {
+        while !cancelled, !Task.isCancelled, let id = currentSubscriptionID, let sessionID = currentSessionID {
+            let record = await client.subscription(for: id, peerNodeID: nodeID)
+            guard !cancelled, currentSubscriptionID == id else { return }
+            guard let record else { return }
+            let deadline = record.livenessDeadline(margin: livenessMargin)
+            if messenger.clock.now < deadline {
+                do { try await messenger.clock.sleep(until: deadline) } catch { return }
+                continue
+            }
+            // Clear before any await so cancel() and the loop agree on what is held.
+            currentSubscriptionID = nil
+            currentSessionID = nil
+            continuation.yield(.lost("no report within \(record.negotiatedMaxInterval) s + margin"))
+            await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
+            await client.remove(subscriptionID: id, peerNodeID: nodeID)
+            await resubscribe()
+        }
+    }
+
+    private func resubscribe() async {
+        var attempt = 0
+        while !cancelled {
+            do {
+                try await messenger.clock.sleep(until: messenger.clock.now + Self.backoff(attempt: attempt))
+            } catch { return }
+            guard !cancelled else { return }
+            do {
+                try await establish()
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !cancelled else { return }
+                continuation.yield(.lost("re-subscribe failed: \(error)"))
+                attempt += 1
+            }
         }
     }
 

@@ -45,6 +45,12 @@ struct ControllerSubscriptionTests {
         return request
     }
 
+    /// Acknowledge the controller's StatusResponse so MRP does not retransmit it
+    /// when the manual clock advances.
+    private func ackStatus(_ status: PeerFrame, _ peer: TestPeer, _ rig: Rig) async throws {
+        try await peer.send(ScriptedPeer.securedReply(to: status, session: rig.peerSession, protocolID: .secureChannel, opcode: SecureChannelOpcode.standaloneAck.rawValue, reliable: false))
+    }
+
     @Test("Establishment answers each priming chunk, then registers before the exchange closes")
     func establishment() async throws {
         let rig = try await makeRig()
@@ -155,6 +161,74 @@ struct ControllerSubscriptionTests {
         let frame = try await peer.nextSecured(session: rig.peerSession)
         #expect(frame.exchangeHeader.exchangeID == 0x5002)
         #expect(frame.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue)
+        await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("Backoff doubles from 1 s and caps at 300 s")
+    func backoffSequence() {
+        let seconds = (0..<11).map { ControllerSubscription.backoff(attempt: $0) }
+        #expect(seconds == [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300].map { Duration.seconds($0) })
+    }
+
+    @Test("Silence past negotiated max interval + margin is declared lost; the re-subscribe asks only for new events")
+    func livenessAndResubscribe() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let lockOp = EventPath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0101), eventID: EventID(rawValue: 2))
+        let sub = makeSubscription(rig, request: SubscriptionRequest(attributePaths: [onOff], eventPaths: [lockOp], minInterval: 1, maxInterval: 10))
+        let started = Task { try await sub.start() }
+        _ = try await playEstablishment(&peer, rig, maxInterval: 10)
+        try await started.value
+        var iterator = sub.events.makeAsyncIterator()
+        _ = await iterator.next(); _ = await iterator.next(); _ = await iterator.next()
+
+        // An event arrives: high-water mark 12.
+        let report = ReportData(subscriptionID: id, eventReports: [EventReportIB(eventData: EventDataIB(path: lockOp, eventNumber: EventNumber(rawValue: 12), priority: .info, data: .structure([])))])
+        try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5002, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: report.tlvEncode()))
+        var status = try await peer.nextSecured(session: rig.peerSession)
+        if status.isStandaloneAck { status = try await peer.nextSecured(session: rig.peerSession) }
+        #expect(status.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue)
+        try await ackStatus(status, peer, rig)
+        _ = await iterator.next()
+
+        // Just short of the deadline (10 s + 5 s margin): still alive.
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(15)))
+        await rig.clock.advance(by: .seconds(14))
+        #expect(await sub.currentSubscriptionID == id)
+        // At it: lost.
+        await rig.clock.advance(by: .seconds(1))
+        guard case .lost? = await iterator.next() else { Issue.record("expected .lost"); return }
+
+        // First re-subscribe follows after backoff(0) = 1 s and carries eventMin 13.
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(1)))
+        await rig.clock.advance(by: .seconds(1))
+        let resubscribe = try await playEstablishment(&peer, rig, maxInterval: 10)
+        let decoded = try SubscribeRequest.fromTLV(resubscribe.payload)
+        #expect(decoded.eventFilters.map(\.eventMin) == [EventNumber(rawValue: 13)])
+        #expect(await iterator.next() == .established(id, negotiatedMaxInterval: 10))
+        await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("A report before the deadline keeps the subscription alive")
+    func reportExtendsLiveness() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let sub = makeSubscription(rig)
+        let started = Task { try await sub.start() }
+        _ = try await playEstablishment(&peer, rig, maxInterval: 10)
+        try await started.value
+        var iterator = sub.events.makeAsyncIterator()
+        _ = await iterator.next(); _ = await iterator.next(); _ = await iterator.next()
+
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(15)))
+        await rig.clock.advance(by: .seconds(12))
+        try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5003, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: ReportData(subscriptionID: id).tlvEncode()))
+        var status = try await peer.nextSecured(session: rig.peerSession)
+        if status.isStandaloneAck { status = try await peer.nextSecured(session: rig.peerSession) }
+        try await ackStatus(status, peer, rig)
+        _ = await iterator.next()
+        await rig.clock.advance(by: .seconds(12))   // 24 s after establishment, 12 s after the report
+        #expect(await sub.currentSubscriptionID == id, "the deadline moved with the report")
         await sub.cancel(); await rig.messenger.stop()
     }
 }
