@@ -173,6 +173,19 @@ public struct CommissioningController: Sendable {
         return (message, context)
     }
 
+    /// Build an ArmFailSafe invoke request with expiry 0, which disarms the
+    /// fail-safe and has the device revert everything staged under it.
+    public func buildDisarmFailSafe() -> Data {
+        IMClient.invokeCommandRequest(
+            endpointID: .root,
+            clusterID: GeneralCommissioningCluster.id,
+            commandID: GeneralCommissioningCluster.Command.armFailSafe,
+            commandFields: GeneralCommissioningCluster.ArmFailSafeRequest(
+                expiryLengthSeconds: 0, breadcrumb: 0
+            ).toTLVElement()
+        )
+    }
+
     /// Validate the ArmFailSafe response.
     public func handleArmFailSafeResponse(
         response: Data,

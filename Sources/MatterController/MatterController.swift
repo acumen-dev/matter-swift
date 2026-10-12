@@ -11,6 +11,11 @@ import MatterCrypto
 import MatterProtocol
 import MatterTransport
 
+/// A point in commissioning at which a test can inject a failure.
+enum CommissioningStep: Sendable {
+    case afterArmFailSafe, afterCSR, afterAddNOC, afterACLWrite
+}
+
 /// High-level Matter controller that orchestrates commissioning and
 /// operational device interaction.
 ///
@@ -88,7 +93,7 @@ public actor MatterController {
 
     // MARK: - Properties
 
-    private let fabricManager: FabricManager
+    let fabricManager: FabricManager
     private let commissioning: CommissioningController
     private let controllerSession: ControllerSession
     private let registry: DeviceRegistry
@@ -109,6 +114,16 @@ public actor MatterController {
     /// itself alive until cancelled, so ``stop()`` cancels each one.
     private var subscriptions: [ControllerSubscription] = []
     private var stopped = false
+
+    /// Test seam: called at each ``CommissioningStep`` point of
+    /// ``commission(address:setupCode:mrp:)``; a thrown error fails
+    /// commissioning there. Always nil in production.
+    var commissioningFailureInjection: (@Sendable (CommissioningStep) throws -> Void)?
+
+    /// Install (or clear) the commissioning failure-injection seam.
+    func setCommissioningFailureInjection(_ injection: (@Sendable (CommissioningStep) throws -> Void)?) {
+        commissioningFailureInjection = injection
+    }
 
     /// CASE establishments in flight, one per node: concurrent callers of
     /// ``session(for:)`` await the same handshake.
@@ -410,9 +425,51 @@ public actor MatterController {
     }
 
     /// Commissioning steps 2-7 over the established PASE session.
+    ///
+    /// Once ArmFailSafe has succeeded, any later failure disarms it on the
+    /// device (best effort), so the device reverts at once rather than after
+    /// the fail-safe expires, and returns the node ID it allocated. The
+    /// original error is rethrown.
     private func commissionOverPASE(
         session: SecureSession,
         context ctx3: CommissioningController.CommissioningContext
+    ) async throws -> CommissionedDevice {
+        var failSafeArmed = false
+        var allocatedNodeID: NodeID?
+        do {
+            return try await runCommissioningSteps(
+                session: session, context: ctx3,
+                failSafeArmed: &failSafeArmed, allocatedNodeID: &allocatedNodeID
+            )
+        } catch {
+            if let allocatedNodeID {
+                await fabricManager.releaseNodeID(allocatedNodeID)
+            }
+            if failSafeArmed {
+                await disarmFailSafe(sessionID: session.localSessionID)
+            }
+            throw error
+        }
+    }
+
+    /// Send ArmFailSafe(0) over the PASE session. Bounded by the per-exchange
+    /// timeout; a failure here is logged and swallowed.
+    private func disarmFailSafe(sessionID: UInt16) async {
+        do {
+            _ = try await imRequest(
+                sessionID: sessionID, opcode: .invokeRequest, payload: commissioning.buildDisarmFailSafe()
+            )
+            logger.info("Commissioning failed; fail-safe disarmed on the device")
+        } catch {
+            logger.warning("Commissioning failed and the fail-safe could not be disarmed: \(error)")
+        }
+    }
+
+    private func runCommissioningSteps(
+        session: SecureSession,
+        context ctx3: CommissioningController.CommissioningContext,
+        failSafeArmed: inout Bool,
+        allocatedNodeID: inout NodeID?
     ) async throws -> CommissionedDevice {
         let paseSessionID = session.localSessionID
 
@@ -422,6 +479,8 @@ public actor MatterController {
         let ctx5 = try commissioning.handleArmFailSafeResponse(
             response: armResp.payload, context: ctx4
         )
+        failSafeArmed = true
+        try commissioningFailureInjection?(.afterArmFailSafe)
 
         // Step 3: SetRegulatoryConfig
         let regMsg = commissioning.buildSetRegulatoryConfig(context: ctx5)
@@ -434,7 +493,9 @@ public actor MatterController {
         let (addRootMsg, addNOCMsg, deviceNodeID, ctx6) = try await commissioning.handleCSRResponse(
             response: csrResp.payload, expectedNonce: csrNonce, context: ctx5
         )
+        allocatedNodeID = deviceNodeID
         logger.debug("Device will be node \(deviceNodeID.rawValue)")
+        try commissioningFailureInjection?(.afterCSR)
 
         // Step 5: AddTrustedRootCert
         let addRootResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addRootMsg)
@@ -444,12 +505,14 @@ public actor MatterController {
         let addNOCResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addNOCMsg)
         var ctx7 = ctx6
         ctx7.deviceFabricIndex = try commissioning.handleNOCResponse(addNOCResp.payload)
+        try commissioningFailureInjection?(.afterAddNOC)
 
         // Step 6: ACL write
         let aclResp = try await imRequest(
             sessionID: paseSessionID, opcode: .writeRequest, payload: commissioning.buildACLWrite()
         )
         try commissioning.handleACLWriteResponse(aclResp.payload)
+        try commissioningFailureInjection?(.afterACLWrite)
 
         // Step 7: CommissioningComplete
         let completeMsg = commissioning.buildCommissioningComplete()
