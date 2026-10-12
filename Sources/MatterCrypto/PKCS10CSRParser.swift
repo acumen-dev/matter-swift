@@ -32,11 +32,10 @@ public struct PKCS10CSR: Sendable {
         let csr: CertificateSigningRequest
         do {
             csr = try CertificateSigningRequest(derEncoded: Array(der))
+        } catch let error as X509.CertificateError
+                    where error.code == .unsupportedPublicKeyAlgorithm || error.code == .unsupportedSignatureAlgorithm {
+            throw PKCS10CSRError.unsupportedAlgorithm
         } catch {
-            // CertificateError's code is not public API and the error arrives wrapped; its description names it.
-            if "\(error)".contains("unsupportedPublicKeyAlgorithm") {
-                throw PKCS10CSRError.unsupportedAlgorithm
-            }
             throw PKCS10CSRError.malformed("\(error)")
         }
         guard csr.signatureAlgorithm == .ecdsaWithSHA256,

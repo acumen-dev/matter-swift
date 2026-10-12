@@ -224,7 +224,12 @@ public struct CommissioningController: Sendable {
         _ response: Data,
         preferred: GeneralCommissioningCluster.RegulatoryLocationType = .indoorOutdoor
     ) throws -> GeneralCommissioningCluster.RegulatoryLocationType {
-        let value = try IMClient.parseReadResponse(response)
+        let value: TLVElement
+        do {
+            value = try IMClient.parseReadResponse(response)
+        } catch {
+            throw ControllerError.commissioningFailed("LocationCapability: \(error)")
+        }
         guard let raw = value.uintValue, raw <= UInt64(UInt8.max),
               let capability = GeneralCommissioningCluster.RegulatoryLocationType(rawValue: UInt8(raw)) else {
             throw ControllerError.commissioningFailed("LocationCapability: unexpected value \(value)")
@@ -235,7 +240,7 @@ public struct CommissioningController: Sendable {
     /// Build a SetRegulatoryConfig invoke request.
     public func buildSetRegulatoryConfig(
         context: CommissioningContext,
-        locationType: GeneralCommissioningCluster.RegulatoryLocationType = .indoorOutdoor,
+        locationType: GeneralCommissioningCluster.RegulatoryLocationType,
         countryCode: String = "XX"
     ) -> Data {
         let request = GeneralCommissioningCluster.SetRegulatoryConfigRequest(
@@ -402,7 +407,12 @@ public struct CommissioningController: Sendable {
         guard let element else {
             throw ControllerError.commissioningFailed("AddNOC failed: response carries no NOCResponse")
         }
-        let nocResp = try OperationalCredentialsCluster.NOCResponse.fromTLVElement(element)
+        let nocResp: OperationalCredentialsCluster.NOCResponse
+        do {
+            nocResp = try OperationalCredentialsCluster.NOCResponse.fromTLVElement(element)
+        } catch {
+            throw ControllerError.commissioningFailed("AddNOC failed: \(error)")
+        }
         guard nocResp.statusCode == .ok else {
             throw ControllerError.commissioningFailed(
                 "AddNOC failed: \(nocResp.statusCode) \(nocResp.debugText ?? "")"
