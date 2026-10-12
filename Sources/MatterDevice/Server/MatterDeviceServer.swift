@@ -1778,19 +1778,15 @@ public actor MatterDeviceServer {
 
     // MARK: - Fabric Removal
 
-    private func onFabricRemoved(_ fabricIndex: FabricIndex) {
-        // Remove CASE-ready fabric info, withdrawing its operational advertisement so
-        // controllers stop resolving a node that no longer exists.
+    private func onFabricRemoved(_ fabricIndex: FabricIndex) async {
+        // Remove CASE-ready fabric info. Its operational advertisement is withdrawn at the
+        // end, after the synchronous state updates, so the only suspension point comes last.
+        var withdrawnInstanceName: String?
         if let fabricInfo = committedFabrics.removeValue(forKey: fabricIndex) {
-            let instanceName = OperationalInstanceName(
+            withdrawnInstanceName = OperationalInstanceName(
                 compressedFabricID: fabricInfo.compressedFabricID(),
                 nodeID: fabricInfo.nodeID.rawValue
             ).instanceName
-            let discovery = self.discovery
-            Task {
-                await discovery.stopAdvertising(name: instanceName)
-            }
-            logger.info("Fabric \(fabricIndex) removed: withdrew operational advertisement \(instanceName)")
         }
 
         // Keep CommissionedFabrics in step on every removal path, not just the RemoveFabric command.
@@ -1813,6 +1809,12 @@ public actor MatterDeviceServer {
         }
 
         logger.info("Fabric \(fabricIndex) removed, \(sessionsToRemove.count) sessions closed")
+
+        // Withdraw the advertisement so controllers stop resolving a node that no longer exists.
+        if let instanceName = withdrawnInstanceName {
+            await discovery.stopAdvertising(name: instanceName)
+            logger.info("Fabric \(fabricIndex) removed: withdrew operational advertisement \(instanceName)")
+        }
     }
 
     // MARK: - Commissioning Window Management

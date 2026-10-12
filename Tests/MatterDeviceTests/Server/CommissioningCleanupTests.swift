@@ -45,8 +45,11 @@ struct CommissioningCleanupTests {
         return (server, discovery)
     }
 
+    /// Poll until `condition` holds. The ceiling is a hang guard, not a latency budget:
+    /// passing runs return as soon as the condition is true, and loaded CI runners can
+    /// take several seconds to schedule the server's callback tasks.
     private func waitUntil(
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(30),
         _ condition: () async -> Bool
     ) async throws {
         let deadline = ContinuousClock.now + timeout
