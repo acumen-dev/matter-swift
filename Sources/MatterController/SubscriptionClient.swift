@@ -14,8 +14,9 @@ public struct SubscriptionRequest: Sendable, Equatable {
     /// Maximum reporting interval ceiling requested, in seconds. The device may
     /// grant a longer interval (an ICD often does); liveness uses the granted one.
     public var maxInterval: UInt16
-    /// The first event number wanted — a persisted high-water mark + 1 — so a
-    /// new subscription does not replay events already delivered.
+    /// The first event number to request. Callers pass a persisted high-water
+    /// mark + 1 so a new subscription does not replay events already delivered;
+    /// `nil` requests whatever the device holds.
     public var eventMin: EventNumber?
     public var isFabricFiltered: Bool
 
@@ -43,6 +44,18 @@ public struct SubscriptionReport: Sendable, Equatable {
     public let moreChunkedMessages: Bool
     /// The device does not want a `StatusResponse` for this report.
     public let suppressResponse: Bool
+
+    public init(
+        attributes: [AttributeReportIB],
+        events: [EventReportIB],
+        moreChunkedMessages: Bool = false,
+        suppressResponse: Bool = false
+    ) {
+        self.attributes = attributes
+        self.events = events
+        self.moreChunkedMessages = moreChunkedMessages
+        self.suppressResponse = suppressResponse
+    }
 }
 
 /// A client-side subscription record.
@@ -57,6 +70,24 @@ public struct ClientSubscription: Sendable, Equatable {
     /// The highest event number delivered on this subscription.
     public var highestEventNumber: EventNumber?
 
+    public init(
+        subscriptionID: SubscriptionID,
+        peerNodeID: NodeID,
+        request: SubscriptionRequest,
+        negotiatedMaxInterval: UInt16,
+        establishedAt: ContinuousClock.Instant,
+        lastReportAt: ContinuousClock.Instant,
+        highestEventNumber: EventNumber? = nil
+    ) {
+        self.subscriptionID = subscriptionID
+        self.peerNodeID = peerNodeID
+        self.request = request
+        self.negotiatedMaxInterval = negotiatedMaxInterval
+        self.establishedAt = establishedAt
+        self.lastReportAt = lastReportAt
+        self.highestEventNumber = highestEventNumber
+    }
+
     /// When the subscription is dead if no report has arrived: the last report
     /// plus the **negotiated** max interval plus `margin` (the MRP exhaustion
     /// horizon for the peer, so a report still being retransmitted is not
@@ -69,22 +100,30 @@ public struct ClientSubscription: Sendable, Equatable {
 /// Bookkeeping for the controller's subscriptions: builds requests, registers
 /// the device's `SubscribeResponse`, and records reports (attributes, events,
 /// the event high-water mark and the last-report time).
+///
+/// Subscription IDs are assigned by each device, so records are keyed by the
+/// pair (peer node, subscription ID).
 public actor SubscriptionClient {
 
-    private var subscriptions: [SubscriptionID: ClientSubscription] = [:]
+    private struct Key: Hashable, Sendable {
+        let peerNodeID: NodeID
+        let subscriptionID: SubscriptionID
+    }
+
+    private var subscriptions: [Key: ClientSubscription] = [:]
 
     public init() {}
 
-    /// Encode a `SubscribeRequest`. `eventMin` becomes the event filter; pass
-    /// `nil` to receive whatever the device holds.
-    public nonisolated func subscribeRequest(for request: SubscriptionRequest, eventMin: EventNumber?) -> Data {
+    /// Encode a `SubscribeRequest` from `request`. Its `eventMin`, when set,
+    /// becomes the event filter; when `nil`, no filter is sent.
+    public nonisolated func subscribeRequest(for request: SubscriptionRequest) -> Data {
         SubscribeRequest(
             keepSubscriptions: true,
             minIntervalFloor: request.minInterval,
             maxIntervalCeiling: request.maxInterval,
             attributeRequests: request.attributePaths,
             eventRequests: request.eventPaths,
-            eventFilters: eventMin.map { [EventFilterIB(nodeID: nil, eventMin: $0)] } ?? [],
+            eventFilters: request.eventMin.map { [EventFilterIB(nodeID: nil, eventMin: $0)] } ?? [],
             isFabricFiltered: request.isFabricFiltered
         ).tlvEncode()
     }
@@ -103,24 +142,27 @@ public actor SubscriptionClient {
             request: request,
             negotiatedMaxInterval: response.maxInterval,
             establishedAt: now,
-            lastReportAt: now,
-            highestEventNumber: nil
+            lastReportAt: now
         )
-        subscriptions[response.subscriptionID] = subscription
+        subscriptions[Key(peerNodeID: peerNodeID, subscriptionID: response.subscriptionID)] = subscription
         return subscription
     }
 
-    /// Parse a `ReportData`. If it names a known subscription, update that
-    /// subscription's last-report time and event high-water mark.
-    public func record(reportData: Data, at now: ContinuousClock.Instant) throws -> SubscriptionReport {
+    /// Parse a `ReportData` received from `peerNodeID`. If it names a subscription
+    /// registered with that peer, update that record's last-report time and event
+    /// high-water mark. The mark never moves backwards.
+    public func record(reportData: Data, from peerNodeID: NodeID, at now: ContinuousClock.Instant) throws -> SubscriptionReport {
         let report = try ReportData.fromTLV(reportData)
-        if let id = report.subscriptionID, var subscription = subscriptions[id] {
-            subscription.lastReportAt = now
-            let numbers = report.eventReports.compactMap { $0.eventData?.eventNumber }
-            if let highest = numbers.max() {
-                subscription.highestEventNumber = max(subscription.highestEventNumber ?? highest, highest)
+        if let id = report.subscriptionID {
+            let key = Key(peerNodeID: peerNodeID, subscriptionID: id)
+            if var subscription = subscriptions[key] {
+                subscription.lastReportAt = now
+                let numbers = report.eventReports.compactMap { $0.eventData?.eventNumber }
+                if let highest = numbers.max() {
+                    subscription.highestEventNumber = max(subscription.highestEventNumber ?? highest, highest)
+                }
+                subscriptions[key] = subscription
             }
-            subscriptions[id] = subscription
         }
         return SubscriptionReport(
             attributes: report.attributeReports,
@@ -130,12 +172,12 @@ public actor SubscriptionClient {
         )
     }
 
-    public func subscription(for id: SubscriptionID) -> ClientSubscription? {
-        subscriptions[id]
+    public func subscription(for id: SubscriptionID, peerNodeID: NodeID) -> ClientSubscription? {
+        subscriptions[Key(peerNodeID: peerNodeID, subscriptionID: id)]
     }
 
-    public func remove(subscriptionID: SubscriptionID) {
-        subscriptions.removeValue(forKey: subscriptionID)
+    public func remove(subscriptionID: SubscriptionID, peerNodeID: NodeID) {
+        subscriptions.removeValue(forKey: Key(peerNodeID: peerNodeID, subscriptionID: subscriptionID))
     }
 
     public var activeSubscriptions: [ClientSubscription] {
