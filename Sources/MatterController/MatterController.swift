@@ -578,24 +578,32 @@ public actor MatterController {
     /// if the device stops acknowledging, the call fails with
     /// `ControllerError.peerUnreachable` and the command may or may not have
     /// executed — exactly once at most, never twice.
+    ///
+    /// Pass `timedTimeout` for commands that require a timed interaction
+    /// (DoorLock Lock/Unlock, AdministratorCommissioning window commands); the
+    /// controller then sends `TimedRequest` first, on the same exchange.
     public func invokeCommand(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         commandID: CommandID,
-        commandFields: TLVElement? = nil
+        commandFields: TLVElement? = nil,
+        timedTimeout: Duration? = nil
     ) async throws -> TLVElement? {
         try await withSession(nodeID: nodeID) { session in
-            let response = try await self.imRequest(
-                sessionID: session.localSessionID,
-                opcode: .invokeRequest,
-                payload: IMClient.invokeCommandRequest(
-                    endpointID: endpointID,
-                    clusterID: clusterID,
-                    commandID: commandID,
-                    commandFields: commandFields
-                )
+            let payload = IMClient.invokeCommandRequest(
+                endpointID: endpointID,
+                clusterID: clusterID,
+                commandID: commandID,
+                commandFields: commandFields,
+                timedRequest: timedTimeout != nil
             )
+            let response: InboundMessage
+            if let timedTimeout {
+                response = try await self.timedInvoke(sessionID: session.localSessionID, timeout: timedTimeout, payload: payload)
+            } else {
+                response = try await self.imRequest(sessionID: session.localSessionID, opcode: .invokeRequest, payload: payload)
+            }
             return try IMClient.parseInvokeResponse(response.payload)
         }
     }
@@ -675,6 +683,43 @@ public actor MatterController {
             if response.opcode == InteractionModelOpcode.statusResponse.rawValue {
                 let status = try IMStatusResponse.fromTLV(response.payload)
                 throw ControllerError.imStatus(status.status)
+            }
+            return response
+        } catch {
+            await exchange.close()
+            throw error
+        }
+    }
+
+    /// Run a timed invoke: `TimedRequest`, then the `InvokeRequest`, on **one**
+    /// exchange (the device keys its timed-interaction window by exchange).
+    /// A refused `TimedRequest` fails the call and the invoke is never sent.
+    func timedInvoke(sessionID: UInt16, timeout: Duration, payload: Data) async throws -> InboundMessage {
+        let exchange = try await messenger.openExchange(sessionID: sessionID)
+        do {
+            let timedStatus = try await exchange.request(
+                protocolID: .interactionModel,
+                opcode: InteractionModelOpcode.timedRequest.rawValue,
+                payload: IMClient.timedRequest(timeout: timeout),
+                timeout: configuration.operationTimeout
+            )
+            guard timedStatus.protocolID == MatterProtocolID.interactionModel.rawValue,
+                  timedStatus.opcode == InteractionModelOpcode.statusResponse.rawValue else {
+                throw MessagingError.unexpectedProtocol(protocolID: timedStatus.protocolID, opcode: timedStatus.opcode)
+            }
+            let status = try IMStatusResponse.fromTLV(timedStatus.payload)
+            guard status.status == IMStatusResponse.success.status else {
+                throw ControllerError.imStatus(status.status)
+            }
+            let response = try await exchange.request(
+                protocolID: .interactionModel,
+                opcode: InteractionModelOpcode.invokeRequest.rawValue,
+                payload: payload,
+                timeout: configuration.operationTimeout
+            )
+            await exchange.close()
+            if response.opcode == InteractionModelOpcode.statusResponse.rawValue {
+                throw ControllerError.imStatus(try IMStatusResponse.fromTLV(response.payload).status)
             }
             return response
         } catch {

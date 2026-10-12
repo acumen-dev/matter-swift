@@ -16,18 +16,6 @@ import MatterTestSupport
 @Suite("Controller over a faulty link", .serialized, .timeLimit(.minutes(3)))
 struct FaultyLinkTests {
 
-    static let passcode: UInt32 = 20202021
-
-    /// Short intervals keep lossy runs quick (values are illustrative, not
-    /// spec). With 4 retransmissions a silent peer exhausts after ≈ 3.5–4.3 s,
-    /// comfortably above a debug build's handshake processing time, even
-    /// under linux/amd64 emulation.
-    static let fast = MRPParameters(
-        sessionIdleInterval: .milliseconds(200),
-        sessionActiveInterval: .milliseconds(200),
-        sessionActiveThreshold: .milliseconds(4000)
-    )
-
     @Test("Commission, read and toggle over a 20 % lossy link; the toggle executes exactly once")
     func lossyLink() async throws {
         let link = FaultInjectingLink(seed: 0x5EED)
@@ -41,8 +29,8 @@ struct FaultyLinkTests {
         link.setDropProbability(0.2, from: .b)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode, mrp: Self.fast)
-            #expect(device.mrpParameters == Self.fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            #expect(device.mrpParameters == fast)
 
             // PASE ran with an ephemeral initiator node ID as Source, and the
             // device server answered it as Destination.
@@ -86,14 +74,14 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
             _ = try await controller.readAttribute(
                 nodeID: device.nodeID, endpointID: light.endpointID,
                 clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
             )
             // With a CASE session cached, so the live session is updated in place.
-            await controller.setMRPParameters(Self.fast, for: device.nodeID)
-            #expect(await controller.device(for: device.nodeID)?.mrpParameters == Self.fast)
+            await controller.setMRPParameters(fast, for: device.nodeID)
+            #expect(await controller.device(for: device.nodeID)?.mrpParameters == fast)
 
             // The device still receives and executes, but every reply is lost.
             link.setDropProbability(1, from: .b)
@@ -139,7 +127,7 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
             let sentBefore = link.sent(from: .a).count
 
             // Overlapping reads and one invoke, all issued before any CASE session exists.
@@ -192,7 +180,7 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
             let sentBefore = link.sent(from: .a).count
 
             // Hold the handshake: the device's replies are lost until released.
@@ -245,7 +233,7 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
             let sentBefore = link.sent(from: .a).count
 
             // Hold the handshake: the device's replies are lost until released.
@@ -298,7 +286,7 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
             let stale = try await controller.session(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
@@ -335,13 +323,13 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: Self.passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
             let session = try await controller.session(for: device.nodeID)
             let scope = SessionScope.secured(localSessionID: session.localSessionID)
             #expect(await controller.messenger.parameters(for: scope) == nil)
 
-            await controller.setMRPParameters(Self.fast, for: device.nodeID)
-            #expect(await controller.messenger.parameters(for: scope) == Self.fast)
+            await controller.setMRPParameters(fast, for: device.nodeID)
+            #expect(await controller.messenger.parameters(for: scope) == fast)
 
             await controller.setMRPParameters(nil, for: device.nodeID)
             #expect(await controller.messenger.parameters(for: scope) == nil)
@@ -375,52 +363,4 @@ struct FaultyLinkTests {
         }
         return false
     }
-
-    private func startServer(on link: FaultInjectingLink, toggles: LockedValue<Int>) async throws -> (MatterDeviceServer, BridgedEndpoint) {
-        let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Faulty Light", onOffChanged: { _ in
-            toggles.withLock { $0 += 1 }
-        })
-        let server = MatterDeviceServer(
-            bridge: bridge,
-            transport: link.b,
-            discovery: FaultyLinkDiscovery(),
-            config: .init(
-                discriminator: 3840,
-                passcode: Self.passcode,
-                port: 5540,
-                salt: Data(repeating: 0xAB, count: 32),
-                iterations: 1000
-            )
-        )
-        try await server.start()
-        return (server, light)
-    }
-
-    private func makeController(on link: FaultInjectingLink, maxRetransmissions: Int) throws -> MatterController {
-        try MatterController(
-            transport: link.a,
-            discovery: FaultyLinkDiscovery(),
-            configuration: .init(
-                fabricID: FabricID(rawValue: 1),
-                mrp: MRPConfig(maxRetransmissions: maxRetransmissions)
-            )
-        )
-    }
-}
-
-/// Discovery is not exercised: the link carries addresses directly.
-private struct FaultyLinkDiscovery: MatterDiscovery {
-    func advertise(service: MatterServiceRecord) async throws {}
-    func browse(serviceType: ServiceType) -> AsyncStream<MatterServiceRecord> {
-        AsyncStream { $0.finish() }
-    }
-    func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
-        throw FaultyLinkDiscoveryError.notAvailable
-    }
-    func stopAdvertising() async {}
-}
-
-private enum FaultyLinkDiscoveryError: Error {
-    case notAvailable
 }
