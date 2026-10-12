@@ -232,18 +232,22 @@ public struct CommissioningController: Sendable {
     // MARK: - Step 6: CSR Request
 
     /// Build a CSRRequest invoke request.
-    public func buildCSRRequest() -> Data {
+    ///
+    /// - Returns: the request message and the CSRNonce it carries; pass the nonce
+    ///   to ``handleCSRResponse(response:expectedNonce:context:)`` to check the echo.
+    public func buildCSRRequest() -> (message: Data, nonce: Data) {
         var csrNonce = Data(count: 32)
         for i in 0..<32 { csrNonce[i] = UInt8.random(in: 0...255) }
 
         let request = OperationalCredentialsCluster.CSRRequest(csrNonce: csrNonce)
 
-        return IMClient.invokeCommandRequest(
+        let message = IMClient.invokeCommandRequest(
             endpointID: .root,
             clusterID: ClusterID(rawValue: 0x003E), // OperationalCredentials
             commandID: OperationalCredentialsCluster.Command.csrRequest,
             commandFields: request.toTLVElement()
         )
+        return (message, csrNonce)
     }
 
     /// Parse CSR response and extract the device's operational public key.
@@ -252,11 +256,11 @@ public struct CommissioningController: Sendable {
     /// - Tag 1: NOCSR (the CSR itself, DER-encoded PKCS#10)
     /// - Tag 2: CSRNonce (echo of our nonce)
     ///
-    /// For now, we extract the public key from the NOCSR raw bytes.
-    /// The NOCSR in Matter is a DER-encoded PKCS#10 CSR containing
-    /// the device's P-256 public key.
+    /// The echoed CSRNonce must equal `expectedNonce`, and the CSR's self-signature
+    /// must verify; the device key is read from its SubjectPublicKeyInfo.
     public func handleCSRResponse(
         response: Data,
+        expectedNonce: Data,
         context: CommissioningContext
     ) async throws -> (addRootCertMessage: Data, addNOCMessage: Data, deviceNodeID: NodeID, context: CommissioningContext) {
         let responseElement = try IMClient.parseInvokeResponse(response)
@@ -274,9 +278,17 @@ public struct CommissioningController: Sendable {
             throw ControllerError.invalidCSRResponse
         }
 
-        // Extract public key from the DER-encoded CSR
-        // The P-256 public key (65 bytes uncompressed) is near the end of the CSR
-        let publicKey = try extractPublicKeyFromCSR(csrData)
+        guard let echoedNonce = nocsrFields.first(where: { $0.tag == .contextSpecific(2) })?.value.dataValue,
+              echoedNonce == expectedNonce else {
+            throw ControllerError.commissioningFailed("CSR nonce mismatch")
+        }
+
+        let publicKey: P256.Signing.PublicKey
+        do {
+            publicKey = try PKCS10CSR(der: csrData).publicKey
+        } catch {
+            throw ControllerError.commissioningFailed("Invalid CSR: \(error)")
+        }
 
         // Allocate a node ID for the device
         let deviceNodeID = await fabricManager.allocateNodeID()
@@ -579,31 +591,5 @@ public struct CommissioningController: Sendable {
             }
         }
         throw ControllerError.attestationValidationFailed("Could not extract P-256 public key from DER certificate")
-    }
-
-    // MARK: - CSR Parsing
-
-    /// Extract the P-256 public key from a DER-encoded PKCS#10 CSR.
-    ///
-    /// In a Matter CSR, the subject public key is a P-256 uncompressed point
-    /// (65 bytes starting with 0x04). We search for this pattern in the DER data.
-    private func extractPublicKeyFromCSR(_ csrData: Data) throws -> P256.Signing.PublicKey {
-        // Look for the uncompressed point marker (0x04) followed by 64 bytes
-        // in the DER structure. The public key is the BIT STRING value in the
-        // SubjectPublicKeyInfo ASN.1 structure.
-        //
-        // For P-256, the BIT STRING content is:
-        // 0x00 (unused bits) + 0x04 (uncompressed) + 32 bytes X + 32 bytes Y
-        for i in 0..<csrData.count {
-            if csrData[csrData.startIndex + i] == 0x04 && i + 64 < csrData.count {
-                let pubKeyData = csrData[(csrData.startIndex + i)..<(csrData.startIndex + i + 65)]
-                do {
-                    return try P256.Signing.PublicKey(x963Representation: pubKeyData)
-                } catch {
-                    continue // Not a valid key, keep searching
-                }
-            }
-        }
-        throw ControllerError.invalidCSRResponse
     }
 }

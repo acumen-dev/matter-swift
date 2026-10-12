@@ -193,8 +193,9 @@ struct CommissioningControllerTests {
         let mgr = try makeFabricManager()
         let cc = CommissioningController(fabricManager: mgr)
 
-        let message = cc.buildCSRRequest()
+        let (message, nonce) = cc.buildCSRRequest()
         #expect(message.count > 0)
+        #expect(nonce.count == 32)
     }
 
     @Test("Build CommissioningComplete produces valid invoke request")
@@ -269,6 +270,72 @@ struct CommissioningControllerTests {
                 commandFields: resp.toTLVElement()
             ))
         ]).tlvEncode()
+    }
+
+    private func csrResponse(csr: Data, nonce: Data) -> Data {
+        let elements = TLVEncoder.encode(
+            .structure([
+                .init(tag: .contextSpecific(1), value: .octetString(csr)),
+                .init(tag: .contextSpecific(2), value: .octetString(nonce))
+            ])
+        )
+        let resp = OperationalCredentialsCluster.CSRResponse(
+            nocsrElements: elements, attestationSignature: Data(count: 64)
+        )
+        return InvokeResponse(invokeResponses: [
+            InvokeResponseIB(command: CommandDataIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: ClusterID(rawValue: 0x003E),
+                    commandID: CommandID(rawValue: 0x05)
+                ),
+                commandFields: resp.toTLVElement()
+            ))
+        ]).tlvEncode()
+    }
+
+    @Test("CSR response: matching nonce and valid CSR yields a NOC for the CSR's key")
+    func csrResponseAccepted() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let nonce = Data((0..<32).map { UInt8($0) })
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let result = try await cc.handleCSRResponse(
+            response: csrResponse(csr: csr, nonce: nonce),
+            expectedNonce: nonce,
+            context: CommissioningController.CommissioningContext()
+        )
+        #expect(result.addNOCMessage.count > 0)
+    }
+
+    @Test("CSR response: nonce mismatch is rejected")
+    func csrResponseNonceMismatch() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let sent = Data(repeating: 1, count: 32)
+        let echoed = Data(repeating: 2, count: 32)
+        await #expect(throws: ControllerError.commissioningFailed("CSR nonce mismatch")) {
+            _ = try await cc.handleCSRResponse(
+                response: csrResponse(csr: csr, nonce: echoed),
+                expectedNonce: sent,
+                context: CommissioningController.CommissioningContext()
+            )
+        }
+    }
+
+    @Test("CSR response: a CSR with a bad signature is rejected")
+    func csrResponseBadSignature() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        var csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let range = try #require(csr.range(of: Data("Matter".utf8)))
+        csr[range.lowerBound] ^= 0x01
+        let nonce = Data(repeating: 7, count: 32)
+        await #expect(throws: ControllerError.self) {
+            _ = try await cc.handleCSRResponse(
+                response: csrResponse(csr: csr, nonce: nonce),
+                expectedNonce: nonce,
+                context: CommissioningController.CommissioningContext()
+            )
+        }
     }
 
     @Test("AddTrustedRootCert: success passes, failure throws")

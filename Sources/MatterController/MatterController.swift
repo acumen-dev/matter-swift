@@ -429,10 +429,10 @@ public actor MatterController {
         try commissioning.handleSetRegulatoryConfigResponse(response: regResp.payload)
 
         // Step 4: CSRRequest
-        let csrMsg = commissioning.buildCSRRequest()
+        let (csrMsg, csrNonce) = commissioning.buildCSRRequest()
         let csrResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: csrMsg)
         let (addRootMsg, addNOCMsg, deviceNodeID, ctx6) = try await commissioning.handleCSRResponse(
-            response: csrResp.payload, context: ctx5
+            response: csrResp.payload, expectedNonce: csrNonce, context: ctx5
         )
         logger.debug("Device will be node \(deviceNodeID.rawValue)")
 
