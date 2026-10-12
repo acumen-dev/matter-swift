@@ -420,8 +420,10 @@ public actor MatterController {
         device.mrpParameters = mrp
 
         // The CASE session CommissioningComplete went over is the node's
-        // operational session; then register the device.
+        // operational session; then register the device. Its ID stayed
+        // reserved until now; once cached, the session keeps it in use.
         sessionCache.store(caseSession, for: device.nodeID)
+        sessionCache.releaseSessionID(caseSession.localSessionID)
         await registry.register(device)
 
         // Persist controller state
@@ -441,7 +443,10 @@ public actor MatterController {
     /// the node ID it allocated. A CASE session already registered is torn
     /// down. The original error is rethrown.
     ///
-    /// - Returns: the device and its registered (not yet cached) CASE session.
+    /// - Returns: the device and its registered (not yet cached) CASE session,
+    ///   whose local session ID is still reserved: the caller releases it
+    ///   once the session is cached. On failure the reservation is released
+    ///   here, after the CASE session is unregistered.
     private func commissionOverPASE(
         session: SecureSession,
         context ctx3: CommissioningController.CommissioningContext,
@@ -451,25 +456,35 @@ public actor MatterController {
         var failSafeArmed = false
         var allocatedNodeID: NodeID?
         var completeSent = false
+        var caseReservation: UInt16?
         var caseSession: SecureSession?
         do {
             return try await runCommissioningSteps(
                 session: session, context: ctx3, address: address, mrp: mrp,
                 failSafeArmed: &failSafeArmed, allocatedNodeID: &allocatedNodeID,
-                completeSent: &completeSent, caseSession: &caseSession
+                completeSent: &completeSent, caseReservation: &caseReservation,
+                caseSession: &caseSession
             )
         } catch {
             // Once CommissioningComplete has gone out the device may have
             // committed with this node ID; reusing it would give two devices
-            // one identity.
-            if let allocatedNodeID, !completeSent {
-                await fabricManager.releaseNodeID(allocatedNodeID)
+            // one identity, so it stays consumed, and persisted so a restart
+            // does not hand it out again.
+            if let allocatedNodeID {
+                if completeSent {
+                    await saveState()
+                } else {
+                    await fabricManager.releaseNodeID(allocatedNodeID)
+                }
             }
             if failSafeArmed {
                 await disarmFailSafe(sessionID: session.localSessionID)
             }
             if let caseSession {
                 await messenger.unregisterSession(localSessionID: caseSession.localSessionID)
+            }
+            if let caseReservation {
+                sessionCache.releaseSessionID(caseReservation)
             }
             throw error
         }
@@ -496,6 +511,7 @@ public actor MatterController {
         failSafeArmed: inout Bool,
         allocatedNodeID: inout NodeID?,
         completeSent: inout Bool,
+        caseReservation: inout UInt16?,
         caseSession: inout SecureSession?
     ) async throws -> (CommissionedDevice, SecureSession) {
         let paseSessionID = session.localSessionID
@@ -558,11 +574,12 @@ public actor MatterController {
         // Step 7: CASE to the device on the new fabric. A real device
         // (connectedhomeip) refuses CommissioningComplete over PASE with
         // InvalidAuthentication ("invalid security context").
+        // Reserved until the session is cached (by the caller) or
+        // unregistered (on failure): see commissionOverPASE.
         guard let caseSessionID = await reserveSessionID() else {
             throw ControllerError.caseSessionFailed("No free local session ID")
         }
-        // Released once registered: the messenger then holds the ID.
-        defer { sessionCache.releaseSessionID(caseSessionID) }
+        caseReservation = caseSessionID
         let established = try await caseHandshake(
             nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID
         )

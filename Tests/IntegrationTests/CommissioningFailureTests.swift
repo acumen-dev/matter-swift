@@ -83,18 +83,12 @@ struct CommissioningFailureTests {
         Self.dropDeviceReplies(on: link) { state.isFailSafeArmed }
 
         do {
-            do {
-                _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
-                Issue.record("commission should have thrown")
-            } catch {}
-            let disarmed = await Self.poll { !state.isFailSafeArmed }
-            #expect(disarmed, "the device must be disarmed without waiting for its expiry")
-            #expect(state.fabrics.isEmpty)
-        } catch {
-            await controller.stop()
-            await server.stop()
-            throw error
-        }
+            _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            Issue.record("commission should have thrown")
+        } catch {}
+        let disarmed = await Self.poll { !state.isFailSafeArmed }
+        #expect(disarmed, "the device must be disarmed without waiting for its expiry")
+        #expect(state.fabrics.isEmpty)
         await controller.stop()
         await server.stop()
     }
@@ -106,23 +100,26 @@ struct CommissioningFailureTests {
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
         let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
-        let controller = try makeController(on: link, maxRetransmissions: 3)
+        let store = InMemoryControllerStore()
+        let controller = try MatterController(
+            transport: link.a,
+            discovery: FaultyLinkDiscovery(),
+            configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: 3)),
+            store: store
+        )
         let state = bridge.commissioningState
         Self.dropDeviceReplies(on: link) { !state.fabrics.isEmpty }
 
+        let expectedNodeID = await controller.nextNodeID
         do {
-            let expectedNodeID = await controller.nextNodeID
-            do {
-                _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
-                Issue.record("commission should have thrown")
-            } catch {}
-            #expect(!state.fabrics.isEmpty, "the device committed")
-            #expect(await controller.nextNodeID == expectedNodeID + 1, "the committed node ID must not be reused")
-        } catch {
-            await controller.stop()
-            await server.stop()
-            throw error
-        }
+            _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            Issue.record("commission should have thrown")
+        } catch {}
+        #expect(!state.fabrics.isEmpty, "the device committed")
+        #expect(await controller.nextNodeID == expectedNodeID + 1, "the committed node ID must not be reused")
+        let persisted = try await store.load()?.nextNodeID
+        #expect(persisted == expectedNodeID + 1,
+                "the kept node ID must be persisted, or a restarted controller would reuse it")
         await controller.stop()
         await server.stop()
     }
