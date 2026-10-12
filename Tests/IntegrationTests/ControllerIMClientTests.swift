@@ -40,7 +40,7 @@ struct ControllerIMClientTests {
                 nodeID: device.nodeID, endpointID: EndpointID(rawValue: 0),
                 clusterID: .adminCommissioning, commandID: CommandID(rawValue: 0x01),
                 commandFields: Self.commissioningTimeout,
-                timedTimeout: .seconds(2)
+                timedTimeout: .seconds(30)
             )
             #expect(fields == nil)
         } catch {

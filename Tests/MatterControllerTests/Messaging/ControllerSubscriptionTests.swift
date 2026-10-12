@@ -122,14 +122,40 @@ struct ControllerSubscriptionTests {
         try await started.value
         var iterator = sub.events.makeAsyncIterator()
         _ = await iterator.next(); _ = await iterator.next(); _ = await iterator.next()
-        let sentBefore = rig.link.sent(from: .a).count
         try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5001, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: ReportData(subscriptionID: id, suppressResponse: true).tlvEncode()))
         guard case .report(let delivered)? = await iterator.next() else { Issue.record("expected the report"); return }
         #expect(delivered.suppressResponse)
-        let statusSent = rig.link.sent(from: .a).dropFirst(sentBefore).compactMap { try? ScriptedPeer.decodeSecured($0, session: rig.peerSession) }
-            .contains { $0.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue }
-        #expect(!statusSent)
+        // A following ordinary report is answered; the first frame the peer reads
+        // after that is its StatusResponse, so none was sent for 0x5001.
+        try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5002, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: ReportData(subscriptionID: id).tlvEncode()))
+        var frame = try await peer.nextSecured(session: rig.peerSession)
+        while frame.isStandaloneAck { frame = try await peer.nextSecured(session: rig.peerSession) }
+        #expect(frame.exchangeHeader.exchangeID == 0x5002)
+        #expect(frame.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue)
         await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("A report is yielded on events before its StatusResponse is sent")
+    func deliveryPrecedesStatusResponse() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let sub = makeSubscription(rig)
+        let started = Task { try await sub.start() }
+        _ = try await playEstablishment(&peer, rig)
+        try await started.value
+        var iterator = sub.events.makeAsyncIterator()
+        _ = await iterator.next(); _ = await iterator.next(); _ = await iterator.next()
+
+        try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5004, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: ReportData(subscriptionID: id).tlvEncode()))
+        var frame = try await peer.nextSecured(session: rig.peerSession)
+        while frame.isStandaloneAck { frame = try await peer.nextSecured(session: rig.peerSession) }
+        #expect(frame.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue)
+        // The peer has read the StatusResponse, so the report is already buffered.
+        // Cancelling finishes the stream; a buffered report still drains first,
+        // and a missing one makes the stream end with nil.
+        await sub.cancel()
+        guard case .report? = await iterator.next() else { Issue.record("report was not delivered before the StatusResponse"); return }
+        await rig.messenger.stop()
     }
 
     @Test("Cancel unregisters the handler and finishes the stream")

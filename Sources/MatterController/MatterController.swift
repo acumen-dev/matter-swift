@@ -660,15 +660,29 @@ public actor MatterController {
         }
         subscriptions.removeAll { cancelledIDs.contains(ObjectIdentifier($0)) }
         guard !stopped else { throw MessagingError.stopped }
-        subscriptions.append(subscription)   // no suspension since the guard
+        track(subscription)   // no suspension since the guard
         do {
             try await subscription.start()
         } catch {
             subscriptions.removeAll { $0 === subscription }
+            if stopped { throw MessagingError.stopped }
             throw Self.operationalError(error, nodeID: nodeID)
+        }
+        if stopped {
+            await subscription.cancel()
+            subscriptions.removeAll { $0 === subscription }
+            throw MessagingError.stopped
         }
         return subscription
     }
+
+    /// Track a subscription so ``stop()`` and ``removeDevice(nodeID:)`` cancel it.
+    func track(_ subscription: ControllerSubscription) {
+        subscriptions.append(subscription)
+    }
+
+    /// Number of subscriptions currently tracked (for tests).
+    var trackedSubscriptionCount: Int { subscriptions.count }
 
     // MARK: - Device Registry
 
@@ -683,6 +697,9 @@ public actor MatterController {
     }
     /// Remove a device from the registry and invalidate its session.
     public func removeDevice(nodeID: NodeID) async {
+        let doomed = subscriptions.filter { $0.nodeID == nodeID }
+        subscriptions.removeAll { $0.nodeID == nodeID }
+        for subscription in doomed { await subscription.cancel() }
         await registry.remove(nodeID: nodeID)
         await invalidateSession(for: nodeID)
         await saveState()

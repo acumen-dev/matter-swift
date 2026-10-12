@@ -34,7 +34,24 @@ struct IMClientTests {
             InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
             InvokeResponseIB(status: CommandStatusIB(commandPath: path2, status: StatusIB(status: 0x85))),
         ])
-        #expect(throws: IMError.self) { try IMClient.parseInvokeResponse(data) }
+        #expect(throws: IMError.invalidStatus("Command error: status 133")) { try IMClient.parseInvokeResponse(data) }
+    }
+
+    @Test("SUCCESS carrying a cluster status is not an error")
+    func successWithClusterStatus() throws {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0, clusterStatus: 3))),
+        ])
+        #expect(try IMClient.parseInvokeResponse(data) == nil)
+    }
+
+    @Test("All-success responses return nil")
+    func allSuccessReturnsNil() throws {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path2, status: StatusIB(status: 0))),
+        ])
+        #expect(try IMClient.parseInvokeResponse(data) == nil)
     }
 
     @Test("The convenience parser returns the first command's fields")

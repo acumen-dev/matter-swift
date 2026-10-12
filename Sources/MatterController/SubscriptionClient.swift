@@ -10,6 +10,10 @@ public struct SubscriptionRequest: Sendable, Equatable {
     public var attributePaths: [AttributePath]
     public var eventPaths: [EventPath]
     /// Minimum reporting interval floor, in seconds.
+    ///
+    /// Known limitation: with a `minInterval` of 0 a device may report before
+    /// the controller has acknowledged SubscribeResponse, and such a report can
+    /// be dropped until the subscription's route exists. Liveness recovers.
     public var minInterval: UInt16
     /// Maximum reporting interval ceiling requested, in seconds. The device may
     /// grant a longer interval (an ICD often does); liveness uses the granted one.

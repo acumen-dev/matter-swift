@@ -36,7 +36,7 @@ public actor ControllerSubscription {
     public nonisolated let events: AsyncStream<SubscriptionEvent>
     private let continuation: AsyncStream<SubscriptionEvent>.Continuation
 
-    private let nodeID: NodeID
+    nonisolated let nodeID: NodeID
     private let request: SubscriptionRequest
     private let messenger: ControllerMessenger
     private let client: SubscriptionClient
@@ -249,6 +249,11 @@ public actor ControllerSubscription {
     /// The messenger handler for one subscription ID: answer every chunk
     /// (unless the device suppressed the response), then hand the reports to
     /// the actor.
+    ///
+    /// Each report is delivered before its StatusResponse is sent, which keeps
+    /// reports ordered for a device that waits for the StatusResponse between
+    /// reports. A publisher that does not wait can still interleave, because
+    /// each unsolicited report runs in its own task.
     private nonisolated func handler(for id: SubscriptionID) -> ControllerMessenger.UnsolicitedHandler {
         { [weak self] message, exchange in
             guard let self else { return }
@@ -274,6 +279,9 @@ public actor ControllerSubscription {
                     self.logger.warning("Subscription \(id.rawValue): could not record report: \(error)")
                     return
                 }
+                // Deliver before acknowledging: the device sends report N+1 only
+                // once it has N's StatusResponse, so N is already surfaced.
+                await self.deliver(report)
                 if !report.suppressResponse {
                     do {
                         try await exchange.send(
@@ -285,7 +293,6 @@ public actor ControllerSubscription {
                         self.logger.warning("Subscription \(id.rawValue): StatusResponse send failed: \(error)")
                     }
                 }
-                await self.deliver(report)
                 guard report.moreChunkedMessages else { return }
                 do {
                     current = try await exchange.receive(timeout: self.operationTimeout)

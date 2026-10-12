@@ -124,7 +124,7 @@ public enum IMClient {
     public static func parseInvokeResponse(_ data: Data) throws -> TLVElement? {
         let responses = try parseInvokeResponses(data)
         for response in responses {
-            if let status = response.status, status.status != .success {
+            if let status = response.status, status.status.status != StatusIB.success.status {
                 throw IMError.invalidStatus("Command error: status \(status.status.status)")
             }
         }
