@@ -178,6 +178,8 @@ public actor MatterDeviceServer {
         // must respond with the same salt it used before, or SPAKE2+ will fail.
         try await bridge.commissioningState.loadFromStore()
         try await bridge.store.loadFromStore()
+        // A fail-safe never survives a restart, so neither may its Breadcrumb.
+        GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
 
         // Resolve salt: persisted (stable across restarts) > config-provided > random (first run)
         let commState = bridge.commissioningState
@@ -361,6 +363,8 @@ public actor MatterDeviceServer {
 
             // Check fail-safe expiry
             if bridge.commissioningState.checkFailSafeExpiry(now: now) {
+                // Spec §11.10.7.2: fail-safe expiry resets the Breadcrumb attribute to zero.
+                GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
                 logger.info("Fail-safe timer expired")
             }
 
@@ -1775,8 +1779,27 @@ public actor MatterDeviceServer {
     // MARK: - Fabric Removal
 
     private func onFabricRemoved(_ fabricIndex: FabricIndex) {
-        // Remove CASE-ready fabric info
-        committedFabrics.removeValue(forKey: fabricIndex)
+        // Remove CASE-ready fabric info, withdrawing its operational advertisement so
+        // controllers stop resolving a node that no longer exists.
+        if let fabricInfo = committedFabrics.removeValue(forKey: fabricIndex) {
+            let instanceName = OperationalInstanceName(
+                compressedFabricID: fabricInfo.compressedFabricID(),
+                nodeID: fabricInfo.nodeID.rawValue
+            ).instanceName
+            let discovery = self.discovery
+            Task {
+                await discovery.stopAdvertising(name: instanceName)
+            }
+            logger.info("Fabric \(fabricIndex) removed: withdrew operational advertisement \(instanceName)")
+        }
+
+        // Keep CommissionedFabrics in step on every removal path, not just the RemoveFabric command.
+        bridge.store.set(
+            endpoint: EndpointID(rawValue: 0),
+            cluster: .operationalCredentials,
+            attribute: OperationalCredentialsCluster.Attribute.commissionedFabrics,
+            value: .unsignedInt(UInt64(bridge.commissioningState.fabrics.count))
+        )
 
         // Close any sessions for this fabric
         let sessionsToRemove = sessions.filter { $0.value.fabricIndex == fabricIndex }
