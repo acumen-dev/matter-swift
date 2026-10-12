@@ -33,6 +33,24 @@ func makeMessenger(
     )
 }
 
+struct Rig {
+    let clock: ManualClock
+    let link: FaultInjectingLink
+    let messenger: ControllerMessenger
+    let controllerSession: SecureSession
+    let peerSession: SecureSession
+}
+
+/// Mirrored sessions 10 (controller) / 20 (peer) on a ManualClock.
+func makeRig() async throws -> Rig {
+    let clock = ManualClock()
+    let link = FaultInjectingLink(seed: 1)
+    let messenger = makeMessenger(link: link, clock: clock)
+    let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
+    try await messenger.registerSession(controllerSession, peerAddress: link.b.address)
+    return Rig(clock: clock, link: link, messenger: messenger, controllerSession: controllerSession, peerSession: peerSession)
+}
+
 /// The test's side of the link (endpoint `b`).
 struct TestPeer {
     let link: FaultInjectingLink

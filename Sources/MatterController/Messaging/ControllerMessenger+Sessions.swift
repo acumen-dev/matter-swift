@@ -125,8 +125,8 @@ extension ControllerMessenger {
     /// and may `receive()` further chunks there; the exchange closes when it
     /// returns — a reliable message still unacknowledged then keeps being
     /// retransmitted until acknowledged or exhausted.
-    public func setSubscriptionHandler(_ handler: UnsolicitedHandler?, for id: SubscriptionID) {
-        subscriptionHandlers[id] = handler
+    public func setSubscriptionHandler(_ handler: UnsolicitedHandler?, for id: SubscriptionID, sessionID: UInt16) {
+        subscriptionHandlers[SubscriptionRoute(sessionID: sessionID, subscriptionID: id)] = handler
     }
 
     /// Fallback for peer-initiated messages no subscription handler claims.
