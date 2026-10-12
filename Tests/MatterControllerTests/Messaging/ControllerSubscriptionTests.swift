@@ -310,4 +310,49 @@ struct ControllerSubscriptionTests {
         #expect(await sub.currentSubscriptionID == nil)
         await rig.messenger.stop()
     }
+
+    @Test("A failed establishment reports the session it used, and the next attempt asks for a session again")
+    func failureHookAndFreshSession() async throws {
+        let rig = try await makeRig()
+        let used = LockedValue<[UInt16]>([])
+        let failed = LockedValue<[UInt16]>([])
+        let next = LockedValue<[UInt16]>([999, 998])
+        let sub = ControllerSubscription(
+            nodeID: node,
+            request: SubscriptionRequest(attributePaths: [onOff], minInterval: 1, maxInterval: 10),
+            messenger: rig.messenger,
+            client: SubscriptionClient(),
+            sessionProvider: { next.withLock { ids in let id = ids.removeFirst(); used.withLock { $0.append(id) }; return id } },
+            livenessMargin: margin,
+            operationTimeout: .seconds(30),
+            onEstablishFailure: { sessionID, _ in failed.withLock { $0.append(sessionID) } }
+        )
+        await #expect(throws: (any Error).self) { try await sub.start() }
+        await #expect(throws: (any Error).self) { try await sub.start() }
+        #expect(used.value == [999, 998], "the provider is consulted afresh on every attempt")
+        #expect(failed.value == [999, 998])
+        await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("A cancelled establishment does not report a failure")
+    func cancellationIsNotAFailure() async throws {
+        let rig = try await makeRig()
+        let failed = LockedValue(0)
+        let box = LockedValue<ControllerSubscription?>(nil)
+        let sub = ControllerSubscription(
+            nodeID: node,
+            request: SubscriptionRequest(attributePaths: [onOff], minInterval: 1, maxInterval: 10),
+            messenger: rig.messenger,
+            client: SubscriptionClient(),
+            sessionProvider: { await box.value?.cancel(); return 10 },
+            livenessMargin: margin,
+            operationTimeout: .seconds(30),
+            onEstablishFailure: { _, _ in failed.withLock { $0 += 1 } }
+        )
+        box.withLock { $0 = sub }
+        await #expect(throws: CancellationError.self) { try await sub.start() }
+        #expect(failed.value == 0)
+        #expect(await sub.isCancelled)
+        await rig.messenger.stop()
+    }
 }

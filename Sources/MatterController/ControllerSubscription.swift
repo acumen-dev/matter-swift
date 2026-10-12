@@ -29,6 +29,10 @@ public actor ControllerSubscription {
     /// Supplies the local session ID to subscribe on (establishing CASE if needed).
     public typealias SessionProvider = @Sendable () async throws -> UInt16
 
+    /// Told when establishing on a session fails (never for cancellation), so
+    /// the owner can drop a session that has gone stale.
+    typealias EstablishFailureHook = @Sendable (_ sessionID: UInt16, _ error: any Error) async -> Void
+
     public nonisolated let events: AsyncStream<SubscriptionEvent>
     private let continuation: AsyncStream<SubscriptionEvent>.Continuation
 
@@ -39,6 +43,7 @@ public actor ControllerSubscription {
     private let sessionProvider: SessionProvider
     private let livenessMargin: Duration
     private let operationTimeout: Duration
+    private let onEstablishFailure: EstablishFailureHook
     private nonisolated let logger = Logger(label: "matter.controller.subscription")
 
     public private(set) var currentSubscriptionID: SubscriptionID?
@@ -56,7 +61,8 @@ public actor ControllerSubscription {
         client: SubscriptionClient,
         sessionProvider: @escaping SessionProvider,
         livenessMargin: Duration,
-        operationTimeout: Duration
+        operationTimeout: Duration,
+        onEstablishFailure: @escaping EstablishFailureHook = { _, _ in }
     ) {
         (events, continuation) = AsyncStream.makeStream(of: SubscriptionEvent.self)
         self.nodeID = nodeID
@@ -66,7 +72,11 @@ public actor ControllerSubscription {
         self.sessionProvider = sessionProvider
         self.livenessMargin = livenessMargin
         self.operationTimeout = operationTimeout
+        self.onEstablishFailure = onEstablishFailure
     }
+
+    /// Whether ``cancel()`` has been called.
+    public var isCancelled: Bool { cancelled }
 
     /// Establish the first subscription. Throws if that fails; later
     /// re-establishments are retried internally by the liveness monitor.
@@ -163,6 +173,15 @@ public actor ControllerSubscription {
     private func establish() async throws {
         guard !cancelled else { throw CancellationError() }
         let sessionID = try await sessionProvider()
+        do {
+            try await establish(on: sessionID)
+        } catch {
+            if !(error is CancellationError) { await onEstablishFailure(sessionID, error) }
+            throw error
+        }
+    }
+
+    private func establish(on sessionID: UInt16) async throws {
         guard !cancelled else { throw CancellationError() }
         let exchange = try await messenger.openExchange(sessionID: sessionID)
         var outgoing = request

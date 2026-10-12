@@ -108,6 +108,7 @@ public actor MatterController {
     /// Subscriptions created by ``subscribe(nodeID:_:)``. A subscription keeps
     /// itself alive until cancelled, so ``stop()`` cancels each one.
     private var subscriptions: [ControllerSubscription] = []
+    private var stopped = false
 
     /// CASE establishments in flight, one per node: concurrent callers of
     /// ``session(for:)`` await the same handshake.
@@ -519,8 +520,10 @@ public actor MatterController {
     }
 
     /// Stop the message layer: pending requests fail with
-    /// `MessagingError.stopped`. Terminal for this controller instance.
+    /// `MessagingError.stopped`. Cancels every live subscription (finishing
+    /// its event stream) first. Terminal for this controller instance.
     public func stop() async {
+        stopped = true
         let tracked = subscriptions
         subscriptions = []
         for subscription in tracked { await subscription.cancel() }
@@ -624,9 +627,11 @@ public actor MatterController {
     /// for events not yet delivered. Cancel it with ``ControllerSubscription/cancel()``;
     /// ``stop()`` cancels any still running.
     public func subscribe(nodeID: NodeID, _ request: SubscriptionRequest) async throws -> ControllerSubscription {
+        guard !stopped else { throw MessagingError.stopped }
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
         }
+        guard !stopped else { throw MessagingError.stopped }
         let margin = MRPConfig(
             peer: device.mrpParameters ?? .default,
             maxRetransmissions: configuration.mrp.maxRetransmissions
@@ -641,18 +646,24 @@ public actor MatterController {
                 return try await self.session(for: nodeID).localSessionID
             },
             livenessMargin: margin,
-            operationTimeout: configuration.operationTimeout
+            operationTimeout: configuration.operationTimeout,
+            onEstablishFailure: { [weak self] sessionID, error in
+                await self?.invalidateStaleSession(for: nodeID, sessionID: sessionID, error: error)
+            }
         )
+        // Tracked before start() suspends, so a concurrent stop() cancels it.
+        var live: [ControllerSubscription] = []
+        for existing in subscriptions where !(await existing.isCancelled) { live.append(existing) }
+        guard !stopped else { throw MessagingError.stopped }
+        subscriptions = live + [subscription]
         do {
             try await subscription.start()
         } catch {
+            subscriptions.removeAll { $0 === subscription }
             throw Self.operationalError(error, nodeID: nodeID)
         }
-        subscriptions.append(subscription)
         return subscription
     }
-
-
 
     // MARK: - Device Registry
 
@@ -949,6 +960,17 @@ public actor MatterController {
     private static func commissioningError(_ error: any Error) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
         return ControllerError.commissioningFailed("Messaging failure: \(messaging)")
+    }
+
+    /// Drop the cached session if `error` says it is gone and it is still the
+    /// session the failed attempt used (a newer one is left alone).
+    func invalidateStaleSession(for nodeID: NodeID, sessionID: UInt16, error: any Error) async {
+        guard let mapped = Self.operationalError(error, nodeID: nodeID) as? ControllerError,
+              mapped == .peerUnreachable(nodeID),
+              let cached = sessionCache.session(for: nodeID),
+              cached.localSessionID == sessionID else { return }
+        logger.info("Node \(nodeID.rawValue) subscription failed on a dead session; invalidating it")
+        await invalidateSession(for: nodeID)
     }
 
     /// Messaging failures on an operational exchange, as `ControllerError`.

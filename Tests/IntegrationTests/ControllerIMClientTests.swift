@@ -102,11 +102,14 @@ struct ControllerIMClientTests {
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 2))
             let log = LockedValue<[String]>([])
+            let first = LockedValue<String?>(nil)
             let reader = Task {
                 for await event in subscription.events {
                     switch event {
                     case .established: log.withLock { $0.append("established") }
-                    case .lost: log.withLock { $0.append("lost") }
+                    case .lost(let reason):
+                        log.withLock { $0.append("lost") }
+                        if first.value == nil { first.withLock { $0 = reason } }
                     case .report: break
                     }
                 }
@@ -114,6 +117,7 @@ struct ControllerIMClientTests {
             #expect(try await waitUntil { log.value == ["established"] })
             link.setDropProbability(1.0, from: .b)    // the device goes silent
             #expect(try await waitUntil { log.value.contains("lost") })
+            #expect(first.value?.hasPrefix("no report within") == true)
             link.setDropProbability(0.0, from: .b)    // and comes back
             #expect(try await waitUntil { log.value.filter { $0 == "established" }.count >= 2 }, "re-subscribed")
             await subscription.cancel()
@@ -147,5 +151,61 @@ struct ControllerIMClientTests {
             throw error
         }
         await server.stop()
+    }
+
+    @Test("A subscribe after stop() throws")
+    func subscribeAfterStop() async throws {
+        let link = FaultInjectingLink(seed: 15)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
+        let controller = try makeController(on: link, maxRetransmissions: 4)
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
+            await controller.stop()
+            await #expect(throws: MessagingError.stopped) {
+                _ = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
+            }
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await server.stop()
+    }
+
+    @Test("A re-subscribe that fails on a dead link drops the cached session, so the next one re-handshakes")
+    func failedResubscribeInvalidatesSession() async throws {
+        let link = FaultInjectingLink(seed: 16)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
+        let controller = try makeController(on: link, maxRetransmissions: 2)
+        do {
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
+            let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 2))
+            let before = try await controller.session(for: device.nodeID).localSessionID
+            let reasons = LockedValue<[String]>([])
+            let established = LockedValue(0)
+            let reader = Task {
+                for await event in subscription.events {
+                    switch event {
+                    case .established: established.withLock { $0 += 1 }
+                    case .lost(let reason): reasons.withLock { $0.append(reason) }
+                    case .report: break
+                    }
+                }
+            }
+            #expect(try await waitUntil { established.value == 1 })
+            link.setDropProbability(1.0, from: .b)
+            #expect(try await waitUntil { reasons.value.contains { $0.hasPrefix("re-subscribe failed") } })
+            link.setDropProbability(0.0, from: .b)
+            #expect(try await waitUntil { established.value >= 2 }, "re-subscribed")
+            let after = try await controller.session(for: device.nodeID).localSessionID
+            #expect(after != before, "the dead session was replaced by a fresh handshake")
+            await subscription.cancel()
+            reader.cancel()
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await controller.stop(); await server.stop()
     }
 }
