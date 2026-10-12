@@ -13,7 +13,8 @@ public enum SubscriptionEvent: Sendable, Equatable {
     /// One `ReportData` (a priming chunk, a data report, or an empty keep-alive).
     case report(SubscriptionReport)
     /// No report within the liveness deadline, or re-establishment failed.
-    /// The subscription keeps re-subscribing until cancelled.
+    /// The subscription keeps re-subscribing until cancelled. A late report
+    /// may still be delivered after `.lost` and before the next `.established`.
     case lost(String)
 }
 
@@ -112,16 +113,19 @@ public actor ControllerSubscription {
         while !cancelled, !Task.isCancelled, let id = currentSubscriptionID, let sessionID = currentSessionID {
             let record = await client.subscription(for: id, peerNodeID: nodeID)
             guard !cancelled, currentSubscriptionID == id else { return }
-            guard let record else { return }
-            let deadline = record.livenessDeadline(margin: livenessMargin)
-            if messenger.clock.now < deadline {
-                do { try await messenger.clock.sleep(until: deadline) } catch { return }
-                continue
+            var reason = "subscription record missing"
+            if let record {
+                let deadline = record.livenessDeadline(margin: livenessMargin)
+                if messenger.clock.now < deadline {
+                    do { try await messenger.clock.sleep(until: deadline) } catch { return }
+                    continue
+                }
+                reason = "no report within \(record.negotiatedMaxInterval) s + margin"
             }
             // Clear before any await so cancel() and the loop agree on what is held.
             currentSubscriptionID = nil
             currentSessionID = nil
-            continuation.yield(.lost("no report within \(record.negotiatedMaxInterval) s + margin"))
+            continuation.yield(.lost(reason))
             await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
             await client.remove(subscriptionID: id, peerNodeID: nodeID)
             await resubscribe()
@@ -138,9 +142,8 @@ public actor ControllerSubscription {
             do {
                 try await establish()
                 return
-            } catch is CancellationError {
-                return
             } catch {
+                if error is CancellationError, cancelled || Task.isCancelled { return }
                 guard !cancelled else { return }
                 continuation.yield(.lost("re-subscribe failed: \(error)"))
                 attempt += 1

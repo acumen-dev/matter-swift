@@ -46,9 +46,25 @@ struct ControllerSubscriptionTests {
     }
 
     /// Acknowledge the controller's StatusResponse so MRP does not retransmit it
-    /// when the manual clock advances.
+    /// when the manual clock advances, and wait until the messenger has processed
+    /// the ack (its retransmit timer is back at the idle horizon).
     private func ackStatus(_ status: PeerFrame, _ peer: TestPeer, _ rig: Rig) async throws {
         try await peer.send(ScriptedPeer.securedReply(to: status, session: rig.peerSession, protocolID: .secureChannel, opcode: SecureChannelOpcode.standaloneAck.rawValue, reliable: false))
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + ControllerMessenger.idleTimerHorizon))
+    }
+
+    /// Start a subscription and play its establishment; returns it with its event iterator
+    /// positioned after the three establishment events.
+    private func establish(_ rig: Rig, _ peer: inout TestPeer, client: SubscriptionClient = SubscriptionClient(), maxInterval: UInt16 = 10) async throws -> (ControllerSubscription, AsyncStream<SubscriptionEvent>.Iterator) {
+        let sub = makeSubscription(rig, client: client)
+        let started = Task { try await sub.start() }
+        _ = try await playEstablishment(&peer, rig, maxInterval: maxInterval)
+        try await started.value
+        let ack = try await peer.nextSecured(session: rig.peerSession)   // ack of SubscribeResponse
+        #expect(ack.isStandaloneAck)
+        var iterator = sub.events.makeAsyncIterator()
+        _ = await iterator.next(); _ = await iterator.next(); _ = await iterator.next()
+        return (sub, iterator)
     }
 
     @Test("Establishment answers each priming chunk, then registers before the exchange closes")
@@ -230,5 +246,68 @@ struct ControllerSubscriptionTests {
         await rig.clock.advance(by: .seconds(12))   // 24 s after establishment, 12 s after the report
         #expect(await sub.currentSubscriptionID == id, "the deadline moved with the report")
         await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("The liveness deadline uses the negotiated max interval, not the requested one")
+    func negotiatedIntervalGovernsDeadline() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        var (sub, iterator) = try await establish(rig, &peer, maxInterval: 30)   // requested 10, granted 30
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(35)))
+        await rig.clock.advance(by: .seconds(34))
+        #expect(await sub.currentSubscriptionID == id)
+        await rig.clock.advance(by: .seconds(1))
+        guard case .lost? = await iterator.next() else { Issue.record("expected .lost at 35 s"); return }
+        await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("A failed re-subscribe yields .lost and the next attempt waits backoff(1) = 2 s")
+    func failedResubscribeBacksOff() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        var (sub, iterator) = try await establish(rig, &peer)
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(15)))
+        await rig.clock.advance(by: .seconds(15))
+        guard case .lost? = await iterator.next() else { Issue.record("expected .lost"); return }
+
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(1)))
+        await rig.clock.advance(by: .seconds(1))
+        let request = try await peer.nextSecured(session: rig.peerSession)
+        #expect(request.exchangeHeader.protocolOpcode == InteractionModelOpcode.subscribeRequest.rawValue)
+        try await peer.send(ScriptedPeer.securedReply(to: request, session: rig.peerSession, protocolID: .interactionModel, opcode: InteractionModelOpcode.statusResponse.rawValue, payload: IMStatusResponse(status: 0x80).tlvEncode(), reliable: false))
+        guard case .lost(let reason)? = await iterator.next() else { Issue.record("expected .lost for the failed attempt"); return }
+        #expect(reason.contains("re-subscribe failed"))
+
+        let sentAfterFailure = rig.link.sent(from: .a).count
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(2)))
+        await rig.clock.advance(by: .seconds(1))
+        #expect(rig.link.sent(from: .a).count == sentAfterFailure, "backoff(1) is 2 s; nothing sent at 1 s")
+        await rig.clock.advance(by: .seconds(1))
+        let retry = try await playEstablishment(&peer, rig)
+        #expect(retry.exchangeHeader.protocolOpcode == InteractionModelOpcode.subscribeRequest.rawValue)
+        #expect(await iterator.next() == .established(id, negotiatedMaxInterval: 10))
+        await sub.cancel(); await rig.messenger.stop()
+    }
+
+    @Test("Cancel during the backoff sleep stops everything: no further SubscribeRequest, no route, no client entry")
+    func cancelDuringBackoff() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let client = SubscriptionClient()
+        var (sub, iterator) = try await establish(rig, &peer, client: client)
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(15)))
+        await rig.clock.advance(by: .seconds(15))
+        guard case .lost? = await iterator.next() else { Issue.record("expected .lost"); return }
+        #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(1)))
+
+        await sub.cancel()
+        let sentAtCancel = rig.link.sent(from: .a).count
+        await rig.clock.advance(by: .seconds(600))
+        #expect(rig.link.sent(from: .a).count == sentAtCancel, "no SubscribeRequest after cancel")
+        #expect(await iterator.next() == nil, "the stream finished")
+        #expect(await rig.messenger.subscriptionHandlers.isEmpty)
+        #expect(await client.count == 0)
+        #expect(await sub.currentSubscriptionID == nil)
+        await rig.messenger.stop()
     }
 }
