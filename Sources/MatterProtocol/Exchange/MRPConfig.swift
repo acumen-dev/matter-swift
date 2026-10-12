@@ -42,18 +42,19 @@ public struct MRPParameters: Sendable, Hashable, Codable {
 
     /// Parse `SII` / `SAI` / `SAT` (decimal milliseconds) from DNS-SD TXT
     /// records. A missing, non-numeric or out-of-range (> 3 600 000) value
-    /// falls back to the default for that key only.
+    /// falls back to the default for that key only; so does a zero `SII` or
+    /// `SAI` (below 1 ms), which would make retransmission spin.
     public init(txtRecords: [String: String]) {
         let defaults = MRPParameters.default
         self.init(
-            sessionIdleInterval: Self.milliseconds(txtRecords["SII"]) ?? defaults.sessionIdleInterval,
-            sessionActiveInterval: Self.milliseconds(txtRecords["SAI"]) ?? defaults.sessionActiveInterval,
+            sessionIdleInterval: Self.milliseconds(txtRecords["SII"], minimum: 1) ?? defaults.sessionIdleInterval,
+            sessionActiveInterval: Self.milliseconds(txtRecords["SAI"], minimum: 1) ?? defaults.sessionActiveInterval,
             sessionActiveThreshold: Self.milliseconds(txtRecords["SAT"]) ?? defaults.sessionActiveThreshold
         )
     }
 
-    private static func milliseconds(_ text: String?) -> Duration? {
-        guard let text, let value = UInt32(text), value <= maximumAdvertisedMilliseconds else {
+    private static func milliseconds(_ text: String?, minimum: UInt32 = 0) -> Duration? {
+        guard let text, let value = UInt32(text), value >= minimum, value <= maximumAdvertisedMilliseconds else {
             return nil
         }
         return .milliseconds(Int64(value))
