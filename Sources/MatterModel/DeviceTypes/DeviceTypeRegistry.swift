@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import MatterTypes
+import Synchronization
 
 // MARK: - Device Type Registry
 
@@ -13,15 +14,16 @@ public enum DeviceTypeRegistry {
 
     /// Storage for registered device types.
     /// Initialised once from generated code; mutated only by `register()` for custom types.
-    nonisolated(unsafe) private static var specs: [DeviceTypeID: DeviceTypeSpec] = {
+    /// Guarded by a mutex because tests and callers read and register concurrently.
+    private static let specs = Mutex<[DeviceTypeID: DeviceTypeSpec]>({
         var initial: [DeviceTypeID: DeviceTypeSpec] = [:]
         registerGeneratedTypes(into: &initial)
         return initial
-    }()
+    }())
 
     /// Returns the spec for a device type, or `nil` if not registered.
     public static func spec(for id: DeviceTypeID) -> DeviceTypeSpec? {
-        specs[id]
+        specs.withLock { $0[id] }
     }
 
     /// Register a custom device type spec.
@@ -29,16 +31,16 @@ public enum DeviceTypeRegistry {
     /// Use this for vendor-specific device types not covered by the generated
     /// registry. Overwrites any existing registration for the same ID.
     public static func register(_ spec: DeviceTypeSpec) {
-        specs[spec.id] = spec
+        specs.withLock { $0[spec.id] = spec }
     }
 
     /// All registered device type IDs.
     public static var allRegisteredIDs: [DeviceTypeID] {
-        Array(specs.keys)
+        specs.withLock { Array($0.keys) }
     }
 
     /// The number of registered device types.
     public static var count: Int {
-        specs.count
+        specs.withLock { $0.count }
     }
 }

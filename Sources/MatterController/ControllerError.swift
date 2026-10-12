@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import MatterTypes
 
 /// Errors specific to the Matter controller module.
 public enum ControllerError: Error, Sendable, Equatable {
@@ -44,6 +45,17 @@ public enum ControllerError: Error, Sendable, Equatable {
 
     /// No operational address for the device.
     case noOperationalAddress
+
+    /// The device did not acknowledge a request after every MRP
+    /// retransmission, or its session closed mid-request. The cached session
+    /// has been invalidated; the request was **not** re-sent. The next call
+    /// establishes a fresh session.
+    case peerUnreachable(NodeID)
+
+    /// The device answered with an Interaction Model StatusResponse instead
+    /// of the expected reply; carries the IM status code (e.g. 0x7E
+    /// UnsupportedAccess, 0x9C Busy, 0xC6 NeedsTimedInteraction).
+    case imStatus(UInt8)
 
     /// Secure message encoding/decoding failed.
     case secureMessageFailed(String)

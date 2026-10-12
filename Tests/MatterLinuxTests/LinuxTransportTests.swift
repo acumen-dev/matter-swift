@@ -7,6 +7,7 @@ import Foundation
 @testable import MDNSLinux
 import MatterTransport
 import NIOCore
+import NIOPosix
 
 // Network tests bind real sockets; serialise to avoid port-sharing races.
 @Suite("MatterLinux Tests", .serialized)
@@ -177,7 +178,8 @@ struct MatterLinuxTests {
 
         try await sender.send(testPayload, to: target)
 
-        // Collect the first datagram with a 3-second timeout.
+        // Collect the first datagram, bounded by a hang guard.
+        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
         let stream = receiver.receive()
         let received = await withTaskGroup(of: Data?.self) { group in
             group.addTask {
@@ -185,7 +187,7 @@ struct MatterLinuxTests {
                 return nil
             }
             group.addTask {
-                try? await Task.sleep(for: .seconds(3))
+                try? await Task.sleep(for: hangGuard)
                 return nil
             }
             let result = await group.next()!
@@ -197,6 +199,65 @@ struct MatterLinuxTests {
         await sender.close()
 
         #expect(received == testPayload)
+    }
+
+    @Test("An IPv4 sender is reported in plain IPv4 form, not IPv4-mapped IPv6")
+    func ipv4SenderIsCanonical() async throws {
+        let receiver = LinuxUDPTransport()
+        try await receiver.bind(port: 0)
+        let receiverPort = try #require(await receiver.boundPort())
+
+        // A plain AF_INET socket, as an IPv4-only device would use.
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let sender = try await DatagramBootstrap(group: group)
+            .bind(to: SocketAddress(ipAddress: "127.0.0.1", port: 0))
+            .get()
+        let senderPort = try #require(sender.localAddress?.port)
+
+        var buffer = sender.allocator.buffer(capacity: 4)
+        buffer.writeBytes([1, 2, 3, 4])
+        try await sender.writeAndFlush(AddressedEnvelope(
+            remoteAddress: SocketAddress(ipAddress: "127.0.0.1", port: Int(receiverPort)),
+            data: buffer
+        )).get()
+
+        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
+        let stream = receiver.receive()
+        let received = await withTaskGroup(of: MatterAddress?.self) { group in
+            group.addTask {
+                for await (_, address) in stream { return address }
+                return nil
+            }
+            group.addTask {
+                // Hang guard only; the datagram is on loopback.
+                try? await Task.sleep(for: hangGuard)
+                return nil
+            }
+            let result = await group.next()!
+            group.cancelAll()
+            return result
+        }
+
+        try await sender.close().get()
+        try await group.shutdownGracefully()
+        await receiver.close()
+
+        #expect(received == MatterAddress(host: "127.0.0.1", port: UInt16(senderPort)))
+    }
+
+    @Test("Only IPv4-mapped addresses are rewritten; IPv6 and IPv4 pass through")
+    func matterAddressCanonicalisation() throws {
+        let mapped = try SocketAddress(ipAddress: "::ffff:192.168.1.5", port: 5540)
+        #expect(MatterDatagramHandler.matterAddress(mapped) == MatterAddress(host: "192.168.1.5", port: 5540))
+
+        let v4 = try SocketAddress(ipAddress: "10.0.0.7", port: 5540)
+        #expect(MatterDatagramHandler.matterAddress(v4) == MatterAddress(host: "10.0.0.7", port: 5540))
+
+        let loopback6 = try SocketAddress(ipAddress: "::1", port: 5540)
+        #expect(MatterDatagramHandler.matterAddress(loopback6) == MatterAddress(host: "::1", port: 5540))
+
+        let linkLocal = try SocketAddress(ipAddress: "fe80::1", port: 5540)
+        #expect(MatterDatagramHandler.matterAddress(linkLocal)?.host == linkLocal.ipAddress)
     }
 
     // MARK: - MatterAddress / SocketAddress conversion

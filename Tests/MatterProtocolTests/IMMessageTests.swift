@@ -345,3 +345,57 @@ struct IMMessageTests {
         #expect(decoded.isFabricFiltered == true)
     }
 }
+
+@Suite("Interaction Model out-of-range values")
+struct IMNarrowingTests {
+
+    @Test("A StatusResponse status above 255 throws instead of trapping")
+    func statusResponseOutOfRange() {
+        let data = TLVEncoder.encode(.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(256))
+        ]))
+        #expect(throws: IMError.self) {
+            _ = try IMStatusResponse.fromTLV(data)
+        }
+    }
+
+    @Test("A StatusIB status above 255 throws instead of trapping")
+    func statusIBOutOfRange() {
+        let element = TLVElement.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(0x1_00))
+        ])
+        #expect(throws: IMError.self) {
+            _ = try StatusIB.fromTLVElement(element)
+        }
+    }
+
+    @Test("A CommandPath endpoint above 65535 throws instead of trapping")
+    func commandPathOutOfRange() {
+        let element = TLVElement.list([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(0x1_0000)),
+            .init(tag: .contextSpecific(1), value: .unsignedInt(6)),
+            .init(tag: .contextSpecific(2), value: .unsignedInt(2)),
+        ])
+        #expect(throws: IMError.self) {
+            _ = try CommandPath.fromTLVElement(element)
+        }
+    }
+
+    @Test("An AttributePath cluster above UInt32.max throws instead of trapping")
+    func attributePathOutOfRange() {
+        let element = TLVElement.list([
+            .init(tag: .contextSpecific(3), value: .unsignedInt(UInt64(UInt32.max) + 1)),
+        ])
+        #expect(throws: IMError.self) {
+            _ = try AttributePath.fromTLVElement(element)
+        }
+    }
+
+    @Test("In-range values still decode")
+    func inRange() throws {
+        let data = TLVEncoder.encode(.structure([
+            .init(tag: .contextSpecific(0), value: .unsignedInt(0x7E))
+        ]))
+        #expect(try IMStatusResponse.fromTLV(data).status == 0x7E)
+    }
+}

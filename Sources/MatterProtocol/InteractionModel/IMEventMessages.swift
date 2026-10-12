@@ -156,7 +156,7 @@ public struct EventDataIB: Sendable, Equatable {
         guard let priVal = fields.first(where: { $0.tag == .contextSpecific(Tag.priority) })?.value.uintValue else {
             throw IMError.invalidMessage("EventDataIB: missing priority")
         }
-        guard let priority = EventPriority(rawValue: UInt8(priVal)) else {
+        guard let priRaw = UInt8(exactly: priVal), let priority = EventPriority(rawValue: priRaw) else {
             throw IMError.invalidMessage("EventDataIB: unknown priority value \(priVal)")
         }
 

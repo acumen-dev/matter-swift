@@ -49,60 +49,74 @@ public struct CounterDeduplication: Sendable {
     /// Returns `true` if the counter should be accepted, `false` if it's
     /// a duplicate or out of the valid window.
     public mutating func accept(_ counter: UInt32) -> Bool {
-        guard let max = maxCounter else {
-            // First message — always accept
-            maxCounter = counter
-            return true
-        }
-
-        if counter == max {
-            // Exact duplicate of the highest counter
-            return false
-        }
-
-        if counter > max {
-            // New highest counter — shift the window
-            let shift = counter - max
-            if shift < Self.windowSize {
-                // Mark the old max position in the bitmap
-                bitmap = (bitmap << shift) | (1 << (shift - 1))
-            } else {
-                // Window completely shifted past — reset bitmap
-                bitmap = 0
-            }
-            maxCounter = counter
-            return true
-        }
-
-        // counter < max
-        let offset = max - counter
-        if offset > Self.windowSize {
-            // Below the window
-            if encrypted {
-                return false // Encrypted: reject out-of-window
-            } else {
-                // Unencrypted: accept (possible device reboot) — reset state
-                maxCounter = counter
-                bitmap = 0
-                return true
-            }
-        }
-
-        // Within the window — check bitmap
-        let bit: UInt32 = 1 << (offset - 1)
-        if bitmap & bit != 0 {
-            return false // Already received this counter
-        }
-
-        // Mark as received
-        bitmap |= bit
-        return true
+        check(counter) == .accepted
     }
 
     /// Reset deduplication state (e.g., on session re-establishment).
     public mutating func reset() {
         maxCounter = nil
         bitmap = 0
+    }
+}
+
+extension CounterDeduplication {
+    /// Classification of a received message counter (Matter Core §4.6.5).
+    public enum Verdict: Sendable, Equatable {
+        /// New: process it. Recorded in the window.
+        case accepted
+        /// Seen before: acknowledge it again if it asked for an ack, never
+        /// process it twice.
+        case duplicate
+        /// Encrypted session only: below the window — acknowledged if it
+        /// requested an ack, never processed.
+        case outOfWindow
+    }
+
+    /// Classify `counter` and record it if accepted.
+    public mutating func check(_ counter: UInt32) -> Verdict {
+        guard let max = maxCounter else {
+            // First message — always accept
+            maxCounter = counter
+            return .accepted
+        }
+
+        if counter == max {
+            return .duplicate
+        }
+
+        if counter > max {
+            // New highest counter — shift the window
+            let shift = counter - max
+            if shift < Self.windowSize {
+                bitmap = (bitmap << shift) | (1 << (shift - 1))
+            } else if shift == Self.windowSize {
+                // The previous max sits at offset 32, the oldest slot still in the window.
+                bitmap = 1 << (Self.windowSize - 1)
+            } else {
+                bitmap = 0
+            }
+            maxCounter = counter
+            return .accepted
+        }
+
+        // counter < max
+        let offset = max - counter
+        if offset > Self.windowSize {
+            if encrypted {
+                return .outOfWindow
+            }
+            // Unencrypted: accept (possible peer reboot) — reset state
+            maxCounter = counter
+            bitmap = 0
+            return .accepted
+        }
+
+        let bit: UInt32 = 1 << (offset - 1)
+        if bitmap & bit != 0 {
+            return .duplicate
+        }
+        bitmap |= bit
+        return .accepted
     }
 }
 

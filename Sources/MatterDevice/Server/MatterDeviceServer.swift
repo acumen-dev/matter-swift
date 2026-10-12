@@ -112,6 +112,13 @@ public actor MatterDeviceServer {
     /// are sent one at a time as the client acknowledges each with a StatusResponse.
     private var pendingChunkedReports: [UInt16: ChunkedReportContext] = [:]
 
+    /// Wire bytes of each handshake reply, keyed by the request it answered,
+    /// so an MRP retransmission of that request (same counter) is answered
+    /// byte-for-byte. Bounded to the most recent `unsecuredReplyLimit`.
+    private var unsecuredReplies: [UnsecuredRequestKey: Data] = [:]
+    private var unsecuredReplyOrder: [UnsecuredRequestKey] = []
+    private static let unsecuredReplyLimit = 32
+
     /// Established sessions keyed by local session ID.
     private var sessions: [UInt16: SessionEntry] = [:]
 
@@ -131,8 +138,10 @@ public actor MatterDeviceServer {
     /// Ethernet) that is unreachable from its Wi-Fi network segment.
     private var paseCommissioningInterface: String?
 
-    /// MRP exchange manager for retransmission tracking.
-    private let exchangeManager: ExchangeManager
+    /// MRP state for the reliable messages this server sends. It keeps its
+    /// historical 10 retransmissions toward Apple Home; the controller uses
+    /// the spec default of 4.
+    private var exchangeManager = ExchangeManager(defaultConfig: MRPConfig(maxRetransmissions: 10))
 
     /// Receive loop task.
     private var receiveTask: Task<Void, Never>?
@@ -157,12 +166,6 @@ public actor MatterDeviceServer {
         self.discovery = discovery
         self.config = config
         self.logger = logger
-
-        // ExchangeManager needs a send handler — capture transport for retransmissions.
-        let t = transport
-        self.exchangeManager = ExchangeManager { data, address in
-            try await t.send(data, to: address)
-        }
     }
 
     // MARK: - Lifecycle
@@ -320,6 +323,8 @@ public actor MatterDeviceServer {
 
         paseHandshakes.removeAll()
         sessions.removeAll()
+        unsecuredReplies.removeAll()
+        unsecuredReplyOrder.removeAll()
 
         logger.info("Device server stopped")
     }
@@ -433,8 +438,16 @@ public actor MatterDeviceServer {
     /// Periodically checks for pending MRP retransmissions and sends them.
     ///
     /// Matter's Message Reliability Protocol requires responses with `reliableDelivery=true`
-    /// to be retransmitted until the peer acknowledges them. Retransmissions use exponential
-    /// backoff per `MRPConfig` (300ms base, 1.6x multiplier, max 10 attempts).
+    /// to be retransmitted until the peer acknowledges them. Intervals follow
+    /// `MRPConfig.retransmissionInterval` (Matter Core §4.12.2.1), with this server's
+    /// `maxRetransmissions` of 10.
+    ///
+    /// With default peer parameters the base is SAI (300 ms) only while the peer
+    /// spoke within the last 4 s (SAT); after that it is SII (500 ms). So for a
+    /// peer that falls silent, the 10 retransmissions land at about 0.3 s … 96.4 s
+    /// after the first send and the exchange is given up at about 157 s (no
+    /// jitter) to 196 s (full jitter). Before the move to `retransmissionInterval`
+    /// the same 10 retransmissions ended at about 37.5 s.
     private func mrpLoop() async {
         while !Task.isCancelled {
             do {
@@ -443,20 +456,22 @@ public actor MatterDeviceServer {
                 break
             }
 
-            let now = Date()
+            let now = ContinuousClock.now
 
-            // Retransmit responses that haven't been ACKed
-            let pending = await exchangeManager.pendingRetransmissions(now: now)
-            for exchange in pending {
-                if let message = exchange.pendingMessage {
+            // Retransmit responses that haven't been ACKed. All decisions are
+            // taken (and state updated) before the first await.
+            for (key, decision) in exchangeManager.processDueRetransmissions(now: now) {
+                switch decision {
+                case .send(let message, let address, _):
                     do {
-                        try await transport.send(message, to: exchange.peerAddress)
-                        logger.trace("MRP retransmit #\(exchange.retransmitCount + 1) on exchange \(exchange.exchangeID) to \(exchange.peerAddress)")
+                        try await transport.send(message, to: address)
+                        logger.trace("MRP retransmit on exchange \(key.exchangeID) to \(address)")
                     } catch {
-                        logger.warning("MRP retransmit failed on exchange \(exchange.exchangeID): \(error)")
+                        logger.warning("MRP retransmit failed on exchange \(key.exchangeID): \(error)")
                     }
+                case .exhausted:
+                    logger.debug("MRP retransmissions exhausted on exchange \(key.exchangeID)")
                 }
-                await exchangeManager.recordRetransmission(exchangeID: exchange.exchangeID, now: now)
             }
         }
     }
@@ -464,16 +479,23 @@ public actor MatterDeviceServer {
     // MARK: - MRP Helpers
 
     /// Track a sent reliable message for MRP retransmission.
+    ///
+    /// - Parameter exchangeHeader: header of the inbound message being answered;
+    ///   with the session it identifies the exchange (and who initiated it).
     private func trackForRetransmission(
-        exchangeID: UInt16,
+        inbound exchangeHeader: ExchangeHeader,
+        session: SecureSession,
         message: Data,
         peerAddress: MatterAddress
-    ) async {
-        await exchangeManager.trackMessage(
-            exchangeID: exchangeID,
-            message: message,
-            peerAddress: peerAddress
-        )
+    ) {
+        let key = ExchangeKey(scope: .secured(localSessionID: session.localSessionID), inbound: exchangeHeader)
+        let now = ContinuousClock.now
+        exchangeManager.open(key, peerAddress: peerAddress, now: now)
+        do {
+            try exchangeManager.trackTransmission(key, message: message, now: now)
+        } catch {
+            logger.warning("MRP tracking failed on exchange \(exchangeHeader.exchangeID): \(error)")
+        }
     }
 
     // MARK: - Datagram Handling
@@ -610,8 +632,23 @@ public actor MatterDeviceServer {
 
         // Process piggybacked ACK — cancel pending retransmission for this exchange
         if let ackedCounter = exchangeHeader.acknowledgedMessageCounter {
-            await exchangeManager.recordAcknowledgment(exchangeID: exchangeHeader.exchangeID)
+            let ackedKey = ExchangeKey(scope: .unsecured(peer: sender), inbound: exchangeHeader)
+            if exchangeManager.recordAcknowledgment(ackedKey, ackedCounter: ackedCounter) {
+                exchangeManager.close(ackedKey)
+            }
             logger.trace("MRP ACK received for exchange \(exchangeHeader.exchangeID) counter=\(ackedCounter)")
+        }
+
+        // An MRP retransmission repeats the request's message counter. Answer it
+        // with the byte-identical reply (same counter): the initiator's duplicate
+        // detection then drops the copy instead of reading it as a new message
+        // on the exchange, and a lost final StatusReport (Pake3/Sigma3) is
+        // recoverable.
+        let requestKey = UnsecuredRequestKey(peer: sender, exchangeID: exchangeHeader.exchangeID, messageCounter: header.messageCounter)
+        if let reply = unsecuredReplies[requestKey] {
+            try await transport.send(reply, to: sender)
+            logger.trace("Replayed stored reply to \(opcode) on exchange \(exchangeHeader.exchangeID) counter=\(header.messageCounter)")
+            return
         }
 
         logger.trace("Unsecured opcode=\(opcode) exchange=\(exchangeHeader.exchangeID) bodyLen=\(body.count)")
@@ -669,7 +706,7 @@ public actor MatterDeviceServer {
                 destinationNodeID: existing.initiatorNodeID
             )
             logger.trace("Resend PBKDFParamResponse exchange=\(exchangeID) counter=\(messageCounter) bytes=\(message.hexDump)")
-            try await transport.send(message, to: sender)
+            try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
             logger.trace("Resent PBKDFParamResponse (duplicate) on exchange \(exchangeID)")
             return
         }
@@ -734,7 +771,7 @@ public actor MatterDeviceServer {
         )
 
         logger.trace("PBKDFParamResponse exchange=\(exchangeID) tlvLen=\(responseTLV.count) includePBKDF=\(!request.hasPBKDFParameters) ackCounter=\(messageCounter) wire(\(message.count)B): \(message.hexDump)")
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.trace("Sent PBKDFParamResponse on exchange \(exchangeID) to \(sender.host):\(sender.port) includedPBKDFParams=\(!request.hasPBKDFParameters) tlvLen=\(responseTLV.count) msgLen=\(message.count)")
     }
 
@@ -765,7 +802,7 @@ public actor MatterDeviceServer {
                 ackMessageCounter: messageCounter,
                 destinationNodeID: handshake.initiatorNodeID
             )
-            try await transport.send(message, to: sender)
+            try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
             logger.trace("Resent Pake2 (duplicate Pake1) on exchange \(exchangeID)")
             return
         }
@@ -806,7 +843,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.debug("Sent Pake2 on exchange \(exchangeID)")
     }
 
@@ -882,7 +919,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.info("PASE session established: local=\(handshake.responderSessionID) peer=\(handshake.initiatorSessionID)")
 
         // Record the interface the commissioner used so CASE address resolution is
@@ -922,7 +959,7 @@ public actor MatterDeviceServer {
                 ackMessageCounter: messageCounter,
                 destinationNodeID: existing.initiatorNodeID
             )
-            try await transport.send(message, to: sender)
+            try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
             return
         }
 
@@ -959,7 +996,7 @@ public actor MatterDeviceServer {
             destinationNodeID: initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.debug("Sent Sigma2 on exchange \(exchangeID)")
     }
 
@@ -1019,7 +1056,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await transport.send(message, to: sender)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
         logger.info("CASE session established: local=\(handshake.responderSessionID) fabric=\(handshake.fabricInfo.fabricIndex)")
     }
 
@@ -1299,9 +1336,33 @@ public actor MatterDeviceServer {
             session: session
         )
 
-        // Process piggybacked ACK — cancel pending retransmission for this exchange
-        if exchangeHeader.acknowledgedMessageCounter != nil {
-            await exchangeManager.recordAcknowledgment(exchangeID: exchangeHeader.exchangeID)
+        // Duplicate detection (Matter Core §4.6.5) — after decryption, so a forged
+        // header cannot move the window. A retransmitted request is acknowledged
+        // again but never executed twice; the MRP loop re-sends our original reply.
+        // A counter behind the window is treated the same way (as the Matter SDK
+        // does): acked if reliable, never processed, so the peer stops retransmitting.
+        switch sessions[session.localSessionID]?.dedup.check(msgHeader.messageCounter) ?? .accepted {
+        case .accepted:
+            break
+        case .duplicate, .outOfWindow:
+            logger.debug("Duplicate/out-of-window secured message: session=\(session.localSessionID) exchange=\(exchangeHeader.exchangeID) counter=\(msgHeader.messageCounter)")
+            if exchangeHeader.flags.reliableDelivery {
+                try await sendStandaloneAck(answering: exchangeHeader, counter: msgHeader.messageCounter, session: session, to: address)
+            }
+            return
+        }
+
+        // Peer activity selects SAI over SII for this session's retransmissions
+        // (the old fixed 300 ms base is now 330 ms while the peer is active).
+        let exchangeKey = ExchangeKey(scope: .secured(localSessionID: session.localSessionID), inbound: exchangeHeader)
+        exchangeManager.recordReceived(scope: exchangeKey.scope, now: ContinuousClock.now)
+
+        // Process piggybacked ACK — cancel pending retransmission for this exchange.
+        // Only an ack of the message we are retransmitting counts; once acked the
+        // exchange has nothing left to track (a later message on it re-opens it).
+        if let ackedCounter = exchangeHeader.acknowledgedMessageCounter,
+           exchangeManager.recordAcknowledgment(exchangeKey, ackedCounter: ackedCounter) {
+            exchangeManager.close(exchangeKey)
         }
 
         logger.debug("Secured msg: session=\(session.localSessionID) exchange=\(exchangeHeader.exchangeID) proto=\(exchangeHeader.protocolID) opcode=\(exchangeHeader.protocolOpcode) counter=\(msgHeader.messageCounter) payload=\(payload.count)B")
@@ -1393,27 +1454,24 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
                     logger.trace("[CHUNK-FLOW] Sending chunk \(context.nextChunkIndex)/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(nextChunk.tlvEncode().count)B TLV, moreChunked=\(nextChunk.moreChunkedMessages), ackCounter=\(String(describing: ackCounter))")
-                    try await transport.send(encrypted, to: address)
-                    await trackForRetransmission(
-                        exchangeID: exchangeHeader.exchangeID,
+                    trackForRetransmission(
+                        inbound: exchangeHeader,
+                        session: session,
                         message: encrypted,
                         peerAddress: address
                     )
-
-                    if context.isComplete && !context.trailingResponses.isEmpty {
-                        // Last chunk just sent but there are trailing responses
-                        // (e.g., SubscribeResponse). Keep context in map so we wait
-                        // for the client's StatusResponse acknowledging this last chunk
-                        // before sending trailing responses with the ACK piggybacked.
-                        pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    } else if context.isComplete {
-                        // Last chunk sent, no trailing responses — keep context so we
-                        // ACK the client's final StatusResponse on the next iteration.
-                        pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    } else {
-                        // More chunks remain.
-                        pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    }
+                    // Store the advanced context before the send, as tracking is:
+                    // if the send throws, MRP retransmits this chunk, and the
+                    // client's StatusResponse for it must advance to the next
+                    // chunk rather than re-send this one under a new counter.
+                    // The context stays in the map in every case: more chunks
+                    // remain; or this was the last chunk and trailing responses
+                    // (e.g., SubscribeResponse) wait for the client's
+                    // StatusResponse so they can piggyback its ACK; or this was
+                    // the last chunk and the final StatusResponse is ACK'd on
+                    // the next iteration.
+                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                    try await transport.send(encrypted, to: address)
                 } else if context.isComplete && !context.trailingResponses.isEmpty {
                     // All chunks already sent — this StatusResponse acknowledges
                     // the final chunk. Now send trailing responses (SubscribeResponse)
@@ -1434,12 +1492,13 @@ public actor MatterDeviceServer {
                             session: session,
                             sourceNodeID: NodeID(rawValue: 0)
                         )
-                        try await transport.send(encrypted, to: address)
-                        await trackForRetransmission(
-                            exchangeID: exchangeHeader.exchangeID,
+                        trackForRetransmission(
+                            inbound: exchangeHeader,
+                            session: session,
                             message: encrypted,
                             peerAddress: address
                         )
+                        try await transport.send(encrypted, to: address)
                     }
                 } else {
                     // All chunks delivered, no trailing responses — send standalone ACK
@@ -1498,12 +1557,13 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
 
-                    try await transport.send(encrypted, to: address)
-                    await trackForRetransmission(
-                        exchangeID: exchangeHeader.exchangeID,
+                    trackForRetransmission(
+                        inbound: exchangeHeader,
+                        session: session,
                         message: encrypted,
                         peerAddress: address
                     )
+                    try await transport.send(encrypted, to: address)
                 }
 
                 // If no response was sent but we owe an ACK, send a standalone ACK.
@@ -1526,8 +1586,22 @@ public actor MatterDeviceServer {
                 }
 
             case .chunkedReport(var context):
+                let firstChunk = context.nextChunk()
+                // Store context for delivery on subsequent StatusResponse messages,
+                // before the first chunk's send: if that send throws, MRP
+                // retransmits the chunk and the client's StatusResponse for it
+                // must find the context, or chunks 2..N and any trailing
+                // responses are never sent.
+                // Even if all chunks are sent, we keep the context when there are
+                // trailing responses (e.g., SubscribeResponse) — those must wait for
+                // the client's StatusResponse acknowledging the final chunk so we can
+                // piggyback the ACK. Without the piggybacked ACK, the client
+                // retransmits the StatusResponse until MRP timeout.
+                if !context.isComplete || !context.trailingResponses.isEmpty {
+                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                }
                 // Send first chunk immediately
-                if let firstChunk = context.nextChunk() {
+                if let firstChunk {
                     let chunkHeader = ExchangeHeader(
                         flags: ExchangeFlags(initiator: false, reliableDelivery: true),
                         protocolOpcode: InteractionModelOpcode.reportData.rawValue,
@@ -1543,21 +1617,13 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
                     logger.trace("[CHUNK-FLOW] Sending first chunk 1/\(context.chunks.count) on exchange \(exchangeHeader.exchangeID): \(encrypted.count)B encrypted, \(firstChunk.tlvEncode().count)B TLV, moreChunked=\(firstChunk.moreChunkedMessages)")
-                    try await transport.send(encrypted, to: address)
-                    await trackForRetransmission(
-                        exchangeID: exchangeHeader.exchangeID,
+                    trackForRetransmission(
+                        inbound: exchangeHeader,
+                        session: session,
                         message: encrypted,
                         peerAddress: address
                     )
-                }
-                // Store context for delivery on subsequent StatusResponse messages.
-                // Even if all chunks are sent, we keep the context when there are
-                // trailing responses (e.g., SubscribeResponse) — those must wait for
-                // the client's StatusResponse acknowledging the final chunk so we can
-                // piggyback the ACK. Without the piggybacked ACK, the client
-                // retransmits the StatusResponse until MRP timeout.
-                if !context.isComplete || !context.trailingResponses.isEmpty {
-                    pendingChunkedReports[exchangeHeader.exchangeID] = context
+                    try await transport.send(encrypted, to: address)
                 }
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {
@@ -1626,6 +1692,48 @@ public actor MatterDeviceServer {
         message.append(exchangeHeader.encode())
         message.append(payload)
         return message
+    }
+
+    /// Send a handshake reply and keep its exact bytes for replay to a
+    /// retransmission of the same request (see ``unsecuredReplies``).
+    private func sendUnsecuredReply(
+        _ message: Data,
+        to sender: MatterAddress,
+        exchangeID: UInt16,
+        requestCounter: UInt32
+    ) async throws {
+        let key = UnsecuredRequestKey(peer: sender, exchangeID: exchangeID, messageCounter: requestCounter)
+        if unsecuredReplies.updateValue(message, forKey: key) == nil {
+            unsecuredReplyOrder.append(key)
+            if unsecuredReplyOrder.count > Self.unsecuredReplyLimit {
+                unsecuredReplies.removeValue(forKey: unsecuredReplyOrder.removeFirst())
+            }
+        }
+        try await transport.send(message, to: sender)
+    }
+
+    /// Acknowledge a received secured message on its exchange with a
+    /// standalone ack (our I flag is the opposite of the sender's).
+    private func sendStandaloneAck(
+        answering exchangeHeader: ExchangeHeader,
+        counter: UInt32,
+        session: SecureSession,
+        to address: MatterAddress
+    ) async throws {
+        let ackHeader = ExchangeHeader(
+            flags: ExchangeFlags(initiator: !exchangeHeader.flags.initiator, reliableDelivery: false),
+            protocolOpcode: SecureChannelOpcode.standaloneAck.rawValue,
+            exchangeID: exchangeHeader.exchangeID,
+            protocolID: MatterProtocolID.secureChannel.rawValue,
+            acknowledgedMessageCounter: counter
+        )
+        let encrypted = try SecureMessageCodec.encode(
+            exchangeHeader: ackHeader,
+            payload: Data(),
+            session: session,
+            sourceNodeID: NodeID(rawValue: 0)
+        )
+        try await transport.send(encrypted, to: address)
     }
 
     // MARK: - Helpers
@@ -1756,6 +1864,16 @@ extension MatterDeviceServer {
         let session: SecureSession
         let address: MatterAddress
         let fabricIndex: FabricIndex
+        /// Received-counter window for duplicate detection.
+        var dedup = CounterDeduplication(encrypted: true)
+    }
+
+    /// The request a handshake reply answered: an MRP retransmission repeats
+    /// the peer, exchange and message counter.
+    struct UnsecuredRequestKey: Hashable {
+        let peer: MatterAddress
+        let exchangeID: UInt16
+        let messageCounter: UInt32
     }
 
     /// Active CASE handshake state.

@@ -299,12 +299,14 @@ struct LoopbackTests {
 
             #expect(value.boolValue == false, "Default OnOff should be false")
         } catch {
+            await controller.stop()
             await server.stop()
             await clientTransport.close()
             try await Task.sleep(for: .milliseconds(500))
             throw error
         }
 
+        await controller.stop()
         await server.stop()
         await clientTransport.close()
         try await Task.sleep(for: .milliseconds(500))

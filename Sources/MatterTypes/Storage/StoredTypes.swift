@@ -282,6 +282,15 @@ public struct StoredCommissionedDevice: Codable, Sendable, Equatable {
     /// When this device was commissioned.
     public let commissionedAt: Date
 
+    /// Advertised MRP session idle interval (SII) in milliseconds, if known.
+    public var mrpIdleIntervalMs: UInt32?
+
+    /// Advertised MRP session active interval (SAI) in milliseconds, if known.
+    public var mrpActiveIntervalMs: UInt32?
+
+    /// Advertised MRP session active threshold (SAT) in milliseconds, if known.
+    public var mrpActiveThresholdMs: UInt32?
+
     public init(
         nodeID: UInt64,
         fabricIndex: UInt8,
@@ -290,7 +299,10 @@ public struct StoredCommissionedDevice: Codable, Sendable, Equatable {
         operationalHost: String?,
         operationalPort: UInt16?,
         label: String?,
-        commissionedAt: Date
+        commissionedAt: Date,
+        mrpIdleIntervalMs: UInt32? = nil,
+        mrpActiveIntervalMs: UInt32? = nil,
+        mrpActiveThresholdMs: UInt32? = nil
     ) {
         self.nodeID = nodeID
         self.fabricIndex = fabricIndex
@@ -300,6 +312,9 @@ public struct StoredCommissionedDevice: Codable, Sendable, Equatable {
         self.operationalPort = operationalPort
         self.label = label
         self.commissionedAt = commissionedAt
+        self.mrpIdleIntervalMs = mrpIdleIntervalMs
+        self.mrpActiveIntervalMs = mrpActiveIntervalMs
+        self.mrpActiveThresholdMs = mrpActiveThresholdMs
     }
 }
 

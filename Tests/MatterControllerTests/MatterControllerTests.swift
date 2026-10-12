@@ -225,12 +225,12 @@ struct SessionCacheTests {
         #expect(cache.session(for: nodeID) == nil)
     }
 
-    @Test("Expired session returns nil")
-    func expiredSession() {
+    @Test("A session's timeout does not evict it: cached sessions live until removed")
+    func timeoutDoesNotEvict() {
         var cache = SessionCache()
         let nodeID = NodeID(rawValue: 42)
 
-        // Create a session with a 0-second timeout (immediately expired)
+        // A 0-second timeout used to read as immediately expired.
         let session = SecureSession(
             localSessionID: 100,
             peerSessionID: 200,
@@ -240,6 +240,8 @@ struct SessionCacheTests {
         )
 
         cache.store(session, for: nodeID)
+        #expect(cache.session(for: nodeID) === session)
+        cache.remove(for: nodeID)
         #expect(cache.session(for: nodeID) == nil)
     }
 
@@ -247,43 +249,60 @@ struct SessionCacheTests {
     func sessionIDAllocation() {
         var cache = SessionCache()
 
-        let id1 = cache.allocateSessionID()
-        let id2 = cache.allocateSessionID()
-        let id3 = cache.allocateSessionID()
+        let id1 = cache.reserveSessionID(excluding: [])
+        let id2 = cache.reserveSessionID(excluding: [])
+        let id3 = cache.reserveSessionID(excluding: [])
 
         #expect(id1 == 100)
         #expect(id2 == 101)
         #expect(id3 == 102)
     }
 
-    @Test("Prune removes expired sessions")
-    func pruneExpired() {
+    @Test("Allocation near the wrap skips registered, cached and reserved IDs")
+    func allocationSkipsInUseIDsAcrossWrap() {
+        var cache = SessionCache(nextSessionID: UInt16.max - 2)
+        let cached = SecureSession(
+            localSessionID: UInt16.max - 1,
+            peerSessionID: 200,
+            establishment: .case,
+            peerNodeID: NodeID(rawValue: 42)
+        )
+        cache.store(cached, for: NodeID(rawValue: 42))
+        let registered: Set<UInt16> = [UInt16.max, 100]
+
+        let first = cache.reserveSessionID(excluding: registered)
+        #expect(first == UInt16.max - 2)
+        // max-1 cached, max registered, wrap, 100 registered.
+        let second = cache.reserveSessionID(excluding: registered)
+        #expect(second == 101)
+
+        // A further cycle skips the two reserved IDs as well.
+        var handedOut: [UInt16] = []
+        for _ in 0..<(Int(UInt16.max) - 100 + 1) {
+            if let id = cache.reserveSessionID(excluding: registered) {
+                handedOut.append(id)
+                cache.releaseSessionID(id)
+            }
+        }
+        let inUse: Set<UInt16> = [UInt16.max - 2, UInt16.max - 1, UInt16.max, 100, 101]
+        #expect(!handedOut.contains { inUse.contains($0) })
+        #expect(Set(handedOut).count == Int(UInt16.max) - 100 + 1 - inUse.count)
+
+        // Released, an ID is free again.
+        cache.releaseSessionID(101)
+        var sawReleased = false
+        for _ in 0..<(Int(UInt16.max) - 100 + 1) {
+            guard let id = cache.reserveSessionID(excluding: registered) else { break }
+            cache.releaseSessionID(id)
+            if id == 101 { sawReleased = true; break }
+        }
+        #expect(sawReleased)
+    }
+
+    @Test("Allocation returns nil when every ID is in use")
+    func allocationExhausted() {
         var cache = SessionCache()
-
-        // Store an expired session
-        let expired = SecureSession(
-            localSessionID: 1,
-            peerSessionID: 2,
-            establishment: .case,
-            peerNodeID: NodeID(rawValue: 10),
-            timeout: .seconds(0)
-        )
-        cache.store(expired, for: NodeID(rawValue: 10))
-
-        // Store a valid session
-        let valid = SecureSession(
-            localSessionID: 3,
-            peerSessionID: 4,
-            establishment: .case,
-            peerNodeID: NodeID(rawValue: 20),
-            timeout: .seconds(3600)
-        )
-        cache.store(valid, for: NodeID(rawValue: 20))
-
-        #expect(cache.count == 2)
-        cache.pruneExpired()
-        #expect(cache.count == 1)
-        #expect(cache.session(for: NodeID(rawValue: 20)) != nil)
+        #expect(cache.reserveSessionID(excluding: Set(100...UInt16.max)) == nil)
     }
 }
 
