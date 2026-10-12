@@ -58,11 +58,14 @@ public enum IMClient {
     // MARK: - Write
 
     /// Build a WriteRequest for a single attribute.
+    ///
+    /// Unconditional unless `dataVersion` is given: a device whose data version
+    /// differs refuses a conditional write (DataVersionMismatch).
     public static func writeAttributeRequest(
         endpointID: EndpointID,
         clusterID: ClusterID,
         attributeID: AttributeID,
-        dataVersion: DataVersion = DataVersion(rawValue: 0),
+        dataVersion: DataVersion? = nil,
         value: TLVElement,
         timedRequest: Bool = false
     ) -> Data {

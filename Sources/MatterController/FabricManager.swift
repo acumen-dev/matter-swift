@@ -168,6 +168,15 @@ public actor FabricManager {
         return id
     }
 
+    /// Give back a node ID allocated for a commissioning that failed, so the
+    /// next device gets it. Only the most recent allocation can be returned;
+    /// if a later one was handed out meanwhile the ID is simply skipped.
+    func releaseNodeID(_ id: NodeID) {
+        if nextNodeIDValue == id.rawValue + 1 {
+            nextNodeIDValue = id.rawValue
+        }
+    }
+
     // MARK: - NOC Generation
 
     /// Generate a Node Operational Certificate for a commissioned device.

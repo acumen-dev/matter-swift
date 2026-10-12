@@ -201,13 +201,9 @@ public struct ExchangeManager: Sendable {
         lastReceived[scope] = now
     }
 
-    /// Whether a message arrived in `scope` less than the default
-    /// configuration's `sessionActiveThreshold` ago.
-    public func isPeerActive(scope: SessionScope, now: ContinuousClock.Instant) -> Bool {
-        isPeerActive(scope: scope, threshold: defaultConfig.peer.sessionActiveThreshold, now: now)
-    }
-
-    private func isPeerActive(scope: SessionScope, threshold: Duration, now: ContinuousClock.Instant) -> Bool {
+    /// Whether a message arrived in `scope` less than `threshold` (the peer's
+    /// SAT) ago.
+    public func isPeerActive(scope: SessionScope, threshold: Duration, now: ContinuousClock.Instant) -> Bool {
         guard let last = lastReceived[scope] else { return false }
         return now - last < threshold
     }

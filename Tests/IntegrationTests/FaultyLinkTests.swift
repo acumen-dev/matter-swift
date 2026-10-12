@@ -66,6 +66,107 @@ struct FaultyLinkTests {
         await server.stop()
     }
 
+    @Test("Two controllers in turn: CommissionedDevice.fabricIndex is the device's index (1, then 2), not the controller's own")
+    func deviceAssignedFabricIndex() async throws {
+        let link = FaultInjectingLink(seed: 11)
+        let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
+        // A controller's stop() cancels its receive task (it does not close
+        // the transport), which would end the link's single receive stream;
+        // the hand-off keeps one reader on it and lends each controller its own.
+        let side = HandoffTransport(link.a)
+        let first = try makeBorrowingController(transport: side)
+        var second: MatterController?
+
+        do {
+            let d1 = try await first.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            #expect(d1.fabricIndex == FabricIndex(rawValue: 1))
+            await first.stop()
+
+            // The first commit closed the window; reopen it for the second admin.
+            await server.openCommissioningWindow(timeout: 180)
+            let other = try makeBorrowingController(transport: side)
+            second = other
+            let d2 = try await other.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            #expect(d2.fabricIndex == FabricIndex(rawValue: 2))
+        } catch {
+            await first.stop()
+            await second?.stop()
+            await server.stop()
+            side.shutdown()
+            throw error
+        }
+        await second?.stop()
+        await server.stop()
+        side.shutdown()
+    }
+
+    /// Checks that `isFabricFiltered` reaches the device. The device server
+    /// leaves OperationalCredentials.Fabrics empty (only CommissionedFabrics
+    /// is maintained), so the fabric-scoped list read here is the ACL. It
+    /// keeps one device-wide readable ACL list (a filed device issue), so the
+    /// fabric-1 entry is whatever the last raw ACL write left there, not
+    /// necessarily the first admin's; the assertions are on fabric indices,
+    /// not on whose entries or how many.
+    @Test("isFabricFiltered reaches the device: an unfiltered ACL read shows a fabric-1 entry; a filtered one shows no other fabric's")
+    func fabricFilteredRead() async throws {
+        let link = FaultInjectingLink(seed: 29)
+        let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
+        // Controllers borrow the link in turn (see deviceAssignedFabricIndex).
+        let side = HandoffTransport(link.a)
+        let first = try makeBorrowingController(transport: side)
+        var second: MatterController?
+
+        do {
+            _ = try await first.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            await first.stop()
+            await server.openCommissioningWindow(timeout: 180)
+            let other = try makeBorrowingController(transport: side)
+            second = other
+            let device = try await other.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+
+            let all = try await other.readAttribute(
+                nodeID: device.nodeID, endpointID: .root, clusterID: .accessControl,
+                attributeID: AccessControlCluster.Attribute.acl, isFabricFiltered: false
+            )
+            #expect(Self.fabricIndices(all).contains(1),
+                    "an unfiltered read (isFabricFiltered: false) shows an entry of fabric 1, not the reader's: \(all)")
+            let own = try await other.readAttribute(
+                nodeID: device.nodeID, endpointID: .root, clusterID: .accessControl,
+                attributeID: AccessControlCluster.Attribute.acl
+            )
+            #expect(Self.fabricIndices(own).allSatisfy { $0 == UInt64(device.fabricIndex.rawValue) },
+                    "a filtered read shows no other fabric's entry: \(own)")
+        } catch {
+            await first.stop()
+            await second?.stop()
+            await server.stop()
+            side.shutdown()
+            throw error
+        }
+        await second?.stop()
+        await server.stop()
+        side.shutdown()
+    }
+
+    /// The FabricIndex (tag 0xFE) of each entry of a fabric-scoped list.
+    private static func fabricIndices(_ list: TLVElement) -> [UInt64] {
+        (list.arrayElements ?? []).compactMap { entry in
+            guard case .structure(let fields) = entry else { return nil }
+            return fields.first(where: { $0.tag == .contextSpecific(0xFE) })?.value.uintValue
+        }
+    }
+
+    private func makeBorrowingController(transport: any MatterUDPTransport) throws -> MatterController {
+        try MatterController(
+            transport: transport,
+            discovery: FaultyLinkDiscovery(),
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                mrp: MRPConfig(maxRetransmissions: 10)
+            )
+        )
+    }
+
     @Test("A silent peer surfaces peerUnreachable; the next call re-establishes CASE and never re-sends the invoke")
     func silentPeer() async throws {
         let link = FaultInjectingLink(seed: 7)
@@ -128,6 +229,9 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            // Commissioning leaves its CASE session cached; drop it so the
+            // operations below must establish (and share) a fresh one.
+            await controller.invalidateSession(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
             // Overlapping reads and one invoke, all issued before any CASE session exists.
@@ -181,6 +285,9 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            // Commissioning leaves its CASE session cached; drop it so the
+            // operations below must establish (and share) a fresh one.
+            await controller.invalidateSession(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
             // Hold the handshake: the device's replies are lost until released.
@@ -234,6 +341,9 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            // Commissioning leaves its CASE session cached; drop it so the
+            // operations below must establish (and share) a fresh one.
+            await controller.invalidateSession(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
             // Hold the handshake: the device's replies are lost until released.
@@ -362,5 +472,49 @@ struct FaultyLinkTests {
             await Task.yield()
         }
         return false
+    }
+}
+
+/// Lends one link endpoint to controllers in turn. `close()` ends only the
+/// current borrower's stream; a permanent pump keeps reading the endpoint and
+/// forwards to whichever borrower is current (datagrams in between are lost).
+private final class HandoffTransport: MatterUDPTransport, Sendable {
+    private let base: FaultInjectingEndpoint
+    private let current = LockedValue<AsyncStream<(Data, MatterAddress)>.Continuation?>(nil)
+    private let pump = LockedValue<Task<Void, Never>?>(nil)
+
+    init(_ base: FaultInjectingEndpoint) {
+        self.base = base
+        let current = self.current
+        let source = base.receive()
+        pump.withLock {
+            $0 = Task {
+                for await datagram in source {
+                    current.withLock { $0 }?.yield(datagram)
+                }
+            }
+        }
+    }
+
+    var address: MatterAddress { base.address }
+
+    func send(_ data: Data, to address: MatterAddress) async throws {
+        try await base.send(data, to: address)
+    }
+
+    func receive() -> AsyncStream<(Data, MatterAddress)> {
+        let (stream, continuation) = AsyncStream<(Data, MatterAddress)>.makeStream()
+        current.withLock { $0?.finish(); $0 = continuation }
+        return stream
+    }
+
+    func bind(port: UInt16) async throws {}
+
+    func close() async {
+        current.withLock { $0?.finish(); $0 = nil }
+    }
+
+    func shutdown() {
+        pump.withLock { $0?.cancel(); $0 = nil }
     }
 }

@@ -188,13 +188,70 @@ struct CommissioningControllerTests {
         #expect(message.count > 0)
     }
 
+    private func locationCapabilityReport(_ value: UInt64) -> Data {
+        ReportData(
+            attributeReports: [AttributeReportIB(attributeData: AttributeDataIB(
+                path: AttributePath(
+                    endpointID: .root,
+                    clusterID: GeneralCommissioningCluster.id,
+                    attributeID: GeneralCommissioningCluster.Attribute.locationCapability
+                ),
+                data: .unsignedInt(value)
+            ))],
+            suppressResponse: true
+        ).tlvEncode()
+    }
+
+    @Test("SetRegulatoryConfig location follows the device's LocationCapability",
+          arguments: [
+            (UInt64(0), GeneralCommissioningCluster.RegulatoryLocationType.indoor),
+            (1, .outdoor),
+            (2, .indoorOutdoor),
+          ])
+    func locationFollowsCapability(capability: UInt64, expected: GeneralCommissioningCluster.RegulatoryLocationType) throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(try cc.handleLocationCapabilityResponse(locationCapabilityReport(capability)) == expected)
+    }
+
+    @Test("An IndoorOutdoor device gets the preferred location")
+    func indoorOutdoorUsesPreferred() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(try cc.handleLocationCapabilityResponse(locationCapabilityReport(2), preferred: .outdoor) == .outdoor)
+    }
+
+    @Test("An out-of-range LocationCapability fails commissioning")
+    func unknownCapabilityThrows() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        for raw: UInt64 in [3, 0x1_00] {
+            let error = #expect(throws: ControllerError.self) {
+                try cc.handleLocationCapabilityResponse(locationCapabilityReport(raw))
+            }
+            guard case .commissioningFailed? = error else {
+                Issue.record("expected commissioningFailed for \(raw), got \(String(describing: error))")
+                continue
+            }
+        }
+    }
+
+    @Test("The LocationCapability read targets GeneralCommissioning on the root endpoint")
+    func readLocationCapabilityRequest() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let request = try ReadRequest.fromTLV(cc.buildReadLocationCapability())
+        #expect(request.attributeRequests == [AttributePath(
+            endpointID: .root,
+            clusterID: GeneralCommissioningCluster.id,
+            attributeID: GeneralCommissioningCluster.Attribute.locationCapability
+        )])
+    }
+
     @Test("Build CSR request produces valid invoke request")
     func buildCSRRequest() throws {
         let mgr = try makeFabricManager()
         let cc = CommissioningController(fabricManager: mgr)
 
-        let message = cc.buildCSRRequest()
+        let (message, nonce) = cc.buildCSRRequest()
         #expect(message.count > 0)
+        #expect(nonce.count == 32)
     }
 
     @Test("Build CommissioningComplete produces valid invoke request")
@@ -213,6 +270,7 @@ struct CommissioningControllerTests {
 
         var ctx = CommissioningController.CommissioningContext()
         ctx.deviceNodeID = NodeID(rawValue: 42)
+        ctx.deviceFabricIndex = FabricIndex(rawValue: 5)
 
         let respElement = GeneralCommissioningCluster.CommissioningCompleteResponse(
             errorCode: .ok,
@@ -239,5 +297,193 @@ struct CommissioningControllerTests {
 
         #expect(device.nodeID.rawValue == 42)
         #expect(device.vendorID == .test)
+        #expect(device.fabricIndex == FabricIndex(rawValue: 5))
+    }
+
+    @Test("Handle CommissioningComplete without the device's fabric index fails commissioning")
+    func handleCommissioningCompleteWithoutFabricIndex() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        var ctx = CommissioningController.CommissioningContext()
+        ctx.deviceNodeID = NodeID(rawValue: 42)
+
+        let invokeResp = InvokeResponse(invokeResponses: [
+            InvokeResponseIB(
+                command: CommandDataIB(
+                    commandPath: CommandPath(
+                        endpointID: .root,
+                        clusterID: GeneralCommissioningCluster.id,
+                        commandID: GeneralCommissioningCluster.Command.commissioningCompleteResponse
+                    ),
+                    commandFields: GeneralCommissioningCluster.CommissioningCompleteResponse(
+                        errorCode: .ok, debugText: ""
+                    ).toTLVElement()
+                )
+            )
+        ])
+
+        let error = #expect(throws: ControllerError.self) {
+            try cc.handleCommissioningComplete(response: invokeResp.tlvEncode(), context: ctx)
+        }
+        guard case .commissioningFailed? = error else {
+            Issue.record("expected commissioningFailed, got \(String(describing: error))")
+            return
+        }
+    }
+
+    // MARK: - Response checks
+
+    private func statusResponse(_ status: UInt8) -> Data {
+        InvokeResponse(invokeResponses: [
+            InvokeResponseIB(status: CommandStatusIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: ClusterID(rawValue: 0x003E),
+                    commandID: CommandID(rawValue: 0x0B)
+                ),
+                status: StatusIB(status: status)
+            ))
+        ]).tlvEncode()
+    }
+
+    private func nocResponse(_ resp: OperationalCredentialsCluster.NOCResponse) -> Data {
+        InvokeResponse(invokeResponses: [
+            InvokeResponseIB(command: CommandDataIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: ClusterID(rawValue: 0x003E),
+                    commandID: CommandID(rawValue: 0x08)
+                ),
+                commandFields: resp.toTLVElement()
+            ))
+        ]).tlvEncode()
+    }
+
+    private func csrResponse(csr: Data, nonce: Data) -> Data {
+        let elements = TLVEncoder.encode(
+            .structure([
+                .init(tag: .contextSpecific(1), value: .octetString(csr)),
+                .init(tag: .contextSpecific(2), value: .octetString(nonce))
+            ])
+        )
+        let resp = OperationalCredentialsCluster.CSRResponse(
+            nocsrElements: elements, attestationSignature: Data(count: 64)
+        )
+        return InvokeResponse(invokeResponses: [
+            InvokeResponseIB(command: CommandDataIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: ClusterID(rawValue: 0x003E),
+                    commandID: CommandID(rawValue: 0x05)
+                ),
+                commandFields: resp.toTLVElement()
+            ))
+        ]).tlvEncode()
+    }
+
+    @Test("CSR response: matching nonce and valid CSR issues a NOC for the CSR's key")
+    func csrResponseAccepted() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let nonce = Data((0..<32).map { UInt8($0) })
+        let deviceKey = P256.Signing.PrivateKey()
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: deviceKey)
+        let result = try await cc.handleCSRResponse(
+            response: csrResponse(csr: csr, nonce: nonce),
+            expectedNonce: nonce,
+            deviceNodeID: NodeID(rawValue: 2),
+            context: CommissioningController.CommissioningContext()
+        )
+        let request = try InvokeRequest.fromTLV(result.addNOCMessage)
+        let fields = try #require(request.invokeRequests.first?.commandFields)
+        let addNOC = try OperationalCredentialsCluster.AddNOCCommand.fromTLVElement(fields)
+        let noc = try MatterCertificate.fromTLV(addNOC.nocValue)
+        #expect(noc.publicKey == deviceKey.publicKey.x963Representation)
+    }
+
+    @Test("CSR response: nonce mismatch is rejected")
+    func csrResponseNonceMismatch() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let sent = Data(repeating: 1, count: 32)
+        let echoed = Data(repeating: 2, count: 32)
+        await #expect(throws: ControllerError.commissioningFailed("CSR nonce mismatch")) {
+            _ = try await cc.handleCSRResponse(
+                response: csrResponse(csr: csr, nonce: echoed),
+                expectedNonce: sent,
+                deviceNodeID: NodeID(rawValue: 2),
+                context: CommissioningController.CommissioningContext()
+            )
+        }
+    }
+
+    @Test("CSR response: a CSR with a bad signature is rejected")
+    func csrResponseBadSignature() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        var csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let range = try #require(csr.range(of: Data("Matter".utf8)))
+        csr[range.lowerBound] ^= 0x01
+        let nonce = Data(repeating: 7, count: 32)
+        do {
+            _ = try await cc.handleCSRResponse(
+                response: csrResponse(csr: csr, nonce: nonce),
+                expectedNonce: nonce,
+                deviceNodeID: NodeID(rawValue: 2),
+                context: CommissioningController.CommissioningContext()
+            )
+            Issue.record("expected failure")
+        } catch ControllerError.commissioningFailed(let message) {
+            #expect(message.hasPrefix("Invalid CSR"))
+            #expect(message.contains("badSignature"), "the failure must be the signature check, got \(message)")
+        }
+    }
+
+    @Test("AddTrustedRootCert: success passes, failure throws")
+    func addTrustedRootCertResponse() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        try cc.handleAddTrustedRootCertResponse(statusResponse(0x00))
+        #expect(throws: ControllerError.self) {
+            try cc.handleAddTrustedRootCertResponse(statusResponse(0x81))
+        }
+    }
+
+    @Test("AddNOC: returns the device-assigned fabric index")
+    func addNOCReturnsIndex() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let index = try cc.handleNOCResponse(nocResponse(.init(statusCode: .ok, fabricIndex: FabricIndex(rawValue: 3))))
+        #expect(index == FabricIndex(rawValue: 3))
+    }
+
+    @Test("AddNOC: a non-ok status throws")
+    func addNOCFailureThrows() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        // A fabric index is present, so the status alone must cause the throw.
+        let error = #expect(throws: ControllerError.self) {
+            try cc.handleNOCResponse(nocResponse(.init(statusCode: .tableIsFull, fabricIndex: FabricIndex(rawValue: 3))))
+        }
+        guard case .commissioningFailed(let message)? = error else {
+            Issue.record("expected commissioningFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(message.contains("tableIsFull"), "the failure must be the status, got \(message)")
+    }
+
+    @Test("AddNOC: a status-only response throws")
+    func addNOCStatusOnlyThrows() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(throws: ControllerError.self) {
+            try cc.handleNOCResponse(statusResponse(0x00))
+        }
+    }
+
+    @Test("ACL write: all SUCCESS passes, any failure throws")
+    func aclWriteResponse() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let path = AttributePath(endpointID: .root, clusterID: ClusterID(rawValue: 0x001F), attributeID: AccessControlCluster.Attribute.acl)
+        let ok = WriteResponse(writeResponses: [AttributeStatusIB(path: path, status: .success)]).tlvEncode()
+        let bad = WriteResponse(writeResponses: [
+            AttributeStatusIB(path: path, status: .success),
+            AttributeStatusIB(path: path, status: .invalidAction)
+        ]).tlvEncode()
+        try cc.handleACLWriteResponse(ok)
+        #expect(throws: ControllerError.self) { try cc.handleACLWriteResponse(bad) }
     }
 }

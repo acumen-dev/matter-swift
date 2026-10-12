@@ -36,6 +36,14 @@ struct MRPParametersTests {
         #expect(parameters.sessionActiveThreshold == .milliseconds(1000))
     }
 
+    @Test("A zero advertised SII or SAI falls back to the default; a zero SAT is kept")
+    func zeroIntervalsFallBack() {
+        #expect(MRPParameters(txtRecords: ["SII": "0"]).sessionIdleInterval == .milliseconds(500))
+        #expect(MRPParameters(txtRecords: ["SAI": "0"]).sessionActiveInterval == .milliseconds(300))
+        #expect(MRPParameters(txtRecords: ["SII": "1"]).sessionIdleInterval == .milliseconds(1))
+        #expect(MRPParameters(txtRecords: ["SAT": "0"]).sessionActiveThreshold == .milliseconds(0))
+    }
+
     @Test("Missing, garbage and out-of-range TXT values fall back per key")
     func txtFallbacks() {
         let garbage = MRPParameters(txtRecords: ["SII": "abc", "SAI": "3600001", "SAT": "-5"])
@@ -239,9 +247,15 @@ struct ExchangeManagerTests {
     func peerActivity() throws {
         var manager = makeManager()
         manager.recordReceived(scope: key.scope, now: t0)
-        #expect(manager.isPeerActive(scope: key.scope, now: t0 + .milliseconds(3999)))
-        #expect(!manager.isPeerActive(scope: key.scope, now: t0 + .milliseconds(4000)))
-        #expect(!manager.isPeerActive(scope: .secured(localSessionID: 1), now: t0))
+        let sat = Duration.milliseconds(4000)
+        #expect(manager.isPeerActive(scope: key.scope, threshold: sat, now: t0 + .milliseconds(3999)))
+        #expect(!manager.isPeerActive(scope: key.scope, threshold: sat, now: t0 + .milliseconds(4000)))
+        #expect(!manager.isPeerActive(scope: .secured(localSessionID: 1), threshold: sat, now: t0))
+
+        // A per-peer SAT of 8000 ms keeps the peer active where the default would not.
+        let longSAT = Duration.milliseconds(8000)
+        #expect(manager.isPeerActive(scope: key.scope, threshold: longSAT, now: t0 + .milliseconds(7999)))
+        #expect(!manager.isPeerActive(scope: key.scope, threshold: longSAT, now: t0 + .milliseconds(8000)))
 
         manager.open(key, peerAddress: peer, now: t0)
         try manager.trackTransmission(key, message: message(counter: 41), now: t0 + .milliseconds(100))

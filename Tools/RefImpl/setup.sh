@@ -2,13 +2,19 @@
 # setup.sh
 # Copyright 2026 Monagle Pty Ltd
 #
-# Build chip-cert and chip-tool from the connectedhomeip reference implementation.
+# Build chip-cert, chip-tool and chip-all-clusters-app from the connectedhomeip
+# reference implementation.
 # Binaries are placed in Tools/RefImpl/bin/ and cached by CI.
 #
 # Usage:
-#   ./Tools/RefImpl/setup.sh           # build both chip-cert and chip-tool
+#   ./Tools/RefImpl/setup.sh           # build chip-cert, chip-tool and chip-all-clusters-app
 #   ./Tools/RefImpl/setup.sh chip-cert # build chip-cert only (faster)
 #   ./Tools/RefImpl/setup.sh chip-tool # build chip-tool only
+#   ./Tools/RefImpl/setup.sh all-clusters-app # build the all-clusters device app only
+#
+# "all" builds chip-cert, chip-tool and chip-all-clusters-app.
+# chip-tool, all-clusters-app (and all) additionally need node + npm (brew install node)
+# on Apple Silicon without Rosetta, to build the ZAP code generator.
 #
 # Prerequisites (macOS):
 #   brew install git-lfs python3 pkg-config
@@ -43,6 +49,13 @@ check_cmd git
 check_cmd git-lfs
 check_cmd python3
 check_cmd pkg-config
+case "$TARGET" in
+    chip-tool|all-clusters-app|all)
+        if [ "$(uname -m)" = "arm64" ] && ! /usr/bin/arch -x86_64 /usr/bin/true &>/dev/null; then
+            check_cmd node
+            check_cmd npm
+        fi ;;
+esac
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "ERROR: Missing required tools: ${MISSING[*]}"
@@ -70,7 +83,8 @@ already_built() {
     case "$TARGET" in
         chip-cert) [[ -x "$BIN_DIR/chip-cert" ]] ;;
         chip-tool)  [[ -x "$BIN_DIR/chip-tool" ]] ;;
-        all)        [[ -x "$BIN_DIR/chip-cert" && -x "$BIN_DIR/chip-tool" ]] ;;
+        all-clusters-app) [[ -x "$BIN_DIR/chip-all-clusters-app" ]] ;;
+        all)        [[ -x "$BIN_DIR/chip-cert" && -x "$BIN_DIR/chip-tool" && -x "$BIN_DIR/chip-all-clusters-app" ]] ;;
         *)          return 1 ;;
     esac
 }
@@ -174,6 +188,11 @@ fi
 
 export PW_ENVIRONMENT_ROOT="${PW_ENVIRONMENT_ROOT:-$REPO_DIR/.environment}"
 
+# The default environment.json pulls the ZAP code generator from a CIPD path
+# that needs a Google login (fails non-interactively). Use the CIPD-free config;
+# ZAP itself (needed by chip-tool and all-clusters-app) comes from ensure_zap_cli below.
+export PW_CONFIG_FILE="${PW_CONFIG_FILE:-scripts/setup/environment_no_cipd.json}"
+
 if [ ! -f "$PW_ENVIRONMENT_ROOT/activate.sh" ] || [ ! -s "$PW_ENVIRONMENT_ROOT/activate.sh" ]; then
     echo ""
     echo ">>> First-time setup: bootstrapping pigweed toolchain..."
@@ -217,13 +236,50 @@ fi
 # and chip-tool don't call BLE code at runtime.
 
 GN_OUT="out/darwin"
-GN_ARGS='chip_build_tests=false'
+# treat_warnings_as_errors=false: the pinned tag trips -Wdeprecated-literal-operator
+# (Span.h `operator"" _span`) under current Apple clang.
+GN_ARGS='chip_build_tests=false treat_warnings_as_errors=false'
 
 ensure_gn_out() {
-    if [ ! -f "$GN_OUT/build.ninja" ]; then
-        echo ">>> Configuring build..."
-        gn gen "$GN_OUT" --args="$GN_ARGS"
+    echo ">>> Configuring build..."
+    gn gen "$GN_OUT" --args="$GN_ARGS"
+}
+
+# chip-tool and the example need `zap-cli` (code generator) at build time. The pigweed CIPD
+# copy needs a Google login, and the public GitHub release is x86_64-only even
+# for "mac-arm64" (needs Rosetta). On Apple Silicon we therefore build ZAP from
+# source (node + tsc; the Electron/SPA UI is not needed) and wrap it as zap-cli.
+ensure_zap_cli() {
+    command -v zap-cli &>/dev/null && return 0
+    local zap_ver zap_dir
+    zap_ver=$(tr -d '[:space:]' < scripts/setup/zap.version)
+    zap_dir="$BUILD_BASE/zap-$zap_ver"
+    if [ ! -x "$zap_dir/zap-cli" ]; then
+        if [ "$(uname -m)" = "arm64" ] && ! /usr/bin/arch -x86_64 /usr/bin/true &>/dev/null; then
+            command -v node &>/dev/null || { echo "ERROR: node is required to build zap (brew install node)"; exit 1; }
+            echo ">>> Building zap-cli $zap_ver from source (no Rosetta)..."
+            rm -rf "$zap_dir"; mkdir -p "$zap_dir"
+            git clone --depth 1 --branch "$zap_ver" https://github.com/project-chip/zap.git "$zap_dir/src"
+            ( cd "$zap_dir/src" \
+              && npm install --omit=optional --legacy-peer-deps --no-audit --no-fund \
+              && npx tsc --build ./tsconfig.json \
+              && npx copyfiles './src-electron/**/*.sql' './src-electron/icons/*' ./dist/ )
+            # Wrapper: connectedhomeip parses a `Version: x.y.z` line from --version.
+            cat > "$zap_dir/zap-cli" <<WRAP
+#!/usr/bin/env bash
+if [ "\$1" = "--version" ]; then echo "Version: ${zap_ver#v}" | sed 's/-nightly//;s/\.0\([0-9]\)/.\1/g'; exit 0; fi
+exec node --unhandled-rejections=strict "$zap_dir/src/dist/src-electron/main-process/main.js" "\$@"
+WRAP
+            chmod +x "$zap_dir/zap-cli"
+        else
+            echo ">>> Fetching zap-cli $zap_ver (mac-x64)..."
+            rm -rf "$zap_dir"; mkdir -p "$zap_dir"
+            curl -fL -o "$zap_dir/zap.zip" \
+                "https://github.com/project-chip/zap/releases/download/$zap_ver/zap-mac-x64.zip"
+            unzip -q "$zap_dir/zap.zip" -d "$zap_dir"
+        fi
     fi
+    export ZAP_INSTALL_PATH="$zap_dir"
 }
 
 build_chip_cert() {
@@ -235,6 +291,7 @@ build_chip_cert() {
 }
 
 build_chip_tool() {
+    ensure_zap_cli
     ensure_gn_out
     echo ">>> Building chip-tool..."
     ninja -C "$GN_OUT" chip-tool
@@ -242,15 +299,32 @@ build_chip_tool() {
     echo ">>> chip-tool → $BIN_DIR/chip-tool"
 }
 
+# The all-clusters example acts as a Matter device on localhost. It uses its
+# own GN root (the Linux example builds the POSIX platform layer on Darwin).
+build_all_clusters_app() {
+    ensure_zap_cli
+    local out="out/all-clusters-app"
+    # treat_warnings_as_errors=false: the pinned tag trips -Wdeprecated-literal-operator
+    # (Span.h `operator"" _span`) under current Apple clang.
+    gn gen "$out" --root=examples/all-clusters-app/linux \
+        --args='chip_build_tests=false treat_warnings_as_errors=false'
+    echo ">>> Building chip-all-clusters-app..."
+    ninja -C "$out" chip-all-clusters-app
+    cp "$out/chip-all-clusters-app" "$BIN_DIR/"
+    echo ">>> chip-all-clusters-app → $BIN_DIR/chip-all-clusters-app"
+}
+
 case "$TARGET" in
     chip-cert) build_chip_cert ;;
     chip-tool)  build_chip_tool  ;;
+    all-clusters-app) build_all_clusters_app ;;
     all)
         build_chip_cert
         build_chip_tool
+        build_all_clusters_app
         ;;
     *)
-        echo "Unknown target: $TARGET. Use chip-cert, chip-tool, or all."
+        echo "Unknown target: $TARGET. Use chip-cert, chip-tool, all-clusters-app, or all."
         exit 1
         ;;
 esac

@@ -18,11 +18,12 @@ import MatterProtocol
 ///
 /// 1. PASE session establishment (PBKDFParamRequest → Pake3)
 /// 2. ArmFailSafe
-/// 3. SetRegulatoryConfig
+/// 3. LocationCapability read → SetRegulatoryConfig
 /// 4. CSRRequest → generate NOC
 /// 5. AddTrustedRootCert + AddNOC
 /// 6. ACL write (grant controller admin access)
-/// 7. CommissioningComplete
+/// 7. CASE session to the device on the new fabric (driven by the caller)
+/// 8. CommissioningComplete, over that CASE session
 ///
 /// ```swift
 /// let cc = CommissioningController(fabricManager: mgr)
@@ -63,6 +64,9 @@ public struct CommissioningController: Sendable {
 
         /// Fabric index of the controller.
         public var fabricIndex: FabricIndex?
+
+        /// Fabric index the device assigned in its AddNOC response.
+        public var deviceFabricIndex: FabricIndex?
 
         /// Attestation challenge from the PASE session keys (16 bytes).
         /// Used to verify the attestation signature in the AttestationResponse.
@@ -170,6 +174,19 @@ public struct CommissioningController: Sendable {
         return (message, context)
     }
 
+    /// Build an ArmFailSafe invoke request with expiry 0, which disarms the
+    /// fail-safe and has the device revert everything staged under it.
+    public func buildDisarmFailSafe() -> Data {
+        IMClient.invokeCommandRequest(
+            endpointID: .root,
+            clusterID: GeneralCommissioningCluster.id,
+            commandID: GeneralCommissioningCluster.Command.armFailSafe,
+            commandFields: GeneralCommissioningCluster.ArmFailSafeRequest(
+                expiryLengthSeconds: 0, breadcrumb: 0
+            ).toTLVElement()
+        )
+    }
+
     /// Validate the ArmFailSafe response.
     public func handleArmFailSafeResponse(
         response: Data,
@@ -191,10 +208,40 @@ public struct CommissioningController: Sendable {
 
     // MARK: - Step 5: SetRegulatoryConfig
 
+    /// Build a read of the device's GeneralCommissioning LocationCapability.
+    public func buildReadLocationCapability() -> Data {
+        IMClient.readAttributeRequest(
+            endpointID: .root,
+            clusterID: GeneralCommissioningCluster.id,
+            attributeID: GeneralCommissioningCluster.Attribute.locationCapability
+        )
+    }
+
+    /// The regulatory location to send, given the device's LocationCapability
+    /// read response: the device's own value unless it supports both, in which
+    /// case `preferred`. A device fixed to Indoor or Outdoor refuses any other
+    /// value (connectedhomeip answers ValueOutsideRange).
+    public func handleLocationCapabilityResponse(
+        _ response: Data,
+        preferred: GeneralCommissioningCluster.RegulatoryLocationType = .indoorOutdoor
+    ) throws -> GeneralCommissioningCluster.RegulatoryLocationType {
+        let value: TLVElement
+        do {
+            value = try IMClient.parseReadResponse(response)
+        } catch {
+            throw ControllerError.commissioningFailed("LocationCapability: \(error)")
+        }
+        guard let raw = value.uintValue, raw <= UInt64(UInt8.max),
+              let capability = GeneralCommissioningCluster.RegulatoryLocationType(rawValue: UInt8(raw)) else {
+            throw ControllerError.commissioningFailed("LocationCapability: unexpected value \(value)")
+        }
+        return capability == .indoorOutdoor ? preferred : capability
+    }
+
     /// Build a SetRegulatoryConfig invoke request.
     public func buildSetRegulatoryConfig(
         context: CommissioningContext,
-        locationType: GeneralCommissioningCluster.RegulatoryLocationType = .indoorOutdoor,
+        locationType: GeneralCommissioningCluster.RegulatoryLocationType,
         countryCode: String = "XX"
     ) -> Data {
         let request = GeneralCommissioningCluster.SetRegulatoryConfigRequest(
@@ -229,18 +276,22 @@ public struct CommissioningController: Sendable {
     // MARK: - Step 6: CSR Request
 
     /// Build a CSRRequest invoke request.
-    public func buildCSRRequest() -> Data {
+    ///
+    /// - Returns: the request message and the CSRNonce it carries; pass the nonce
+    ///   to ``handleCSRResponse(response:expectedNonce:deviceNodeID:context:)`` to check the echo.
+    public func buildCSRRequest() -> (message: Data, nonce: Data) {
         var csrNonce = Data(count: 32)
         for i in 0..<32 { csrNonce[i] = UInt8.random(in: 0...255) }
 
         let request = OperationalCredentialsCluster.CSRRequest(csrNonce: csrNonce)
 
-        return IMClient.invokeCommandRequest(
+        let message = IMClient.invokeCommandRequest(
             endpointID: .root,
             clusterID: ClusterID(rawValue: 0x003E), // OperationalCredentials
             commandID: OperationalCredentialsCluster.Command.csrRequest,
             commandFields: request.toTLVElement()
         )
+        return (message, csrNonce)
     }
 
     /// Parse CSR response and extract the device's operational public key.
@@ -249,13 +300,20 @@ public struct CommissioningController: Sendable {
     /// - Tag 1: NOCSR (the CSR itself, DER-encoded PKCS#10)
     /// - Tag 2: CSRNonce (echo of our nonce)
     ///
-    /// For now, we extract the public key from the NOCSR raw bytes.
-    /// The NOCSR in Matter is a DER-encoded PKCS#10 CSR containing
-    /// the device's P-256 public key.
+    /// The echoed CSRNonce must equal `expectedNonce`, and the CSR's self-signature
+    /// must verify; the device key is read from its SubjectPublicKeyInfo.
+    ///
+    /// - Parameters:
+    ///   - deviceNodeID: The operational node ID the caller allocated for the
+    ///     device. It becomes the NOC's subject node ID and is recorded in the
+    ///     returned context, from which
+    ///     ``handleCommissioningComplete(response:context:)`` builds the device.
     public func handleCSRResponse(
         response: Data,
+        expectedNonce: Data,
+        deviceNodeID: NodeID,
         context: CommissioningContext
-    ) async throws -> (addRootCertMessage: Data, addNOCMessage: Data, deviceNodeID: NodeID, context: CommissioningContext) {
+    ) async throws -> (addRootCertMessage: Data, addNOCMessage: Data, context: CommissioningContext) {
         let responseElement = try IMClient.parseInvokeResponse(response)
 
         guard let element = responseElement else {
@@ -271,12 +329,17 @@ public struct CommissioningController: Sendable {
             throw ControllerError.invalidCSRResponse
         }
 
-        // Extract public key from the DER-encoded CSR
-        // The P-256 public key (65 bytes uncompressed) is near the end of the CSR
-        let publicKey = try extractPublicKeyFromCSR(csrData)
+        guard let echoedNonce = nocsrFields.first(where: { $0.tag == .contextSpecific(2) })?.value.dataValue,
+              echoedNonce == expectedNonce else {
+            throw ControllerError.commissioningFailed("CSR nonce mismatch")
+        }
 
-        // Allocate a node ID for the device
-        let deviceNodeID = await fabricManager.allocateNodeID()
+        let publicKey: P256.Signing.PublicKey
+        do {
+            publicKey = try PKCS10CSR(der: csrData).publicKey
+        } catch {
+            throw ControllerError.commissioningFailed("Invalid CSR: \(error)")
+        }
 
         // Generate NOC for the device
         let noc = try await fabricManager.generateNOC(
@@ -323,27 +386,66 @@ public struct CommissioningController: Sendable {
         ctx.deviceNodeID = deviceNodeID
         ctx.fabricIndex = fabricManager.fabricIndex
 
-        return (addRootCertMessage, addNOCMessage, deviceNodeID, ctx)
+        return (addRootCertMessage, addNOCMessage, ctx)
+    }
+
+    // MARK: - Step 6b: Handle AddTrustedRootCert Response
+
+    /// Check the AddTrustedRootCert response (a bare status).
+    public func handleAddTrustedRootCertResponse(_ data: Data) throws {
+        do {
+            _ = try IMClient.parseInvokeResponse(data)
+        } catch {
+            throw ControllerError.commissioningFailed("AddTrustedRootCert failed: \(error)")
+        }
     }
 
     // MARK: - Step 7: Handle NOC Response + ACL Write
 
-    /// Validate the NOC response and build the ACL write message.
-    public func handleNOCResponse(
-        response: Data,
-        context: CommissioningContext
-    ) throws -> (aclWriteMessage: Data, context: CommissioningContext) {
-        let responseElement = try IMClient.parseInvokeResponse(response)
-
-        if let element = responseElement {
-            let nocResp = try OperationalCredentialsCluster.NOCResponse.fromTLVElement(element)
-            guard nocResp.statusCode == .ok else {
-                throw ControllerError.commissioningFailed(
-                    "AddNOC failed: \(nocResp.statusCode)"
-                )
-            }
+    /// Check the AddNOC response and return the fabric index the device
+    /// assigned (not the controller's own index).
+    public func handleNOCResponse(_ data: Data) throws -> FabricIndex {
+        let element: TLVElement?
+        do {
+            element = try IMClient.parseInvokeResponse(data)
+        } catch {
+            throw ControllerError.commissioningFailed("AddNOC failed: \(error)")
         }
+        guard let element else {
+            throw ControllerError.commissioningFailed("AddNOC failed: response carries no NOCResponse")
+        }
+        let nocResp: OperationalCredentialsCluster.NOCResponse
+        do {
+            nocResp = try OperationalCredentialsCluster.NOCResponse.fromTLVElement(element)
+        } catch {
+            throw ControllerError.commissioningFailed("AddNOC failed: \(error)")
+        }
+        guard nocResp.statusCode == .ok else {
+            throw ControllerError.commissioningFailed(
+                "AddNOC failed: \(nocResp.statusCode) \(nocResp.debugText ?? "")"
+            )
+        }
+        guard let index = nocResp.fabricIndex else {
+            throw ControllerError.commissioningFailed("AddNOC failed: NOCResponse carries no fabric index")
+        }
+        return index
+    }
 
+    /// Check the ACL write response; any non-SUCCESS entry fails.
+    public func handleACLWriteResponse(_ data: Data) throws {
+        let allSucceeded: Bool
+        do {
+            allSucceeded = try IMClient.parseWriteResponse(data)
+        } catch {
+            throw ControllerError.commissioningFailed("ACL write failed: \(error)")
+        }
+        guard allSucceeded else {
+            throw ControllerError.commissioningFailed("ACL write failed: non-SUCCESS write status")
+        }
+    }
+
+    /// Build the ACL write message granting the controller admin access.
+    public func buildACLWrite() -> Data {
         // Build ACL write — grant controller admin access
         let fabricInfo = fabricManager.controllerFabricInfo
         let fabricIndex = fabricManager.fabricIndex
@@ -353,14 +455,12 @@ public struct CommissioningController: Sendable {
             fabricIndex: fabricIndex
         )
 
-        let aclWriteMessage = IMClient.writeAttributeRequest(
+        return IMClient.writeAttributeRequest(
             endpointID: .root,
             clusterID: ClusterID(rawValue: 0x001F), // AccessControl
             attributeID: AccessControlCluster.Attribute.acl,
             value: .array([ace.toTLVElement()])
         )
-
-        return (aclWriteMessage, context)
     }
 
     // MARK: - Step 8: CommissioningComplete
@@ -394,7 +494,9 @@ public struct CommissioningController: Sendable {
             throw ControllerError.commissioningFailed("No device node ID allocated")
         }
 
-        let fabricIndex = fabricManager.fabricIndex
+        guard let fabricIndex = context.deviceFabricIndex else {
+            throw ControllerError.commissioningFailed("No device fabric index recorded")
+        }
         let vendorID = fabricManager.vendorID
 
         return CommissionedDevice(
@@ -542,31 +644,5 @@ public struct CommissioningController: Sendable {
             }
         }
         throw ControllerError.attestationValidationFailed("Could not extract P-256 public key from DER certificate")
-    }
-
-    // MARK: - CSR Parsing
-
-    /// Extract the P-256 public key from a DER-encoded PKCS#10 CSR.
-    ///
-    /// In a Matter CSR, the subject public key is a P-256 uncompressed point
-    /// (65 bytes starting with 0x04). We search for this pattern in the DER data.
-    private func extractPublicKeyFromCSR(_ csrData: Data) throws -> P256.Signing.PublicKey {
-        // Look for the uncompressed point marker (0x04) followed by 64 bytes
-        // in the DER structure. The public key is the BIT STRING value in the
-        // SubjectPublicKeyInfo ASN.1 structure.
-        //
-        // For P-256, the BIT STRING content is:
-        // 0x00 (unused bits) + 0x04 (uncompressed) + 32 bytes X + 32 bytes Y
-        for i in 0..<csrData.count {
-            if csrData[csrData.startIndex + i] == 0x04 && i + 64 < csrData.count {
-                let pubKeyData = csrData[(csrData.startIndex + i)..<(csrData.startIndex + i + 65)]
-                do {
-                    return try P256.Signing.PublicKey(x963Representation: pubKeyData)
-                } catch {
-                    continue // Not a valid key, keep searching
-                }
-            }
-        }
-        throw ControllerError.invalidCSRResponse
     }
 }
