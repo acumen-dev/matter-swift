@@ -88,7 +88,7 @@ public struct CASEProtocolHandler: Sendable {
         initiatorRCAC: MatterCertificate,
         localSessionID: UInt16
     ) throws -> SecureSession {
-        let (sessionKeys, peerNodeID) = try CASESession.responderStep2(
+        let (sessionKeys, peerNodeID, peerCATs) = try CASESession.responderStep2(
             context: context.caseContext,
             sigma3Data: payload,
             initiatorRCAC: initiatorRCAC
@@ -100,6 +100,7 @@ public struct CASEProtocolHandler: Sendable {
             peerSessionID: context.initiatorSessionID,
             establishment: .case,
             peerNodeID: peerNodeID,
+            peerCATs: peerCATs,
             localNodeID: fabricInfo.nodeID,
             fabricIndex: fabricInfo.fabricIndex,
             encryptKey: sessionKeys.r2iKey,

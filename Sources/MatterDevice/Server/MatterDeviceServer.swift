@@ -178,6 +178,8 @@ public actor MatterDeviceServer {
         // must respond with the same salt it used before, or SPAKE2+ will fail.
         try await bridge.commissioningState.loadFromStore()
         try await bridge.store.loadFromStore()
+        // A fail-safe never survives a restart, so neither may its Breadcrumb.
+        GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
 
         // Resolve salt: persisted (stable across restarts) > config-provided > random (first run)
         let commState = bridge.commissioningState
@@ -276,16 +278,14 @@ public actor MatterDeviceServer {
 
         // Set initial window state based on fabric count.
         // For uncommissioned devices, openBasicWindow fires onWindowOpened → Task { advertise CM=1 }.
-        // For commissioned devices, advertise CM=0 directly.
+        // Commissioned devices start with the window closed and no commissionable
+        // advertisement; `openCommissioningWindow(timeout:)` reopens it on demand.
         // Do NOT call advertise() here as well — that would race with the onWindowOpened Task
         // and cause EADDRINUSE when both try to bind the same port concurrently.
         if bridge.commissioningState.fabrics.isEmpty {
             // No fabrics — device is uncommissioned, open basic window.
             // The onWindowOpened callback (set above) will handle mDNS advertisement.
             bridge.commissioningState.openBasicWindow(timeout: 900)
-        } else {
-            // Already commissioned — advertise commissionable with CM=0 (window closed).
-            await updateCommissioningAdvertisement(open: false)
         }
 
         logger.info("Device server started on port \(config.port)")
@@ -363,6 +363,8 @@ public actor MatterDeviceServer {
 
             // Check fail-safe expiry
             if bridge.commissioningState.checkFailSafeExpiry(now: now) {
+                // Spec §11.10.7.2: fail-safe expiry resets the Breadcrumb attribute to zero.
+                GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
                 logger.info("Fail-safe timer expired")
             }
 
@@ -1222,7 +1224,7 @@ public actor MatterDeviceServer {
             }
         }
 
-        let fabricIndex = FabricIndex(rawValue: UInt8(cs.fabrics.count + 1))
+        let fabricIndex = cs.pendingFabricIndex
         let fabricInfo = FabricInfo(
             fabricIndex: fabricIndex,
             fabricID: noc.subject.fabricID ?? FabricID(rawValue: 0),
@@ -1407,7 +1409,8 @@ public actor MatterDeviceServer {
                 checkerContext: ACLChecker.RequestContext(
                     isPASE: session.establishment == .pase,
                     subjectNodeID: session.peerNodeID.rawValue,
-                    fabricIndex: fabricIndex
+                    fabricIndex: fabricIndex,
+                    subjectCATs: session.peerCATs
                 ),
                 acls: acls
             )
@@ -1775,9 +1778,24 @@ public actor MatterDeviceServer {
 
     // MARK: - Fabric Removal
 
-    private func onFabricRemoved(_ fabricIndex: FabricIndex) {
-        // Remove CASE-ready fabric info
-        committedFabrics.removeValue(forKey: fabricIndex)
+    private func onFabricRemoved(_ fabricIndex: FabricIndex) async {
+        // Remove CASE-ready fabric info. Its operational advertisement is withdrawn at the
+        // end, after the synchronous state updates, so the only suspension point comes last.
+        var withdrawnInstanceName: String?
+        if let fabricInfo = committedFabrics.removeValue(forKey: fabricIndex) {
+            withdrawnInstanceName = OperationalInstanceName(
+                compressedFabricID: fabricInfo.compressedFabricID(),
+                nodeID: fabricInfo.nodeID.rawValue
+            ).instanceName
+        }
+
+        // Keep CommissionedFabrics in step on every removal path, not just the RemoveFabric command.
+        bridge.store.set(
+            endpoint: EndpointID(rawValue: 0),
+            cluster: .operationalCredentials,
+            attribute: OperationalCredentialsCluster.Attribute.commissionedFabrics,
+            value: .unsignedInt(UInt64(bridge.commissioningState.fabrics.count))
+        )
 
         // Close any sessions for this fabric
         let sessionsToRemove = sessions.filter { $0.value.fabricIndex == fabricIndex }
@@ -1791,38 +1809,94 @@ public actor MatterDeviceServer {
         }
 
         logger.info("Fabric \(fabricIndex) removed, \(sessionsToRemove.count) sessions closed")
+
+        // Withdraw the advertisement so controllers stop resolving a node that no longer exists.
+        if let instanceName = withdrawnInstanceName {
+            await discovery.stopAdvertising(name: instanceName)
+            logger.info("Fabric \(fabricIndex) removed: withdrew operational advertisement \(instanceName)")
+        }
     }
 
     // MARK: - Commissioning Window Management
 
-    /// Update mDNS commissionable advertisement based on window state.
+    /// The state of the commissioning window.
+    public struct CommissioningWindow: Sendable, Equatable {
+        /// Whether a commissioner can currently start PASE.
+        public let isOpen: Bool
+        /// When an open window closes on its own; `nil` while closed.
+        public let expiresAt: Date?
+    }
+
+    /// The current commissioning window.
+    public var commissioningWindow: CommissioningWindow {
+        let state = bridge.commissioningState
+        return CommissioningWindow(
+            isOpen: state.isWindowOpen,
+            expiresAt: state.isWindowOpen ? state.windowExpiry : nil
+        )
+    }
+
+    /// Open a basic commissioning window so a commissioner can pair with the
+    /// passcode, whether or not the device already has fabrics (multi-admin).
+    ///
+    /// Re-opening an open window restarts its timeout. The window closes on
+    /// its own after `timeout` seconds, clamped to the spec range 180–900.
+    /// The commissionable mDNS advertisement follows the window.
+    public func openCommissioningWindow(timeout: UInt16 = 900) {
+        let clamped = min(max(timeout, 180), 900)
+        bridge.commissioningState.openBasicWindow(timeout: clamped)
+        logger.info("Commissioning window opened for \(clamped) s")
+    }
+
+    /// Close the commissioning window early, withdrawing the commissionable
+    /// advertisement.
+    public func closeCommissioningWindow() {
+        guard bridge.commissioningState.isWindowOpen else { return }
+        bridge.commissioningState.closeWindow()
+        logger.info("Commissioning window closed")
+    }
+
+    private var commissionableInstanceName: String {
+        "\(config.deviceName)-\(config.discriminator)"
+    }
+
+    /// Advertise the commissionable service while the window is open; withdraw
+    /// it entirely while closed.
+    ///
+    /// Advertising `_matterc._udp` with `CM=0` indefinitely ("extended
+    /// discovery", which the spec makes optional and time-limited) lists the
+    /// device in Apple Home's "More options" even though it will never accept
+    /// PASE — tapping it hangs on "Connecting…". So a closed window means no
+    /// commissionable advertisement at all.
     private func updateCommissioningAdvertisement(open: Bool) async {
-        let cmValue = open ? "1" : "0"
+        guard open else {
+            await discovery.stopAdvertising(name: commissionableInstanceName)
+            logger.debug("Withdrew commissionable mDNS (window closed)")
+            return
+        }
         let shortDisc = (config.discriminator >> 8) & 0x0F
         let txtRecords = [
             "D":  "\(config.discriminator)",
             "VP": "\(config.vendorId)+\(config.productId)",
-            "CM": cmValue,
+            "CM": "1",
             "DN": config.deviceName,
         ]
 
         // DNS-SD subtypes required for Matter commissioning discovery (Matter spec §4.3.1.1).
         // Apple Home browses for _L<disc>._sub._matterc._udp to find devices by discriminator.
         // _CM subtype signals that the commissioning window is open.
-        let subtypes: [String] = open
-            ? ["_CM", "_L\(config.discriminator)", "_S\(shortDisc)"]
-            : []
+        let subtypes = ["_CM", "_L\(config.discriminator)", "_S\(shortDisc)"]
 
         do {
             try await discovery.advertise(service: MatterServiceRecord(
-                name: "\(config.deviceName)-\(config.discriminator)",
+                name: commissionableInstanceName,
                 serviceType: .commissionable,
                 host: "",
                 port: config.port,
                 txtRecords: txtRecords,
                 subtypes: subtypes
             ))
-            logger.debug("Updated commissionable mDNS: CM=\(cmValue)")
+            logger.debug("Updated commissionable mDNS: CM=1")
         } catch {
             logger.warning("Failed to update commissionable mDNS: \(error)")
         }

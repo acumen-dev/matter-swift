@@ -300,6 +300,16 @@ public final class CommissioningState: @unchecked Sendable {
     // MARK: - Commit
 
     /// Commit staged credentials as a new fabric.
+    /// The fabric index the next `commitCommissioning()` will assign.
+    ///
+    /// Indices are allocated monotonically and not reused, so after a fabric is
+    /// removed this is not `fabrics.count + 1`. AddNOC's response and the staged
+    /// CASE identity must use this value, or CASE runs under a different index
+    /// than the committed fabric and every ACL check after commit fails.
+    public var pendingFabricIndex: FabricIndex {
+        FabricIndex(rawValue: nextFabricIndex)
+    }
+
     public func commitCommissioning() {
         guard let noc = stagedNOC,
               let rcac = stagedRCAC,
@@ -311,7 +321,7 @@ public final class CommissioningState: @unchecked Sendable {
             return
         }
 
-        let fabricIndex = FabricIndex(rawValue: nextFabricIndex)
+        let fabricIndex = pendingFabricIndex
         nextFabricIndex += 1
 
         let fabric = CommittedFabric(

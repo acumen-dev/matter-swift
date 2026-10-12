@@ -227,6 +227,22 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
         return []
     }
 
+    // MARK: - Breadcrumb
+
+    /// Reset the Breadcrumb attribute to zero.
+    ///
+    /// Required on CommissioningComplete success and on fail-safe expiry. A stale non-zero
+    /// Breadcrumb tells the next commissioner that an earlier attempt got past AddNOC, so
+    /// it skips arming the fail-safe and waits for a node that was never issued.
+    public static func resetBreadcrumb(in store: AttributeStore, endpointID: EndpointID = EndpointID(rawValue: 0)) {
+        store.set(
+            endpoint: endpointID,
+            cluster: GeneralCommissioningCluster.id,
+            attribute: GeneralCommissioningCluster.Attribute.breadcrumb,
+            value: .unsignedInt(0)
+        )
+    }
+
     // MARK: - CommissioningComplete
 
     private func handleCommissioningComplete(
@@ -242,6 +258,9 @@ public struct GeneralCommissioningHandler: ClusterHandler, @unchecked Sendable {
 
         // Commit all staged state (NOC, RCAC, ACLs)
         commissioningState.commitCommissioning()
+
+        // Spec §11.10.6.6: on success the Breadcrumb attribute SHALL be reset to zero.
+        Self.resetBreadcrumb(in: store, endpointID: endpointID)
 
         return GeneralCommissioningCluster.CommissioningCompleteResponse(errorCode: .ok).toTLVElement()
     }

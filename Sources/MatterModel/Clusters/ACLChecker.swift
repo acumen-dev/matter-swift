@@ -32,6 +32,8 @@ public struct ACLChecker: Sendable {
         public let isPASE: Bool
         /// The peer node ID of the session subject.
         public let subjectNodeID: UInt64
+        /// CASE Authenticated Tags from the peer's NOC (empty for PASE and group sessions).
+        public let subjectCATs: [UInt32]
         /// The fabric index of the session.
         public let fabricIndex: FabricIndex
         /// Whether this request arrived via a group-addressed message.
@@ -44,10 +46,12 @@ public struct ACLChecker: Sendable {
             subjectNodeID: UInt64,
             fabricIndex: FabricIndex,
             isGroupMessage: Bool = false,
-            groupID: UInt16? = nil
+            groupID: UInt16? = nil,
+            subjectCATs: [UInt32] = []
         ) {
             self.isPASE = isPASE
             self.subjectNodeID = subjectNodeID
+            self.subjectCATs = subjectCATs
             self.fabricIndex = fabricIndex
             self.isGroupMessage = isGroupMessage
             self.groupID = groupID
@@ -119,9 +123,9 @@ public struct ACLChecker: Sendable {
 
             // Check subject match — empty subjects means "any authenticated node on this fabric"
             if !ace.subjects.isEmpty {
-                guard ace.subjects.contains(context.subjectNodeID) else {
+                guard ace.subjects.contains(where: { matchesSubject($0, context: context) }) else {
                     #if DEBUG
-                    print("[ACL-TRACE] ACE[\(aceIndex)] SKIP: subject mismatch — session subjectNodeID=\(context.subjectNodeID) (0x\(String(context.subjectNodeID, radix: 16))) NOT IN ace.subjects=\(ace.subjects.map { "\($0) (0x\(String($0, radix: 16)))" })")
+                    print("[ACL-TRACE] ACE[\(aceIndex)] SKIP: subject mismatch — session subjectNodeID=\(context.subjectNodeID) (0x\(String(context.subjectNodeID, radix: 16))) CATs=\(context.subjectCATs.map { "0x" + String($0, radix: 16) }) NOT IN ace.subjects=\(ace.subjects.map { "\($0) (0x\(String($0, radix: 16)))" })")
                     #endif
                     continue
                 }
@@ -150,6 +154,24 @@ public struct ACLChecker: Sendable {
 
         // No matching ACE found
         return .denied
+    }
+
+    /// Check whether a CASE ACE subject matches the session subject.
+    ///
+    /// Per Matter Core Spec §6.6.2.1.2, a subject in the CAT range
+    /// (`0xFFFF_FFFD_IIII_VVVV`) matches when the peer's NOC carries a CAT with
+    /// identifier `IIII` and version ≥ `VVVV`. Any other subject is an operational
+    /// node ID and must equal the peer's node ID.
+    private static func matchesSubject(_ subject: UInt64, context: RequestContext) -> Bool {
+        guard subject >> 32 == 0xFFFF_FFFD else {
+            return subject == context.subjectNodeID
+        }
+        let identifier = UInt16(truncatingIfNeeded: subject >> 16)
+        let version = UInt16(truncatingIfNeeded: subject)
+        return context.subjectCATs.contains { cat in
+            UInt16(truncatingIfNeeded: cat >> 16) == identifier
+                && UInt16(truncatingIfNeeded: cat) >= version
+        }
     }
 
     /// Check whether a target matches the given endpoint and cluster.

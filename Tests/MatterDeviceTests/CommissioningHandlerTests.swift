@@ -439,6 +439,37 @@ struct OperationalCredentialsHandlerTests {
         #expect(commissioned?.uintValue == 0)
     }
 
+    @Test("Pending fabric index matches the index commit assigns after a fabric was removed")
+    func pendingFabricIndexAfterRemoval() throws {
+        // Re-pairing after a commissioner removed its fabric: fabrics is empty but the
+        // allocator has moved on, so "fabrics.count + 1" would promise index 1 while the
+        // commit assigns 2 — CASE then runs on the wrong fabric and every ACL check fails.
+        let state = CommissioningState()
+        let (testFabric, _) = try FabricInfo.generateTestFabric()
+
+        func stageAndCommit() {
+            state.armFailSafe(expiresAt: Date().addingTimeInterval(60))
+            _ = state.generateOperationalKey(csrNonce: Data(repeating: 0x01, count: 32))
+            state.stagedRCAC = testFabric.rcac.tlvEncode()
+            state.stagedNOC = testFabric.noc.tlvEncode()
+            state.stagedIPK = Data(repeating: 0, count: 16)
+            state.stagedCaseAdminSubject = 100
+            state.stagedAdminVendorId = 0xFFF1
+            state.commitCommissioning()
+        }
+
+        stageAndCommit()
+        let first = state.fabrics.keys.first!
+        #expect(state.removeFabric(first))
+        #expect(state.fabrics.isEmpty)
+
+        let promised = state.pendingFabricIndex
+        stageAndCommit()
+        let assigned = state.fabrics.keys.first!
+        #expect(promised == assigned)
+        #expect(assigned != first)
+    }
+
     @Test("RemoveFabric returns error for invalid index")
     func removeFabricInvalid() throws {
         let state = CommissioningState()

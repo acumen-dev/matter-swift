@@ -365,7 +365,7 @@ public enum CASESession {
         context: ResponderContext,
         sigma3Data: Data,
         initiatorRCAC: MatterCertificate
-    ) throws -> (SessionKeys, NodeID) {
+    ) throws -> (SessionKeys, NodeID, [UInt32]) {
         let sigma3 = try Sigma3Message.fromTLV(sigma3Data)
 
         // Derive S3K from transcript hash of Sigma1 || Sigma2
@@ -434,7 +434,8 @@ public enum CASESession {
             throw CASEError.certificateChainInvalid
         }
 
-        return (sessionKeys, initiatorNodeID)
+        // CATs are returned so the responder's ACL checks can match CAT subjects (§6.6.2.1.2)
+        return (sessionKeys, initiatorNodeID, initiatorNOC.subject.caseAuthenticatedTags)
     }
 
     // MARK: - Resumption Ticket Storage

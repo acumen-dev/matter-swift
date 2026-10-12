@@ -307,7 +307,7 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
         commissioningState.onNOCStaged?()
 
         // Return success with the fabric index that will be assigned
-        let pendingIndex = FabricIndex(rawValue: UInt8(commissioningState.fabrics.count + 1))
+        let pendingIndex = commissioningState.pendingFabricIndex
 
         return OperationalCredentialsCluster.NOCResponse(
             statusCode: .ok,
