@@ -107,23 +107,33 @@ public enum IMClient {
         ).tlvEncode()
     }
 
-    /// Parse an InvokeResponse and extract the first response.
-    ///
-    /// Returns the command data if present, or throws on error status.
-    public static func parseInvokeResponse(_ data: Data) throws -> TLVElement? {
-        let resp = try InvokeResponse.fromTLV(data)
-
-        guard let first = resp.invokeResponses.first else {
+    /// Parse every response in an `InvokeResponse`, in order.
+    public static func parseInvokeResponses(_ data: Data) throws -> [InvokeResponseIB] {
+        let response = try InvokeResponse.fromTLV(data)
+        guard !response.invokeResponses.isEmpty else {
             throw IMError.invalidMessage("InvokeResponse: no responses")
         }
+        return response.invokeResponses
+    }
 
-        if let status = first.status {
-            if status.status != .success {
+    /// Parse a single-command `InvokeResponse`.
+    ///
+    /// Throws if **any** response carries a non-success status. Returns the
+    /// first command response's fields, or `nil` when every response is a
+    /// (successful) status.
+    public static func parseInvokeResponse(_ data: Data) throws -> TLVElement? {
+        let responses = try parseInvokeResponses(data)
+        for response in responses {
+            if let status = response.status, status.status != .success {
                 throw IMError.invalidStatus("Command error: status \(status.status.status)")
             }
-            return nil // success status, no response data
         }
+        return responses.first(where: { $0.command != nil })?.command?.commandFields
+    }
 
-        return first.command?.commandFields
+    /// Build a `TimedRequest` opening a timed-interaction window of `timeout`.
+    public static func timedRequest(timeout: Duration) -> Data {
+        let ms = timeout.components.seconds * 1000 + timeout.components.attoseconds / 1_000_000_000_000_000
+        return TimedRequest(timeoutMs: UInt16(clamping: ms)).tlvEncode()
     }
 }

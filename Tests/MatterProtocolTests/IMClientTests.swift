@@ -1,0 +1,55 @@
+// IMClientTests.swift
+// Copyright 2026 Monagle Pty Ltd
+
+import Testing
+import Foundation
+import MatterTypes
+@testable import MatterProtocol
+
+@Suite("IMClient invoke responses")
+struct IMClientTests {
+
+    private let path1 = CommandPath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006), commandID: CommandID(rawValue: 0x02))
+    private let path2 = CommandPath(endpointID: EndpointID(rawValue: 2), clusterID: ClusterID(rawValue: 0x0006), commandID: CommandID(rawValue: 0x02))
+
+    private func encode(_ responses: [InvokeResponseIB]) -> Data {
+        InvokeResponse(invokeResponses: responses).tlvEncode()
+    }
+
+    @Test("Every InvokeResponseIB is returned, in order")
+    func allResponsesReturned() throws {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(command: CommandDataIB(commandPath: path2, commandFields: .structure([]))),
+        ])
+        let responses = try IMClient.parseInvokeResponses(data)
+        #expect(responses.count == 2)
+        #expect(responses[0].status?.commandPath == path1)
+        #expect(responses[1].command?.commandPath == path2)
+    }
+
+    @Test("The convenience parser throws when a later response failed, not only the first")
+    func laterFailureThrows() {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path2, status: StatusIB(status: 0x85))),
+        ])
+        #expect(throws: IMError.self) { try IMClient.parseInvokeResponse(data) }
+    }
+
+    @Test("The convenience parser returns the first command's fields")
+    func firstCommandFields() throws {
+        let fields = TLVElement.structure([.init(tag: .contextSpecific(0), value: .unsignedInt(7))])
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(command: CommandDataIB(commandPath: path2, commandFields: fields)),
+        ])
+        #expect(try IMClient.parseInvokeResponse(data) == fields)
+    }
+
+    @Test("A TimedRequest carries the timeout in milliseconds")
+    func timedRequestTimeout() throws {
+        let data = IMClient.timedRequest(timeout: .milliseconds(1500))
+        #expect(try TimedRequest.fromTLV(data).timeoutMs == 1500)
+    }
+}
