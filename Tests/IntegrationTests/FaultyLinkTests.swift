@@ -99,6 +99,58 @@ struct FaultyLinkTests {
         side.shutdown()
     }
 
+    /// The device server leaves OperationalCredentials.Fabrics empty (only
+    /// CommissionedFabrics is maintained), so the fabric-scoped list read
+    /// here is the ACL. It also keeps only the first fabric's ACL entry, so
+    /// the assertion is on whose entries are visible, not on counts.
+    @Test("A second admin's unfiltered ACL read shows the first fabric's entry; a filtered one shows no other fabric's")
+    func fabricFilteredRead() async throws {
+        let link = FaultInjectingLink(seed: 29)
+        let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
+        // Controllers borrow the link in turn (see deviceAssignedFabricIndex).
+        let side = HandoffTransport(link.a)
+        let first = try makeBorrowingController(transport: side)
+        var second: MatterController?
+
+        do {
+            _ = try await first.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            await first.stop()
+            await server.openCommissioningWindow(timeout: 180)
+            let other = try makeBorrowingController(transport: side)
+            second = other
+            let device = try await other.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+
+            let all = try await other.readAttribute(
+                nodeID: device.nodeID, endpointID: .root, clusterID: .accessControl,
+                attributeID: AccessControlCluster.Attribute.acl, isFabricFiltered: false
+            )
+            #expect(Self.fabricIndices(all).contains(1), "an unfiltered read shows the first fabric's entry: \(all)")
+            let own = try await other.readAttribute(
+                nodeID: device.nodeID, endpointID: .root, clusterID: .accessControl,
+                attributeID: AccessControlCluster.Attribute.acl
+            )
+            #expect(Self.fabricIndices(own).allSatisfy { $0 == UInt64(device.fabricIndex.rawValue) },
+                    "a filtered read shows no other fabric's entry: \(own)")
+        } catch {
+            await first.stop()
+            await second?.stop()
+            await server.stop()
+            side.shutdown()
+            throw error
+        }
+        await second?.stop()
+        await server.stop()
+        side.shutdown()
+    }
+
+    /// The FabricIndex (tag 0xFE) of each entry of a fabric-scoped list.
+    private static func fabricIndices(_ list: TLVElement) -> [UInt64] {
+        (list.arrayElements ?? []).compactMap { entry in
+            guard case .structure(let fields) = entry else { return nil }
+            return fields.first(where: { $0.tag == .contextSpecific(0xFE) })?.value.uintValue
+        }
+    }
+
     private func makeBorrowingController(transport: any MatterUDPTransport) throws -> MatterController {
         try MatterController(
             transport: transport,

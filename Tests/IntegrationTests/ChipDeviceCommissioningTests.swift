@@ -24,10 +24,13 @@ struct ChipDeviceCommissioningTests {
     /// Hang guard per awaited outcome. Not a timing assertion.
     static let hangGuard: Duration = .seconds(30)
     static let passcode: UInt32 = 20202021
-    /// chip-all-clusters-app's light (OnOff) and door lock endpoint.
+    /// chip-all-clusters-app's light (OnOff) and UnitTesting endpoint.
     static let endpoint = EndpointID(rawValue: 1)
     /// OperationalCredentials.Fabrics.
     static let fabricsAttribute = AttributeID(rawValue: 0x0001)
+    /// The controller's MRP configuration (spec defaults), named so the
+    /// restart test can derive its liveness wait from it.
+    static let controllerMRP = MRPConfig.default
 
     @Test("Our controller commissions chip-all-clusters-app", .timeLimit(.minutes(3)))
     func commissionChipApp() async throws {
@@ -36,11 +39,10 @@ struct ChipDeviceCommissioningTests {
             let device = try await commission(app, with: controller)
             // The device's OnOff on endpoint 1, read over the session
             // commissioning left behind: proof the CASE session is live.
-            let onOff = try await readOnOff(device.nodeID, with: controller)
+            _ = try await readOnOff(device.nodeID, with: controller)   // throws unless OnOff is a bool
             #expect(device.nodeID.rawValue > 0)
             let registered = await controller.device(for: device.nodeID)
             #expect(registered?.nodeID == device.nodeID, "commissioned device is not registered")
-            #expect(onOff == true || onOff == false, "OnOff read over the commissioning CASE session")
             #expect(app.log.contains("Commissioning completed successfully"), "the device committed the fabric")
             // One CASE handshake: CommissioningComplete's, reused for the read.
             #expect(app.log.components(separatedBy: "Received Sigma1 msg").count - 1 == 1)
@@ -92,17 +94,26 @@ struct ChipDeviceCommissioningTests {
             let device = try await commission(app, with: controller)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, Self.onOffSubscription)
             let events = EventQueue(subscription.events)
-            _ = try await events.next("established") { if case .established = $0 { true } else { false } }
+            let first = try await events.next("established") { if case .established = $0 { true } else { false } }
+            guard case .established(_, let maxInterval) = first else { return }
             _ = try await events.nextOnOff("priming report")
+
+            // The subscription is declared lost one granted max interval plus
+            // the controller's MRP exhaustion horizon after the last report;
+            // the hang guard is on top of that.
+            let peer = await controller.device(for: device.nodeID)?.mrpParameters ?? .default
+            let liveness = Duration.seconds(Int(maxInterval)) + MRPConfig(
+                peer: peer,
+                maxRetransmissions: Self.controllerMRP.maxRetransmissions
+            ).exhaustionHorizon(peerActive: false)
 
             // Same port and KVS file: the device comes back with its fabric,
             // at the address the controller has on record.
             await app.stop()
             let restarted = try await ChipAppRunner.start(passcode: Self.passcode, port: app.port, kvsPath: app.kvsPath)
             do {
-                let lost = try await events.next(".lost") { if case .lost = $0 { true } else { false } }
-                let established = try await events.next("re-established") { if case .established = $0 { true } else { false } }
-                Self.record("restart: \(lost) then \(established); events: \(await events.seen)")
+                _ = try await events.next(".lost", within: liveness + Self.hangGuard) { if case .lost = $0 { true } else { false } }
+                _ = try await events.next("re-established") { if case .established = $0 { true } else { false } }
                 let primed = try await events.nextOnOff("priming report after the restart")
                 try await toggle(device.nodeID, with: controller)
                 let reported = try await events.nextOnOff("toggle report after the restart")
@@ -240,7 +251,7 @@ struct ChipDeviceCommissioningTests {
             controller = try MatterController(
                 transport: transport,
                 discovery: StubDiscovery(),
-                configuration: .init(fabricID: FabricID(rawValue: 1), rootKey: P256.Signing.PrivateKey())
+                configuration: .init(fabricID: FabricID(rawValue: 1), rootKey: P256.Signing.PrivateKey(), mrp: Self.controllerMRP)
             )
         } catch {
             await transport.close()
@@ -302,11 +313,6 @@ struct ChipDeviceCommissioningTests {
                 context: "\(what) failed (exit \(result.exitCode))\n--- chip-tool stdout (tail) ---\n\(result.stdout.suffix(6000))\n--- stderr ---\n\(result.stderr.suffix(2000))"
             )
         }
-    }
-
-    /// Observations worth reading in the test output (real-device measurements).
-    private static func record(_ observation: String) {
-        print("[CHIP measurement] \(observation)")
     }
 }
 
@@ -371,6 +377,7 @@ private actor EventQueue {
     private func next(before deadline: ContinuousClock.Instant) async -> SubscriptionEvent? {
         if !buffered.isEmpty { return buffered.removeFirst() }
         if finished { return nil }
+        precondition(waiter == nil, "EventQueue has one consumer at a time")
         generation += 1
         let token = generation
         let timer = Task { [weak self] in
@@ -381,14 +388,22 @@ private actor EventQueue {
         return await withCheckedContinuation { waiter = $0 }
     }
 
-    /// The first event matching `predicate` within the hang guard; throws if none arrives.
-    func next(_ what: String, where predicate: (SubscriptionEvent) -> Bool) async throws -> SubscriptionEvent {
-        let deadline = ContinuousClock.now.advanced(by: ChipDeviceCommissioningTests.hangGuard)
+    /// The first event matching `predicate` within `within` (default: the
+    /// hang guard). Throws if none arrives in time, or if the stream finishes.
+    func next(
+        _ what: String,
+        within: Duration = ChipDeviceCommissioningTests.hangGuard,
+        where predicate: (SubscriptionEvent) -> Bool
+    ) async throws -> SubscriptionEvent {
+        let deadline = ContinuousClock.now.advanced(by: within)
         while let event = await next(before: deadline) {
             seen.append(Self.describe(event))
             if predicate(event) { return event }
         }
-        throw ChipFailure(error: nil, context: "no \(what) within the hang guard; events: \(seen)")
+        if finished {
+            throw ChipFailure(error: nil, context: "events finished before \(what); events: \(seen)")
+        }
+        throw ChipFailure(error: nil, context: "no \(what) within \(within); events: \(seen)")
     }
 
     /// The next report carrying an OnOff value, within the hang guard.

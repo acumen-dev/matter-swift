@@ -666,8 +666,9 @@ public actor MatterController {
     ///
     /// Reads are fabric-filtered by default: a fabric-scoped list (ACL,
     /// Fabrics, ...) then holds only this controller's own entries. Pass
-    /// `isFabricFiltered: false` to see every fabric's entries (their
-    /// fabric-sensitive fields omitted by the device).
+    /// `isFabricFiltered: false` to see every fabric's entries; the device
+    /// omits other fabrics' fields only where the cluster marks them
+    /// fabric-sensitive.
     public func readAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
