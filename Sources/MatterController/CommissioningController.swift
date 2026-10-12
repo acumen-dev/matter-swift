@@ -247,7 +247,7 @@ public struct CommissioningController: Sendable {
     /// Build a CSRRequest invoke request.
     ///
     /// - Returns: the request message and the CSRNonce it carries; pass the nonce
-    ///   to ``handleCSRResponse(response:expectedNonce:context:)`` to check the echo.
+    ///   to ``handleCSRResponse(response:expectedNonce:deviceNodeID:context:)`` to check the echo.
     public func buildCSRRequest() -> (message: Data, nonce: Data) {
         var csrNonce = Data(count: 32)
         for i in 0..<32 { csrNonce[i] = UInt8.random(in: 0...255) }
@@ -274,8 +274,9 @@ public struct CommissioningController: Sendable {
     public func handleCSRResponse(
         response: Data,
         expectedNonce: Data,
+        deviceNodeID: NodeID,
         context: CommissioningContext
-    ) async throws -> (addRootCertMessage: Data, addNOCMessage: Data, deviceNodeID: NodeID, context: CommissioningContext) {
+    ) async throws -> (addRootCertMessage: Data, addNOCMessage: Data, context: CommissioningContext) {
         let responseElement = try IMClient.parseInvokeResponse(response)
 
         guard let element = responseElement else {
@@ -302,9 +303,6 @@ public struct CommissioningController: Sendable {
         } catch {
             throw ControllerError.commissioningFailed("Invalid CSR: \(error)")
         }
-
-        // Allocate a node ID for the device
-        let deviceNodeID = await fabricManager.allocateNodeID()
 
         // Generate NOC for the device
         let noc = try await fabricManager.generateNOC(
@@ -351,7 +349,7 @@ public struct CommissioningController: Sendable {
         ctx.deviceNodeID = deviceNodeID
         ctx.fabricIndex = fabricManager.fabricIndex
 
-        return (addRootCertMessage, addNOCMessage, deviceNodeID, ctx)
+        return (addRootCertMessage, addNOCMessage, ctx)
     }
 
     // MARK: - Step 6b: Handle AddTrustedRootCert Response

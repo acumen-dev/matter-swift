@@ -93,7 +93,7 @@ public actor MatterController {
 
     // MARK: - Properties
 
-    let fabricManager: FabricManager
+    private let fabricManager: FabricManager
     private let commissioning: CommissioningController
     private let controllerSession: ControllerSession
     private let registry: DeviceRegistry
@@ -119,6 +119,9 @@ public actor MatterController {
     /// ``commission(address:setupCode:mrp:)``; a thrown error fails
     /// commissioning there. Always nil in production.
     var commissioningFailureInjection: (@Sendable (CommissioningStep) throws -> Void)?
+
+    /// The next node ID that would be allocated (for tests).
+    var nextNodeID: UInt64 { get async { await fabricManager.nextNodeID } }
 
     /// Install (or clear) the commissioning failure-injection seam.
     func setCommissioningFailureInjection(_ injection: (@Sendable (CommissioningStep) throws -> Void)?) {
@@ -436,13 +439,18 @@ public actor MatterController {
     ) async throws -> CommissionedDevice {
         var failSafeArmed = false
         var allocatedNodeID: NodeID?
+        var completeSent = false
         do {
             return try await runCommissioningSteps(
                 session: session, context: ctx3,
-                failSafeArmed: &failSafeArmed, allocatedNodeID: &allocatedNodeID
+                failSafeArmed: &failSafeArmed, allocatedNodeID: &allocatedNodeID,
+                completeSent: &completeSent
             )
         } catch {
-            if let allocatedNodeID {
+            // Once CommissioningComplete has gone out the device may have
+            // committed with this node ID; reusing it would give two devices
+            // one identity.
+            if let allocatedNodeID, !completeSent {
                 await fabricManager.releaseNodeID(allocatedNodeID)
             }
             if failSafeArmed {
@@ -469,17 +477,27 @@ public actor MatterController {
         session: SecureSession,
         context ctx3: CommissioningController.CommissioningContext,
         failSafeArmed: inout Bool,
-        allocatedNodeID: inout NodeID?
+        allocatedNodeID: inout NodeID?,
+        completeSent: inout Bool
     ) async throws -> CommissionedDevice {
         let paseSessionID = session.localSessionID
 
         // Step 2: ArmFailSafe
         let (armMsg, ctx4) = try commissioning.buildArmFailSafe(context: ctx3)
-        let armResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: armMsg)
-        let ctx5 = try commissioning.handleArmFailSafeResponse(
-            response: armResp.payload, context: ctx4
-        )
+        // Armed from the moment it is sent: a lost response may still have
+        // armed the device. Only an explicit refusal clears it.
         failSafeArmed = true
+        let ctx5: CommissioningController.CommissioningContext
+        do {
+            let armResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: armMsg)
+            ctx5 = try commissioning.handleArmFailSafeResponse(
+                response: armResp.payload, context: ctx4
+            )
+        } catch {
+            if case ControllerError.imStatus = error { failSafeArmed = false }
+            if case ControllerError.commissioningFailed = error { failSafeArmed = false }
+            throw error
+        }
         try commissioningFailureInjection?(.afterArmFailSafe)
 
         // Step 3: SetRegulatoryConfig
@@ -490,10 +508,11 @@ public actor MatterController {
         // Step 4: CSRRequest
         let (csrMsg, csrNonce) = commissioning.buildCSRRequest()
         let csrResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: csrMsg)
-        let (addRootMsg, addNOCMsg, deviceNodeID, ctx6) = try await commissioning.handleCSRResponse(
-            response: csrResp.payload, expectedNonce: csrNonce, context: ctx5
-        )
+        let deviceNodeID = await fabricManager.allocateNodeID()
         allocatedNodeID = deviceNodeID
+        let (addRootMsg, addNOCMsg, ctx6) = try await commissioning.handleCSRResponse(
+            response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctx5
+        )
         logger.debug("Device will be node \(deviceNodeID.rawValue)")
         try commissioningFailureInjection?(.afterCSR)
 
@@ -516,6 +535,7 @@ public actor MatterController {
 
         // Step 7: CommissioningComplete
         let completeMsg = commissioning.buildCommissioningComplete()
+        completeSent = true
         let completeResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: completeMsg)
         return try commissioning.handleCommissioningComplete(
             response: completeResp.payload, context: ctx7

@@ -303,6 +303,7 @@ struct CommissioningControllerTests {
         let result = try await cc.handleCSRResponse(
             response: csrResponse(csr: csr, nonce: nonce),
             expectedNonce: nonce,
+            deviceNodeID: NodeID(rawValue: 2),
             context: CommissioningController.CommissioningContext()
         )
         let request = try InvokeRequest.fromTLV(result.addNOCMessage)
@@ -322,6 +323,7 @@ struct CommissioningControllerTests {
             _ = try await cc.handleCSRResponse(
                 response: csrResponse(csr: csr, nonce: echoed),
                 expectedNonce: sent,
+                deviceNodeID: NodeID(rawValue: 2),
                 context: CommissioningController.CommissioningContext()
             )
         }
@@ -338,6 +340,7 @@ struct CommissioningControllerTests {
             _ = try await cc.handleCSRResponse(
                 response: csrResponse(csr: csr, nonce: nonce),
                 expectedNonce: nonce,
+                deviceNodeID: NodeID(rawValue: 2),
                 context: CommissioningController.CommissioningContext()
             )
             Issue.record("expected failure")
