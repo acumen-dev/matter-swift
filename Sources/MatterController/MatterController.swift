@@ -663,11 +663,17 @@ public actor MatterController {
     /// Gets or establishes a CASE session and sends the request once. MRP
     /// retransmits it; a device that never acknowledges surfaces as
     /// `ControllerError.peerUnreachable` — the request is not re-issued.
+    ///
+    /// Reads are fabric-filtered by default: a fabric-scoped list (ACL,
+    /// Fabrics, ...) then holds only this controller's own entries. Pass
+    /// `isFabricFiltered: false` to see every fabric's entries (their
+    /// fabric-sensitive fields omitted by the device).
     public func readAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
-        attributeID: AttributeID
+        attributeID: AttributeID,
+        isFabricFiltered: Bool = true
     ) async throws -> TLVElement {
         try await withSession(nodeID: nodeID) { session in
             let response = try await self.imRequest(
@@ -676,7 +682,8 @@ public actor MatterController {
                 payload: IMClient.readAttributeRequest(
                     endpointID: endpointID,
                     clusterID: clusterID,
-                    attributeID: attributeID
+                    attributeID: attributeID,
+                    isFabricFiltered: isFabricFiltered
                 )
             )
             return try IMClient.parseReadResponse(response.payload)
@@ -685,7 +692,7 @@ public actor MatterController {
 
     /// Write a single attribute on a commissioned device.
     ///
-    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:)``).
+    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:isFabricFiltered:)``).
     public func writeAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
