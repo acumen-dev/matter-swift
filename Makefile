@@ -7,7 +7,7 @@ PROJECT_DIR   = $(shell pwd)
 
 .PHONY: build test release clean \
         generate-model \
-        ref-setup ref-setup-cert ref-setup-tool ref-test ref-all ref-clean \
+        ref-setup ref-setup-cert ref-setup-tool ref-setup-app ref-test ref-all ref-clean \
         linux-build linux-test linux-shell \
         help
 
@@ -58,6 +58,10 @@ ref-setup-cert:
 ## ref-setup-tool Build chip-tool only
 ref-setup-tool:
 	./Tools/RefImpl/setup.sh chip-tool
+
+## ref-setup-app  Build chip-all-clusters-app (a local Matter device) only
+ref-setup-app:
+	./Tools/RefImpl/setup.sh all-clusters-app
 
 ## ref-test       Run reference tests (crypto vectors + chip-cert conformance)
 ref-test:
