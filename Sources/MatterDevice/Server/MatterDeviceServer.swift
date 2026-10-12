@@ -1220,7 +1220,7 @@ public actor MatterDeviceServer {
             }
         }
 
-        let fabricIndex = FabricIndex(rawValue: UInt8(cs.fabrics.count + 1))
+        let fabricIndex = cs.pendingFabricIndex
         let fabricInfo = FabricInfo(
             fabricIndex: fabricIndex,
             fabricID: noc.subject.fabricID ?? FabricID(rawValue: 0),
