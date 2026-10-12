@@ -66,6 +66,50 @@ struct FaultyLinkTests {
         await server.stop()
     }
 
+    @Test("Two controllers in turn: CommissionedDevice.fabricIndex is the device's index (1, then 2), not the controller's own")
+    func deviceAssignedFabricIndex() async throws {
+        let link = FaultInjectingLink(seed: 11)
+        let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
+        // A controller's stop() closes its transport, which would end the
+        // link's single receive stream; the hand-off keeps it for the next.
+        let side = HandoffTransport(link.a)
+        let first = try makeBorrowingController(transport: side)
+        var second: MatterController?
+
+        do {
+            let d1 = try await first.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            #expect(d1.fabricIndex == FabricIndex(rawValue: 1))
+            await first.stop()
+
+            // The first commit closed the window; reopen it for the second admin.
+            await server.openCommissioningWindow(timeout: 180)
+            let other = try makeBorrowingController(transport: side)
+            second = other
+            let d2 = try await other.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            #expect(d2.fabricIndex == FabricIndex(rawValue: 2))
+        } catch {
+            await first.stop()
+            await second?.stop()
+            await server.stop()
+            side.shutdown()
+            throw error
+        }
+        await second?.stop()
+        await server.stop()
+        side.shutdown()
+    }
+
+    private func makeBorrowingController(transport: any MatterUDPTransport) throws -> MatterController {
+        try MatterController(
+            transport: transport,
+            discovery: FaultyLinkDiscovery(),
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                mrp: MRPConfig(maxRetransmissions: 10)
+            )
+        )
+    }
+
     @Test("A silent peer surfaces peerUnreachable; the next call re-establishes CASE and never re-sends the invoke")
     func silentPeer() async throws {
         let link = FaultInjectingLink(seed: 7)
@@ -362,5 +406,49 @@ struct FaultyLinkTests {
             await Task.yield()
         }
         return false
+    }
+}
+
+/// Lends one link endpoint to controllers in turn. `close()` ends only the
+/// current borrower's stream; a permanent pump keeps reading the endpoint and
+/// forwards to whichever borrower is current (datagrams in between are lost).
+private final class HandoffTransport: MatterUDPTransport, Sendable {
+    private let base: FaultInjectingEndpoint
+    private let current = LockedValue<AsyncStream<(Data, MatterAddress)>.Continuation?>(nil)
+    private let pump = LockedValue<Task<Void, Never>?>(nil)
+
+    init(_ base: FaultInjectingEndpoint) {
+        self.base = base
+        let current = self.current
+        let source = base.receive()
+        pump.withLock {
+            $0 = Task {
+                for await datagram in source {
+                    current.withLock { $0 }?.yield(datagram)
+                }
+            }
+        }
+    }
+
+    var address: MatterAddress { base.address }
+
+    func send(_ data: Data, to address: MatterAddress) async throws {
+        try await base.send(data, to: address)
+    }
+
+    func receive() -> AsyncStream<(Data, MatterAddress)> {
+        let (stream, continuation) = AsyncStream<(Data, MatterAddress)>.makeStream()
+        current.withLock { $0?.finish(); $0 = continuation }
+        return stream
+    }
+
+    func bind(port: UInt16) async throws {}
+
+    func close() async {
+        current.withLock { $0?.finish(); $0 = nil }
+    }
+
+    func shutdown() {
+        pump.withLock { $0?.cancel(); $0 = nil }
     }
 }

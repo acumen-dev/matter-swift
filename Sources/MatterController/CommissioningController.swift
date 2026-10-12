@@ -64,6 +64,9 @@ public struct CommissioningController: Sendable {
         /// Fabric index of the controller.
         public var fabricIndex: FabricIndex?
 
+        /// Fabric index the device assigned in its AddNOC response.
+        public var deviceFabricIndex: FabricIndex?
+
         /// Attestation challenge from the PASE session keys (16 bytes).
         /// Used to verify the attestation signature in the AttestationResponse.
         public var attestationChallenge: Data?
@@ -326,24 +329,58 @@ public struct CommissioningController: Sendable {
         return (addRootCertMessage, addNOCMessage, deviceNodeID, ctx)
     }
 
+    // MARK: - Step 6b: Handle AddTrustedRootCert Response
+
+    /// Check the AddTrustedRootCert response (a bare status).
+    public func handleAddTrustedRootCertResponse(_ data: Data) throws {
+        do {
+            _ = try IMClient.parseInvokeResponse(data)
+        } catch {
+            throw ControllerError.commissioningFailed("AddTrustedRootCert failed: \(error)")
+        }
+    }
+
     // MARK: - Step 7: Handle NOC Response + ACL Write
 
-    /// Validate the NOC response and build the ACL write message.
-    public func handleNOCResponse(
-        response: Data,
-        context: CommissioningContext
-    ) throws -> (aclWriteMessage: Data, context: CommissioningContext) {
-        let responseElement = try IMClient.parseInvokeResponse(response)
-
-        if let element = responseElement {
-            let nocResp = try OperationalCredentialsCluster.NOCResponse.fromTLVElement(element)
-            guard nocResp.statusCode == .ok else {
-                throw ControllerError.commissioningFailed(
-                    "AddNOC failed: \(nocResp.statusCode)"
-                )
-            }
+    /// Check the AddNOC response and return the fabric index the device
+    /// assigned (not the controller's own index).
+    public func handleNOCResponse(_ data: Data) throws -> FabricIndex {
+        let element: TLVElement?
+        do {
+            element = try IMClient.parseInvokeResponse(data)
+        } catch {
+            throw ControllerError.commissioningFailed("AddNOC failed: \(error)")
         }
+        guard let element else {
+            throw ControllerError.commissioningFailed("AddNOC failed: response carries no NOCResponse")
+        }
+        let nocResp = try OperationalCredentialsCluster.NOCResponse.fromTLVElement(element)
+        guard nocResp.statusCode == .ok else {
+            throw ControllerError.commissioningFailed(
+                "AddNOC failed: \(nocResp.statusCode) \(nocResp.debugText ?? "")"
+            )
+        }
+        guard let index = nocResp.fabricIndex else {
+            throw ControllerError.commissioningFailed("AddNOC failed: NOCResponse carries no fabric index")
+        }
+        return index
+    }
 
+    /// Check the ACL write response; any non-SUCCESS entry fails.
+    public func handleACLWriteResponse(_ data: Data) throws {
+        let allSucceeded: Bool
+        do {
+            allSucceeded = try IMClient.parseWriteResponse(data)
+        } catch {
+            throw ControllerError.commissioningFailed("ACL write failed: \(error)")
+        }
+        guard allSucceeded else {
+            throw ControllerError.commissioningFailed("ACL write failed: non-SUCCESS write status")
+        }
+    }
+
+    /// Build the ACL write message granting the controller admin access.
+    public func buildACLWrite() -> Data {
         // Build ACL write — grant controller admin access
         let fabricInfo = fabricManager.controllerFabricInfo
         let fabricIndex = fabricManager.fabricIndex
@@ -353,14 +390,12 @@ public struct CommissioningController: Sendable {
             fabricIndex: fabricIndex
         )
 
-        let aclWriteMessage = IMClient.writeAttributeRequest(
+        return IMClient.writeAttributeRequest(
             endpointID: .root,
             clusterID: ClusterID(rawValue: 0x001F), // AccessControl
             attributeID: AccessControlCluster.Attribute.acl,
             value: .array([ace.toTLVElement()])
         )
-
-        return (aclWriteMessage, context)
     }
 
     // MARK: - Step 8: CommissioningComplete
@@ -394,7 +429,9 @@ public struct CommissioningController: Sendable {
             throw ControllerError.commissioningFailed("No device node ID allocated")
         }
 
-        let fabricIndex = fabricManager.fabricIndex
+        guard let fabricIndex = context.deviceFabricIndex else {
+            throw ControllerError.commissioningFailed("No device fabric index recorded")
+        }
         let vendorID = fabricManager.vendorID
 
         return CommissionedDevice(

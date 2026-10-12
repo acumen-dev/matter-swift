@@ -436,17 +436,20 @@ public actor MatterController {
         )
         logger.debug("Device will be node \(deviceNodeID.rawValue)")
 
-        // Step 5: AddTrustedRootCert — its status is checked by the commissioning plan
-        _ = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addRootMsg)
+        // Step 5: AddTrustedRootCert
+        let addRootResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addRootMsg)
+        try commissioning.handleAddTrustedRootCertResponse(addRootResp.payload)
 
-        // Step 5b: AddNOC
+        // Step 5b: AddNOC — records the fabric index the device assigned
         let addNOCResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addNOCMsg)
-        let (aclMsg, ctx7) = try commissioning.handleNOCResponse(
-            response: addNOCResp.payload, context: ctx6
-        )
+        var ctx7 = ctx6
+        ctx7.deviceFabricIndex = try commissioning.handleNOCResponse(addNOCResp.payload)
 
-        // Step 6: ACL write — its status is checked by the commissioning plan
-        _ = try await imRequest(sessionID: paseSessionID, opcode: .writeRequest, payload: aclMsg)
+        // Step 6: ACL write
+        let aclResp = try await imRequest(
+            sessionID: paseSessionID, opcode: .writeRequest, payload: commissioning.buildACLWrite()
+        )
+        try commissioning.handleACLWriteResponse(aclResp.payload)
 
         // Step 7: CommissioningComplete
         let completeMsg = commissioning.buildCommissioningComplete()

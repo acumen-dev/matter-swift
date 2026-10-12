@@ -213,6 +213,7 @@ struct CommissioningControllerTests {
 
         var ctx = CommissioningController.CommissioningContext()
         ctx.deviceNodeID = NodeID(rawValue: 42)
+        ctx.deviceFabricIndex = FabricIndex(rawValue: 5)
 
         let respElement = GeneralCommissioningCluster.CommissioningCompleteResponse(
             errorCode: .ok,
@@ -239,5 +240,79 @@ struct CommissioningControllerTests {
 
         #expect(device.nodeID.rawValue == 42)
         #expect(device.vendorID == .test)
+        #expect(device.fabricIndex == FabricIndex(rawValue: 5))
+    }
+
+    // MARK: - Response checks
+
+    private func statusResponse(_ status: UInt8) -> Data {
+        InvokeResponse(invokeResponses: [
+            InvokeResponseIB(status: CommandStatusIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: ClusterID(rawValue: 0x003E),
+                    commandID: CommandID(rawValue: 0x0B)
+                ),
+                status: StatusIB(status: status)
+            ))
+        ]).tlvEncode()
+    }
+
+    private func nocResponse(_ resp: OperationalCredentialsCluster.NOCResponse) -> Data {
+        InvokeResponse(invokeResponses: [
+            InvokeResponseIB(command: CommandDataIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: ClusterID(rawValue: 0x003E),
+                    commandID: CommandID(rawValue: 0x08)
+                ),
+                commandFields: resp.toTLVElement()
+            ))
+        ]).tlvEncode()
+    }
+
+    @Test("AddTrustedRootCert: success passes, failure throws")
+    func addTrustedRootCertResponse() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        try cc.handleAddTrustedRootCertResponse(statusResponse(0x00))
+        #expect(throws: ControllerError.self) {
+            try cc.handleAddTrustedRootCertResponse(statusResponse(0x81))
+        }
+    }
+
+    @Test("AddNOC: returns the device-assigned fabric index")
+    func addNOCReturnsIndex() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let index = try cc.handleNOCResponse(nocResponse(.init(statusCode: .ok, fabricIndex: FabricIndex(rawValue: 3))))
+        #expect(index == FabricIndex(rawValue: 3))
+    }
+
+    @Test("AddNOC: a non-ok status throws")
+    func addNOCFailureThrows() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(throws: ControllerError.self) {
+            try cc.handleNOCResponse(nocResponse(.init(statusCode: .tableIsFull, fabricIndex: nil)))
+        }
+    }
+
+    @Test("AddNOC: a status-only response throws")
+    func addNOCStatusOnlyThrows() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(throws: ControllerError.self) {
+            try cc.handleNOCResponse(statusResponse(0x00))
+        }
+    }
+
+    @Test("ACL write: all SUCCESS passes, any failure throws")
+    func aclWriteResponse() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let path = AttributePath(endpointID: .root, clusterID: ClusterID(rawValue: 0x001F), attributeID: AccessControlCluster.Attribute.acl)
+        let ok = WriteResponse(writeResponses: [AttributeStatusIB(path: path, status: .success)]).tlvEncode()
+        let bad = WriteResponse(writeResponses: [
+            AttributeStatusIB(path: path, status: .success),
+            AttributeStatusIB(path: path, status: .invalidAction)
+        ]).tlvEncode()
+        try cc.handleACLWriteResponse(ok)
+        #expect(throws: ControllerError.self) { try cc.handleACLWriteResponse(bad) }
     }
 }
