@@ -15,8 +15,10 @@ import Foundation
 /// A chip-all-clusters-app process acting as a Matter device on localhost.
 ///
 /// `@unchecked Sendable`: this test-target helper wraps `Foundation.Process`
-/// (not Sendable). All mutable state is guarded by `lock`. This is the only
-/// exception to strict sendability in the plan.
+/// (not Sendable). The captured output (`buffer`, `reachedEOF`) is guarded by
+/// `lock`. Calls on `process` (isRunning, terminate, processIdentifier) rely on
+/// Process's own internal synchronisation and are only made after `run()`.
+/// This is the only exception to strict sendability in the plan.
 final class ChipAppRunner: @unchecked Sendable {
 
     // MARK: - Types
@@ -38,6 +40,14 @@ final class ChipAppRunner: @unchecked Sendable {
     private let process: Process
     private let lock = NSLock()
     private var buffer = Data()
+    private var reachedEOF = false
+
+    /// Whether the app process is still alive.
+    var isRunning: Bool { process.isRunning }
+
+    deinit {
+        if process.isRunning { process.terminate() }
+    }
 
     /// Captured stdout+stderr so far.
     var log: String {
@@ -95,46 +105,83 @@ final class ChipAppRunner: @unchecked Sendable {
             let data = handle.availableData
             if data.isEmpty {
                 handle.readabilityHandler = nil
+                runner?.markEOF()
                 return
             }
             runner?.append(data)
         }
         try process.run()
 
-        let deadline = ContinuousClock.now.advanced(by: timeout)
-        while !runner.log.contains(readinessMarker) {
-            if !process.isRunning {
-                throw StartError(reason: "chip-all-clusters-app exited before becoming ready", log: runner.log)
+        // Any throw out of the readiness wait (timeout, early exit, cancellation)
+        // must not leave the app running.
+        do {
+            let deadline = ContinuousClock.now.advanced(by: timeout)
+            while !runner.log.contains(readinessMarker) {
+                if !process.isRunning {
+                    await runner.drainAfterExit()
+                    throw StartError(reason: "chip-all-clusters-app exited before becoming ready", log: runner.log)
+                }
+                if ContinuousClock.now >= deadline {
+                    await runner.stop()
+                    throw StartError(reason: "timed out waiting for readiness", log: runner.log)
+                }
+                try await Task.sleep(for: .milliseconds(20))
             }
-            if ContinuousClock.now >= deadline {
-                let captured = runner.log
-                await runner.stop()
-                throw StartError(reason: "timed out waiting for readiness", log: captured)
-            }
-            try await Task.sleep(for: .milliseconds(20))
+        } catch {
+            await runner.stop()
+            throw error
         }
         return runner
     }
 
     // MARK: - Stop
 
-    /// SIGTERM, wait for exit (SIGKILL after 5 s).
+    /// SIGTERM, wait for exit (SIGKILL after 5 s), then drain the output.
     func stop() async {
-        guard process.isRunning else { return }
-        process.terminate()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while process.isRunning && ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
         if process.isRunning {
-            kill(process.processIdentifier, SIGKILL)
-            while process.isRunning {
-                try? await Task.sleep(for: .milliseconds(20))
+            process.terminate()
+            if !(await waitForExit(seconds: 5)) {
+                kill(process.processIdentifier, SIGKILL)
+                _ = await waitForExit(seconds: 2)
             }
         }
+        await drainAfterExit()
     }
 
     // MARK: - Private
+
+    /// Polls for exit without being interrupted by task cancellation.
+    private func waitForExit(seconds: Int) async -> Bool {
+        await Task.detached { [process] in
+            let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+            while process.isRunning && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+            return !process.isRunning
+        }.value
+    }
+
+    /// Waits (bounded) for the pipe to reach EOF so `log` has the final lines.
+    private func drainAfterExit() async {
+        await Task.detached { [self] in
+            let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+            while !eof && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+        }.value
+    }
+
+    private var eof: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return reachedEOF
+    }
+
+    private func markEOF() {
+        lock.lock()
+        reachedEOF = true
+        lock.unlock()
+    }
 
     private func append(_ data: Data) {
         lock.lock()

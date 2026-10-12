@@ -9,6 +9,11 @@
 #   ./Tools/RefImpl/setup.sh           # build both chip-cert and chip-tool
 #   ./Tools/RefImpl/setup.sh chip-cert # build chip-cert only (faster)
 #   ./Tools/RefImpl/setup.sh chip-tool # build chip-tool only
+#   ./Tools/RefImpl/setup.sh all-clusters-app # build the all-clusters device app only
+#
+# "all" builds chip-cert, chip-tool and chip-all-clusters-app.
+# chip-tool, all-clusters-app (and all) additionally need node + npm (brew install node)
+# on Apple Silicon without Rosetta, to build the ZAP code generator.
 #
 # Prerequisites (macOS):
 #   brew install git-lfs python3 pkg-config
@@ -43,6 +48,13 @@ check_cmd git
 check_cmd git-lfs
 check_cmd python3
 check_cmd pkg-config
+case "$TARGET" in
+    chip-tool|all-clusters-app|all)
+        if [ "$(uname -m)" = "arm64" ] && ! /usr/bin/arch -x86_64 /usr/bin/true &>/dev/null; then
+            check_cmd node
+            check_cmd npm
+        fi ;;
+esac
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
     echo "ERROR: Missing required tools: ${MISSING[*]}"
@@ -176,8 +188,8 @@ fi
 export PW_ENVIRONMENT_ROOT="${PW_ENVIRONMENT_ROOT:-$REPO_DIR/.environment}"
 
 # The default environment.json pulls the ZAP code generator from a CIPD path
-# that needs a Google login (fails non-interactively). We build nothing that
-# needs ZAP, so use the CIPD-free config.
+# that needs a Google login (fails non-interactively). Use the CIPD-free config;
+# ZAP itself (needed by chip-tool and all-clusters-app) comes from ensure_zap_cli below.
 export PW_CONFIG_FILE="${PW_CONFIG_FILE:-scripts/setup/environment_no_cipd.json}"
 
 if [ ! -f "$PW_ENVIRONMENT_ROOT/activate.sh" ] || [ ! -s "$PW_ENVIRONMENT_ROOT/activate.sh" ]; then
@@ -223,34 +235,16 @@ fi
 # and chip-tool don't call BLE code at runtime.
 
 GN_OUT="out/darwin"
-GN_ARGS='chip_build_tests=false'
+# treat_warnings_as_errors=false: the pinned tag trips -Wdeprecated-literal-operator
+# (Span.h `operator"" _span`) under current Apple clang.
+GN_ARGS='chip_build_tests=false treat_warnings_as_errors=false'
 
 ensure_gn_out() {
-    if [ ! -f "$GN_OUT/build.ninja" ]; then
-        echo ">>> Configuring build..."
-        gn gen "$GN_OUT" --args="$GN_ARGS"
-    fi
+    echo ">>> Configuring build..."
+    gn gen "$GN_OUT" --args="$GN_ARGS"
 }
 
-build_chip_cert() {
-    ensure_gn_out
-    echo ">>> Building chip-cert..."
-    ninja -C "$GN_OUT" chip-cert
-    cp "$GN_OUT/chip-cert" "$BIN_DIR/chip-cert"
-    echo ">>> chip-cert → $BIN_DIR/chip-cert"
-}
-
-build_chip_tool() {
-    ensure_gn_out
-    echo ">>> Building chip-tool..."
-    ninja -C "$GN_OUT" chip-tool
-    cp "$GN_OUT/chip-tool" "$BIN_DIR/chip-tool"
-    echo ">>> chip-tool → $BIN_DIR/chip-tool"
-}
-
-# The all-clusters example acts as a Matter device on localhost. It uses its
-# own GN root (the Linux example builds the POSIX platform layer on Darwin).
-# The example needs `zap-cli` (code generator) at build time. The pigweed CIPD
+# chip-tool and the example need `zap-cli` (code generator) at build time. The pigweed CIPD
 # copy needs a Google login, and the public GitHub release is x86_64-only even
 # for "mac-arm64" (needs Rosetta). On Apple Silicon we therefore build ZAP from
 # source (node + tsc; the Electron/SPA UI is not needed) and wrap it as zap-cli.
@@ -287,6 +281,25 @@ WRAP
     export ZAP_INSTALL_PATH="$zap_dir"
 }
 
+build_chip_cert() {
+    ensure_gn_out
+    echo ">>> Building chip-cert..."
+    ninja -C "$GN_OUT" chip-cert
+    cp "$GN_OUT/chip-cert" "$BIN_DIR/chip-cert"
+    echo ">>> chip-cert → $BIN_DIR/chip-cert"
+}
+
+build_chip_tool() {
+    ensure_zap_cli
+    ensure_gn_out
+    echo ">>> Building chip-tool..."
+    ninja -C "$GN_OUT" chip-tool
+    cp "$GN_OUT/chip-tool" "$BIN_DIR/chip-tool"
+    echo ">>> chip-tool → $BIN_DIR/chip-tool"
+}
+
+# The all-clusters example acts as a Matter device on localhost. It uses its
+# own GN root (the Linux example builds the POSIX platform layer on Darwin).
 build_all_clusters_app() {
     ensure_zap_cli
     local out="out/all-clusters-app"

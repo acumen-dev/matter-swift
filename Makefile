@@ -59,7 +59,7 @@ ref-setup-cert:
 ref-setup-tool:
 	./Tools/RefImpl/setup.sh chip-tool
 
-## ref-setup-app  Build chip-all-clusters-app (a local Matter device) only
+## ref-setup-app  Build chip-all-clusters-app (a local Matter device) only; needs node+npm on Apple Silicon
 ref-setup-app:
 	./Tools/RefImpl/setup.sh all-clusters-app
 
