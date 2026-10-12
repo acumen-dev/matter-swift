@@ -294,17 +294,22 @@ struct CommissioningControllerTests {
         ]).tlvEncode()
     }
 
-    @Test("CSR response: matching nonce and valid CSR yields a NOC for the CSR's key")
+    @Test("CSR response: matching nonce and valid CSR issues a NOC for the CSR's key")
     func csrResponseAccepted() async throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
         let nonce = Data((0..<32).map { UInt8($0) })
-        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let deviceKey = P256.Signing.PrivateKey()
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: deviceKey)
         let result = try await cc.handleCSRResponse(
             response: csrResponse(csr: csr, nonce: nonce),
             expectedNonce: nonce,
             context: CommissioningController.CommissioningContext()
         )
-        #expect(result.addNOCMessage.count > 0)
+        let request = try InvokeRequest.fromTLV(result.addNOCMessage)
+        let fields = try #require(request.invokeRequests.first?.commandFields)
+        let addNOC = try OperationalCredentialsCluster.AddNOCCommand.fromTLVElement(fields)
+        let noc = try MatterCertificate.fromTLV(addNOC.nocValue)
+        #expect(noc.publicKey == deviceKey.publicKey.x963Representation)
     }
 
     @Test("CSR response: nonce mismatch is rejected")
@@ -329,12 +334,15 @@ struct CommissioningControllerTests {
         let range = try #require(csr.range(of: Data("Matter".utf8)))
         csr[range.lowerBound] ^= 0x01
         let nonce = Data(repeating: 7, count: 32)
-        await #expect(throws: ControllerError.self) {
+        do {
             _ = try await cc.handleCSRResponse(
                 response: csrResponse(csr: csr, nonce: nonce),
                 expectedNonce: nonce,
                 context: CommissioningController.CommissioningContext()
             )
+            Issue.record("expected failure")
+        } catch ControllerError.commissioningFailed(let message) {
+            #expect(message.hasPrefix("Invalid CSR"))
         }
     }
 
