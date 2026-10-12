@@ -110,6 +110,7 @@ struct CertificateConformanceTests {
     /// our TBS, or the device sees an invalid signature.
     @Test("Our DER TBS matches chip-cert for serials chip-cert can convert", arguments: [
         Data([0x80, 0x11, 0x22, 0x33]),
+        Data([0x00, 0x80, 0x11, 0x22]),
         Data([0x00]),
         Data([0x7F] + [UInt8](repeating: 0xAB, count: 19)),
     ])
@@ -126,9 +127,9 @@ struct CertificateConformanceTests {
                 "TBS mismatch for serial \(serial.hex)")
     }
 
-    /// A serial with leading zero octets is not minimal DER, so chip-cert's
-    /// OpenSSL step refuses it; a CHIP device still verifies over the octets
-    /// as-is. Stripping them made chip-all-clusters-app reject our RCAC with
+    /// A serial with a leading zero that is not a sign byte is not minimal
+    /// DER, so chip-cert's OpenSSL step refuses it; a CHIP device still
+    /// verifies over the octets as-is. Stripping them made chip-all-clusters-app reject our RCAC with
     /// "Invalid signature" whenever the random serial began with 0x00.
     @Test("A serial's leading zero octets are kept in the DER TBS")
     func leadingZeroSerialKeptInTBS() throws {

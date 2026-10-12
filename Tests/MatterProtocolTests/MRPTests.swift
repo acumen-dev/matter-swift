@@ -36,6 +36,14 @@ struct MRPParametersTests {
         #expect(parameters.sessionActiveThreshold == .milliseconds(1000))
     }
 
+    @Test("A zero advertised SII or SAI falls back to the default; a zero SAT is kept")
+    func zeroIntervalsFallBack() {
+        #expect(MRPParameters(txtRecords: ["SII": "0"]).sessionIdleInterval == .milliseconds(500))
+        #expect(MRPParameters(txtRecords: ["SAI": "0"]).sessionActiveInterval == .milliseconds(300))
+        #expect(MRPParameters(txtRecords: ["SII": "1"]).sessionIdleInterval == .milliseconds(1))
+        #expect(MRPParameters(txtRecords: ["SAT": "0"]).sessionActiveThreshold == .milliseconds(0))
+    }
+
     @Test("Missing, garbage and out-of-range TXT values fall back per key")
     func txtFallbacks() {
         let garbage = MRPParameters(txtRecords: ["SII": "abc", "SAI": "3600001", "SAT": "-5"])
@@ -233,13 +241,6 @@ struct ExchangeManagerTests {
         #expect(final.map(\.0) == [key])
         #expect(final.first?.1 == .exhausted)
         #expect(manager.exchange(for: key) == nil)
-    }
-
-    @Test("A zero advertised SII or SAI falls back to the default")
-    func zeroIntervalsFallBack() {
-        #expect(MRPParameters(txtRecords: ["SII": "0"]).sessionIdleInterval == .milliseconds(500))
-        #expect(MRPParameters(txtRecords: ["SAI": "0"]).sessionActiveInterval == .milliseconds(300))
-        #expect(MRPParameters(txtRecords: ["SII": "1"]).sessionIdleInterval == .milliseconds(1))
     }
 
     @Test("A peer heard from within SAT is active; SAI then sets the interval")

@@ -67,11 +67,14 @@ struct ChipAppRunnerTests {
         }
         let leaked = Process()
         leaked.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        leaked.arguments = ["-f", "secured-device-port \(port)"]
+        // Anchored so port 5540 does not match 55401.
+        leaked.arguments = ["-f", "secured-device-port \(port)( |$)"]
         leaked.standardOutput = Pipe()
         try leaked.run()
         leaked.waitUntilExit()
+        // pgrep: 0 = a match, 1 = no match, anything else = pgrep itself failed.
         #expect(leaked.terminationStatus != 0, "app on port \(port) is still running")
+        #expect(leaked.terminationStatus <= 1, "pgrep failed with status \(leaked.terminationStatus)")
     }
 }
 #endif

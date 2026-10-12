@@ -222,11 +222,14 @@ struct CommissioningControllerTests {
     @Test("An out-of-range LocationCapability fails commissioning")
     func unknownCapabilityThrows() throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
-        #expect(throws: ControllerError.self) {
-            try cc.handleLocationCapabilityResponse(locationCapabilityReport(3))
-        }
-        #expect(throws: ControllerError.self) {
-            try cc.handleLocationCapabilityResponse(locationCapabilityReport(0x1_00))
+        for raw: UInt64 in [3, 0x1_00] {
+            let error = #expect(throws: ControllerError.self) {
+                try cc.handleLocationCapabilityResponse(locationCapabilityReport(raw))
+            }
+            guard case .commissioningFailed? = error else {
+                Issue.record("expected commissioningFailed for \(raw), got \(String(describing: error))")
+                continue
+            }
         }
     }
 
@@ -295,6 +298,36 @@ struct CommissioningControllerTests {
         #expect(device.nodeID.rawValue == 42)
         #expect(device.vendorID == .test)
         #expect(device.fabricIndex == FabricIndex(rawValue: 5))
+    }
+
+    @Test("Handle CommissioningComplete without the device's fabric index fails commissioning")
+    func handleCommissioningCompleteWithoutFabricIndex() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        var ctx = CommissioningController.CommissioningContext()
+        ctx.deviceNodeID = NodeID(rawValue: 42)
+
+        let invokeResp = InvokeResponse(invokeResponses: [
+            InvokeResponseIB(
+                command: CommandDataIB(
+                    commandPath: CommandPath(
+                        endpointID: .root,
+                        clusterID: GeneralCommissioningCluster.id,
+                        commandID: GeneralCommissioningCluster.Command.commissioningCompleteResponse
+                    ),
+                    commandFields: GeneralCommissioningCluster.CommissioningCompleteResponse(
+                        errorCode: .ok, debugText: ""
+                    ).toTLVElement()
+                )
+            )
+        ])
+
+        let error = #expect(throws: ControllerError.self) {
+            try cc.handleCommissioningComplete(response: invokeResp.tlvEncode(), context: ctx)
+        }
+        guard case .commissioningFailed? = error else {
+            Issue.record("expected commissioningFailed, got \(String(describing: error))")
+            return
+        }
     }
 
     // MARK: - Response checks
@@ -399,6 +432,7 @@ struct CommissioningControllerTests {
             Issue.record("expected failure")
         } catch ControllerError.commissioningFailed(let message) {
             #expect(message.hasPrefix("Invalid CSR"))
+            #expect(message.contains("badSignature"), "the failure must be the signature check, got \(message)")
         }
     }
 
@@ -421,9 +455,15 @@ struct CommissioningControllerTests {
     @Test("AddNOC: a non-ok status throws")
     func addNOCFailureThrows() throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
-        #expect(throws: ControllerError.self) {
-            try cc.handleNOCResponse(nocResponse(.init(statusCode: .tableIsFull, fabricIndex: nil)))
+        // A fabric index is present, so the status alone must cause the throw.
+        let error = #expect(throws: ControllerError.self) {
+            try cc.handleNOCResponse(nocResponse(.init(statusCode: .tableIsFull, fabricIndex: FabricIndex(rawValue: 3))))
         }
+        guard case .commissioningFailed(let message)? = error else {
+            Issue.record("expected commissioningFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(message.contains("tableIsFull"), "the failure must be the status, got \(message)")
     }
 
     @Test("AddNOC: a status-only response throws")

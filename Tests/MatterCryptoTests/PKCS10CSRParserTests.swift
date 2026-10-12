@@ -97,21 +97,39 @@ struct PKCS10CSRParserTests {
         expectMalformed(Data([0x30, 0x84, 0xFF, 0xFF, 0xFF, 0xFF]), "huge")
     }
 
-    @Test("A non-zero unused-bits byte in the signature BIT STRING never yields a different key")
-    func unusedBits() throws {
-        // swift-certificates ignores the padding count on the signature BIT STRING and still
-        // verifies the signature over the exact CertificationRequestInfo, so a CSR that parses
-        // is still genuinely self-signed; we pin that it can only ever yield the signer's key.
+    /// A CSR whose signature BIT STRING declares one unused bit, re-signed
+    /// until the signature's last byte has its low bit `lowBitSet`.
+    private func csrWithOneUnusedBit(lowBitSet: Bool) throws -> (key: P256.Signing.PrivateKey, der: Data) {
         let key = P256.Signing.PrivateKey()
         let cri = B.buildCertificationRequestInfo(
             publicKey: key.publicKey, organization: "CSA", commonName: "Matter Device"
         )
-        let sig = [UInt8](try key.signature(for: cri).derRepresentation)
         let sigAlg = B.derSequence(B.derOID(B.oidECDSAWithSHA256))
-        let bits = B.derTLV(tag: 0x03, content: [0x01] + sig)
-        let der = Data(B.derSequence([UInt8](cri) + sigAlg + bits))
-        if let parsed = try? PKCS10CSR(der: der) {
-            #expect(parsed.publicKey.x963Representation == key.publicKey.x963Representation)
+        // ECDSA signatures are randomised: each try is an even chance.
+        for _ in 0..<256 {
+            let sig = [UInt8](try key.signature(for: cri).derRepresentation)
+            guard let last = sig.last, (last & 0x01 == 0x01) == lowBitSet else { continue }
+            let bits = B.derTLV(tag: 0x03, content: [0x01] + sig)
+            return (key, Data(B.derSequence([UInt8](cri) + sigAlg + bits)))
+        }
+        throw PKCS10CSRError.malformed("no signature with the wanted last bit in 256 tries")
+    }
+
+    @Test("A signature BIT STRING declaring one unused bit, with that bit clear, still yields the signer's key")
+    func unusedBitClear() throws {
+        // swift-certificates ignores the padding count on the signature BIT STRING and still
+        // verifies the signature over the exact CertificationRequestInfo, so a CSR that parses
+        // is still genuinely self-signed.
+        let (key, der) = try csrWithOneUnusedBit(lowBitSet: false)
+        let parsed = try PKCS10CSR(der: der)
+        #expect(parsed.publicKey.x963Representation == key.publicKey.x963Representation)
+    }
+
+    @Test("A signature BIT STRING declaring one unused bit that is set is rejected")
+    func unusedBitSet() throws {
+        let (_, der) = try csrWithOneUnusedBit(lowBitSet: true)
+        #expect(throws: PKCS10CSRError.self) {
+            _ = try PKCS10CSR(der: der)
         }
     }
 

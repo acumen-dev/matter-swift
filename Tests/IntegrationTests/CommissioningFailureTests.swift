@@ -124,6 +124,43 @@ struct CommissioningFailureTests {
         await server.stop()
     }
 
+    @Test("A CASE handshake that fails during commissioning disarms the device, leaves no session, and frees the node ID")
+    func caseHandshakeFailure() async throws {
+        let link = FaultInjectingLink(seed: 24)
+        let bridge = MatterBridge()
+        _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
+        let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
+        try await server.start()
+        let controller = try makeController(on: link, maxRetransmissions: 3)
+        let state = bridge.commissioningState
+        // Once the device has staged its ACLs (AddNOC onwards), drop every
+        // unsecured datagram it sends: Sigma2, or a StatusReport refusing
+        // Sigma1. Secured PASE traffic still flows, so the disarm gets through.
+        let dropped = LockedValue(0)
+        link.setInterceptor { data, side in
+            guard side == .b, !state.stagedACLs.isEmpty,
+                  let header = try? MessageHeader.decode(from: data).header,
+                  header.sessionID == 0 else { return .deliver(after: .zero) }
+            dropped.withLock { $0 += 1 }
+            return .drop
+        }
+
+        let expectedNodeID = await controller.nextNodeID
+        do {
+            _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            Issue.record("commission should have thrown")
+        } catch {}
+        #expect(dropped.value > 0, "the failure must be the CASE handshake: no Sigma2 was dropped")
+        #expect(await controller.messenger.registeredSessionIDs.isEmpty,
+                "neither the PASE session nor a CASE session may outlive a failed commissioning")
+        let disarmed = await Self.poll { !state.isFailSafeArmed }
+        #expect(disarmed, "the device's fail-safe must be disarmed without waiting for its expiry")
+        #expect(state.fabrics.isEmpty)
+        #expect(await controller.nextNodeID == expectedNodeID, "a failed commissioning must not consume a node ID")
+        await controller.stop()
+        await server.stop()
+    }
+
     private static func makeServer(
         bridge: MatterBridge, link: FaultInjectingLink, discovery: some MatterDiscovery
     ) -> MatterDeviceServer {

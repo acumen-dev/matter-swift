@@ -14,7 +14,7 @@ import MatterTypes
 import MatterModel
 import MatterProtocol
 import MatterTransport
-import MatterController
+@testable import MatterController
 
 // MARK: - ChipDeviceCommissioningTests
 
@@ -95,17 +95,26 @@ struct ChipDeviceCommissioningTests {
             let subscription = try await controller.subscribe(nodeID: device.nodeID, Self.onOffSubscription)
             let events = EventQueue(subscription.events)
             let first = try await events.next("established") { if case .established = $0 { true } else { false } }
-            guard case .established(_, let maxInterval) = first else { return }
+            guard case .established(_, let maxInterval) = first else {
+                Issue.record("expected .established, got \(first)")
+                return
+            }
             _ = try await events.nextOnOff("priming report")
 
             // The subscription is declared lost one granted max interval plus
             // the controller's MRP exhaustion horizon after the last report;
             // the hang guard is on top of that.
             let peer = await controller.device(for: device.nodeID)?.mrpParameters ?? .default
-            let liveness = Duration.seconds(Int(maxInterval)) + MRPConfig(
+            let exhaustion = MRPConfig(
                 peer: peer,
                 maxRetransmissions: Self.controllerMRP.maxRetransmissions
             ).exhaustionHorizon(peerActive: false)
+            let liveness = Duration.seconds(Int(maxInterval)) + exhaustion
+            // Re-established after the first re-subscribe backoff, at worst one
+            // attempt that exhausts its retransmissions against a device still
+            // starting, and the second backoff; the hang guard is on top.
+            let reestablish = ControllerSubscription.backoff(attempt: 0) + exhaustion
+                + ControllerSubscription.backoff(attempt: 1)
 
             // Same port and KVS file: the device comes back with its fabric,
             // at the address the controller has on record.
@@ -113,7 +122,9 @@ struct ChipDeviceCommissioningTests {
             let restarted = try await ChipAppRunner.start(passcode: Self.passcode, port: app.port, kvsPath: app.kvsPath)
             do {
                 _ = try await events.next(".lost", within: liveness + Self.hangGuard) { if case .lost = $0 { true } else { false } }
-                _ = try await events.next("re-established") { if case .established = $0 { true } else { false } }
+                _ = try await events.next("re-established", within: reestablish + Self.hangGuard) {
+                    if case .established = $0 { true } else { false }
+                }
                 let primed = try await events.nextOnOff("priming report after the restart")
                 try await toggle(device.nodeID, with: controller)
                 let reported = try await events.nextOnOff("toggle report after the restart")
