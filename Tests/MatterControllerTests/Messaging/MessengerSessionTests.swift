@@ -12,23 +12,6 @@ import MatterTestSupport
 @Suite("ControllerMessenger secure sessions and routing", .timeLimit(.minutes(1)))
 struct MessengerSessionTests {
 
-    struct Rig {
-        let clock: ManualClock
-        let link: FaultInjectingLink
-        let messenger: ControllerMessenger
-        let controllerSession: SecureSession
-        let peerSession: SecureSession
-    }
-
-    func makeRig() async throws -> Rig {
-        let clock = ManualClock()
-        let link = FaultInjectingLink(seed: 1)
-        let messenger = makeMessenger(link: link, clock: clock)
-        let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
-        try await messenger.registerSession(controllerSession, peerAddress: link.b.address)
-        return Rig(clock: clock, link: link, messenger: messenger, controllerSession: controllerSession, peerSession: peerSession)
-    }
-
     /// Retransmission interval after `n` transmissions to a peer that spoke within SAT, zero jitter.
     func activeInterval(_ n: Int) -> Duration {
         MRPConfig(peer: testPeerParameters).retransmissionInterval(transmissionsSoFar: n, peerActive: true, jitterUnit: 0)
@@ -178,7 +161,7 @@ struct MessengerSessionTests {
                 current = next
             }
             returned.withLock { $0 = true }
-        }, for: SubscriptionID(rawValue: 7))
+        }, for: SubscriptionID(rawValue: 7), sessionID: 10)
 
         let chunk1 = try ScriptedPeer.secured(
             session: rig.peerSession, exchangeID: 0x4000, initiator: true,
@@ -227,7 +210,7 @@ struct MessengerSessionTests {
                 payload: IMStatusResponse(status: 0).tlvEncode()
             )
             returned.withLock { $0 = true }
-        }, for: SubscriptionID(rawValue: 7))
+        }, for: SubscriptionID(rawValue: 7), sessionID: 10)
 
         rig.link.dropNext(1, from: .a)                       // the StatusResponse
         try await peer.send(try ScriptedPeer.secured(
@@ -280,6 +263,43 @@ struct MessengerSessionTests {
         #expect(ack.isStandaloneAck)
         #expect(ack.exchangeHeader.acknowledgedMessageCounter == reportCounter)
         #expect(fallbackCalls.value == 1)
+        await rig.messenger.stop()
+    }
+
+    @Test("A report for a subscription ID registered on another session is not given to that handler")
+    func subscriptionRoutingIsPerSession() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let handlerCalls = LockedValue(0)
+        let fallbackCalls = LockedValue(0)
+        await rig.messenger.setSubscriptionHandler({ _, _ in
+            handlerCalls.withLock { $0 += 1 }
+        }, for: SubscriptionID(rawValue: 7), sessionID: 11)
+        await rig.messenger.setUnsolicitedHandler { _, _ in
+            fallbackCalls.withLock { $0 += 1 }
+        }
+
+        let report = try ScriptedPeer.secured(
+            session: rig.peerSession, exchangeID: 0x4150, initiator: true,
+            protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue,
+            payload: ReportData(subscriptionID: SubscriptionID(rawValue: 7)).tlvEncode()
+        )
+        try await peer.send(report)
+        let ack = try await peer.nextSecured(session: rig.peerSession)
+        #expect(ack.isStandaloneAck)
+        #expect(handlerCalls.value == 0)
+        #expect(fallbackCalls.value == 1)
+        await rig.messenger.stop()
+    }
+
+    @Test("Unregistering a session removes its subscription routes")
+    func unregisterSessionRemovesRoutes() async throws {
+        let rig = try await makeRig()
+        await rig.messenger.setSubscriptionHandler({ _, _ in }, for: SubscriptionID(rawValue: 7), sessionID: 10)
+        await rig.messenger.setSubscriptionHandler({ _, _ in }, for: SubscriptionID(rawValue: 7), sessionID: 11)
+        await rig.messenger.unregisterSession(localSessionID: 10)
+        let remaining = await rig.messenger.subscriptionHandlers.keys.map(\.sessionID)
+        #expect(remaining == [11])
         await rig.messenger.stop()
     }
 

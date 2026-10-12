@@ -105,6 +105,11 @@ public actor MatterController {
 
     private var sessionCache = SessionCache()
 
+    /// Subscriptions created by ``subscribe(nodeID:_:)``. A subscription keeps
+    /// itself alive until cancelled, so ``stop()`` cancels each one.
+    private var subscriptions: [ControllerSubscription] = []
+    private var stopped = false
+
     /// CASE establishments in flight, one per node: concurrent callers of
     /// ``session(for:)`` await the same handshake.
     private var establishing: [NodeID: Task<SecureSession, any Error>] = [:]
@@ -515,8 +520,13 @@ public actor MatterController {
     }
 
     /// Stop the message layer: pending requests fail with
-    /// `MessagingError.stopped`. Terminal for this controller instance.
+    /// `MessagingError.stopped`. Cancels every live subscription (finishing
+    /// its event stream) first. Terminal for this controller instance.
     public func stop() async {
+        stopped = true
+        let tracked = subscriptions
+        subscriptions = []
+        for subscription in tracked { await subscription.cancel() }
         await messenger.stop()
     }
 
@@ -578,28 +588,101 @@ public actor MatterController {
     /// if the device stops acknowledging, the call fails with
     /// `ControllerError.peerUnreachable` and the command may or may not have
     /// executed — exactly once at most, never twice.
+    ///
+    /// Pass `timedTimeout` for commands that require a timed interaction
+    /// (DoorLock Lock/Unlock, AdministratorCommissioning window commands); the
+    /// controller then sends `TimedRequest` first, on the same exchange.
     public func invokeCommand(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         commandID: CommandID,
-        commandFields: TLVElement? = nil
+        commandFields: TLVElement? = nil,
+        timedTimeout: Duration? = nil
     ) async throws -> TLVElement? {
         try await withSession(nodeID: nodeID) { session in
-            let response = try await self.imRequest(
-                sessionID: session.localSessionID,
-                opcode: .invokeRequest,
-                payload: IMClient.invokeCommandRequest(
-                    endpointID: endpointID,
-                    clusterID: clusterID,
-                    commandID: commandID,
-                    commandFields: commandFields
-                )
+            let payload = IMClient.invokeCommandRequest(
+                endpointID: endpointID,
+                clusterID: clusterID,
+                commandID: commandID,
+                commandFields: commandFields,
+                timedRequest: timedTimeout != nil
             )
+            let response: InboundMessage
+            if let timedTimeout {
+                response = try await self.timedInvoke(sessionID: session.localSessionID, timeout: timedTimeout, payload: payload)
+            } else {
+                response = try await self.imRequest(sessionID: session.localSessionID, opcode: .invokeRequest, payload: payload)
+            }
             return try IMClient.parseInvokeResponse(response.payload)
         }
     }
 
+    /// Subscribe to attributes and events on a commissioned device.
+    ///
+    /// Returns once the first subscription is established (its priming report
+    /// is already on ``ControllerSubscription/events``). Liveness is judged on
+    /// the max interval the device granted plus the MRP exhaustion horizon for
+    /// the peer; a dead subscription is re-established with backoff, asking only
+    /// for events not yet delivered. Cancel it with ``ControllerSubscription/cancel()``;
+    /// ``stop()`` cancels any still running.
+    public func subscribe(nodeID: NodeID, _ request: SubscriptionRequest) async throws -> ControllerSubscription {
+        guard !stopped else { throw MessagingError.stopped }
+        guard let device = await registry.device(for: nodeID) else {
+            throw ControllerError.deviceNotFound
+        }
+        guard !stopped else { throw MessagingError.stopped }
+        let margin = MRPConfig(
+            peer: device.mrpParameters ?? .default,
+            maxRetransmissions: configuration.mrp.maxRetransmissions
+        ).exhaustionHorizon(peerActive: false)
+        let subscription = ControllerSubscription(
+            nodeID: nodeID,
+            request: request,
+            messenger: messenger,
+            client: subscriptionClient,
+            sessionProvider: { [weak self] in
+                guard let self else { throw MessagingError.stopped }
+                return try await self.session(for: nodeID).localSessionID
+            },
+            livenessMargin: margin,
+            operationTimeout: configuration.operationTimeout,
+            onEstablishFailure: { [weak self] sessionID, error in
+                await self?.invalidateStaleSession(for: nodeID, sessionID: sessionID, error: error)
+            }
+        )
+        // Tracked before start() suspends, so a concurrent stop() cancels it.
+        // Prune cancelled entries by removal only: the array is re-read after
+        // every suspension, never rebuilt from a snapshot.
+        var cancelledIDs: Set<ObjectIdentifier> = []
+        for existing in subscriptions where await existing.isCancelled {
+            cancelledIDs.insert(ObjectIdentifier(existing))
+        }
+        subscriptions.removeAll { cancelledIDs.contains(ObjectIdentifier($0)) }
+        guard !stopped else { throw MessagingError.stopped }
+        track(subscription)   // no suspension since the guard
+        do {
+            try await subscription.start()
+        } catch {
+            subscriptions.removeAll { $0 === subscription }
+            if stopped { throw MessagingError.stopped }
+            throw Self.operationalError(error, nodeID: nodeID)
+        }
+        if stopped {
+            await subscription.cancel()
+            subscriptions.removeAll { $0 === subscription }
+            throw MessagingError.stopped
+        }
+        return subscription
+    }
+
+    /// Track a subscription so ``stop()`` and ``removeDevice(nodeID:)`` cancel it.
+    func track(_ subscription: ControllerSubscription) {
+        subscriptions.append(subscription)
+    }
+
+    /// Number of subscriptions currently tracked (for tests).
+    var trackedSubscriptionCount: Int { subscriptions.count }
 
     // MARK: - Device Registry
 
@@ -614,6 +697,9 @@ public actor MatterController {
     }
     /// Remove a device from the registry and invalidate its session.
     public func removeDevice(nodeID: NodeID) async {
+        let doomed = subscriptions.filter { $0.nodeID == nodeID }
+        subscriptions.removeAll { $0.nodeID == nodeID }
+        for subscription in doomed { await subscription.cancel() }
         await registry.remove(nodeID: nodeID)
         await invalidateSession(for: nodeID)
         await saveState()
@@ -675,6 +761,43 @@ public actor MatterController {
             if response.opcode == InteractionModelOpcode.statusResponse.rawValue {
                 let status = try IMStatusResponse.fromTLV(response.payload)
                 throw ControllerError.imStatus(status.status)
+            }
+            return response
+        } catch {
+            await exchange.close()
+            throw error
+        }
+    }
+
+    /// Run a timed invoke: `TimedRequest`, then the `InvokeRequest`, on **one**
+    /// exchange (the device keys its timed-interaction window by exchange).
+    /// A refused `TimedRequest` fails the call and the invoke is never sent.
+    func timedInvoke(sessionID: UInt16, timeout: Duration, payload: Data) async throws -> InboundMessage {
+        let exchange = try await messenger.openExchange(sessionID: sessionID)
+        do {
+            let timedStatus = try await exchange.request(
+                protocolID: .interactionModel,
+                opcode: InteractionModelOpcode.timedRequest.rawValue,
+                payload: IMClient.timedRequest(timeout: timeout),
+                timeout: configuration.operationTimeout
+            )
+            guard timedStatus.protocolID == MatterProtocolID.interactionModel.rawValue,
+                  timedStatus.opcode == InteractionModelOpcode.statusResponse.rawValue else {
+                throw MessagingError.unexpectedProtocol(protocolID: timedStatus.protocolID, opcode: timedStatus.opcode)
+            }
+            let status = try IMStatusResponse.fromTLV(timedStatus.payload)
+            guard status.status == IMStatusResponse.success.status else {
+                throw ControllerError.imStatus(status.status)
+            }
+            let response = try await exchange.request(
+                protocolID: .interactionModel,
+                opcode: InteractionModelOpcode.invokeRequest.rawValue,
+                payload: payload,
+                timeout: configuration.operationTimeout
+            )
+            await exchange.close()
+            if response.opcode == InteractionModelOpcode.statusResponse.rawValue {
+                throw ControllerError.imStatus(try IMStatusResponse.fromTLV(response.payload).status)
             }
             return response
         } catch {
@@ -859,6 +982,17 @@ public actor MatterController {
     private static func commissioningError(_ error: any Error) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
         return ControllerError.commissioningFailed("Messaging failure: \(messaging)")
+    }
+
+    /// Drop the cached session if `error` says it is gone and it is still the
+    /// session the failed attempt used (a newer one is left alone).
+    func invalidateStaleSession(for nodeID: NodeID, sessionID: UInt16, error: any Error) async {
+        guard let mapped = Self.operationalError(error, nodeID: nodeID) as? ControllerError,
+              mapped == .peerUnreachable(nodeID),
+              let cached = sessionCache.session(for: nodeID),
+              cached.localSessionID == sessionID else { return }
+        logger.info("Node \(nodeID.rawValue) subscription failed on a dead session; invalidating it")
+        await invalidateSession(for: nodeID)
     }
 
     /// Messaging failures on an operational exchange, as `ControllerError`.

@@ -110,7 +110,13 @@ public actor ControllerMessenger {
     /// initiated; our frames on that exchange carry it as Destination Node ID.
     var peerEphemeralNodeIDs: [ExchangeKey: NodeID] = [:]
     var nextWaiterToken: UInt64 = 0
-    var subscriptionHandlers: [SubscriptionID: UnsolicitedHandler] = [:]
+    /// Subscription IDs are assigned per device, so handlers are keyed by the
+    /// secure session the subscription was established on as well.
+    struct SubscriptionRoute: Hashable, Sendable {
+        let sessionID: UInt16
+        let subscriptionID: SubscriptionID
+    }
+    var subscriptionHandlers: [SubscriptionRoute: UnsolicitedHandler] = [:]
     var unsolicitedHandler: UnsolicitedHandler?
     var receiveTask: Task<Void, Never>?
     var timerTask: Task<Void, Never>?
@@ -510,7 +516,8 @@ public actor ControllerMessenger {
            message.opcode == InteractionModelOpcode.reportData.rawValue,
            let report = try? ReportData.fromTLV(message.payload),
            let subscriptionID = report.subscriptionID,
-           let handler = subscriptionHandlers[subscriptionID] {
+           case .secured(let localSessionID) = message.key.scope,
+           let handler = subscriptionHandlers[SubscriptionRoute(sessionID: localSessionID, subscriptionID: subscriptionID)] {
             return handler
         }
         return unsolicitedHandler

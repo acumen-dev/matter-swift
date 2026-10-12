@@ -77,6 +77,7 @@ extension ControllerMessenger {
         guard !isStopped else { return }
         // Removed first, so `finishExchange` finds no address and queues no ack.
         guard sessions.removeValue(forKey: localSessionID) != nil else { return }
+        subscriptionHandlers = subscriptionHandlers.filter { $0.key.sessionID != localSessionID }
         let scope = SessionScope.secured(localSessionID: localSessionID)
         var unsendable: [Outgoing] = []
         for exchange in manager.exchanges(in: scope) {
@@ -119,14 +120,15 @@ extension ControllerMessenger {
 
     // MARK: - Unsolicited messages
 
-    /// Route peer-initiated `ReportData` carrying subscription `id` to
-    /// `handler` (nil removes it). The handler runs in its own task, answers
+    /// Route peer-initiated `ReportData` carrying subscription `id` on local
+    /// session `sessionID` to `handler` (nil removes it). Routes are per
+    /// (session, subscription ID): IDs are only unique per device. The handler runs in its own task, answers
     /// on the exchange it is given (its `StatusResponse` piggybacks the ack)
     /// and may `receive()` further chunks there; the exchange closes when it
     /// returns — a reliable message still unacknowledged then keeps being
     /// retransmitted until acknowledged or exhausted.
-    public func setSubscriptionHandler(_ handler: UnsolicitedHandler?, for id: SubscriptionID) {
-        subscriptionHandlers[id] = handler
+    public func setSubscriptionHandler(_ handler: UnsolicitedHandler?, for id: SubscriptionID, sessionID: UInt16) {
+        subscriptionHandlers[SubscriptionRoute(sessionID: sessionID, subscriptionID: id)] = handler
     }
 
     /// Fallback for peer-initiated messages no subscription handler claims.

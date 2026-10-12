@@ -108,6 +108,38 @@ struct MatterControllerTests {
         #expect(await controller.allDevices().isEmpty)
     }
 
+    @Test("removeDevice cancels that node's tracked subscriptions only")
+    func removeDeviceCancelsSubscriptions() async throws {
+        let controller = try MatterController(
+            transport: MockUDPTransport(),
+            discovery: MockDiscovery(),
+            configuration: .init(fabricID: FabricID(rawValue: 1))
+        )
+        let messenger = await controller.messenger
+        func make(_ node: UInt64) -> ControllerSubscription {
+            ControllerSubscription(
+                nodeID: NodeID(rawValue: node),
+                request: SubscriptionRequest(maxInterval: 10),
+                messenger: messenger,
+                client: SubscriptionClient(),
+                sessionProvider: { throw MessagingError.stopped },
+                livenessMargin: .seconds(5),
+                operationTimeout: .seconds(30)
+            )
+        }
+        let doomed = make(42)
+        let kept = make(43)
+        await controller.track(doomed)
+        await controller.track(kept)
+        #expect(await controller.trackedSubscriptionCount == 2)
+
+        await controller.removeDevice(nodeID: NodeID(rawValue: 42))
+        #expect(await doomed.isCancelled)
+        #expect(!(await kept.isCancelled))
+        #expect(await controller.trackedSubscriptionCount == 1)
+        await controller.stop()
+    }
+
     // MARK: - Error: Device Not Found
 
     @Test("readAttribute throws deviceNotFound for unknown node")

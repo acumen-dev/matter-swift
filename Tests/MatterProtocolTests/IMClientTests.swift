@@ -1,0 +1,98 @@
+// IMClientTests.swift
+// Copyright 2026 Monagle Pty Ltd
+
+import Testing
+import Foundation
+import MatterTypes
+@testable import MatterProtocol
+
+@Suite("IMClient invoke responses")
+struct IMClientTests {
+
+    private let path1 = CommandPath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006), commandID: CommandID(rawValue: 0x02))
+    private let path2 = CommandPath(endpointID: EndpointID(rawValue: 2), clusterID: ClusterID(rawValue: 0x0006), commandID: CommandID(rawValue: 0x02))
+
+    private func encode(_ responses: [InvokeResponseIB]) -> Data {
+        InvokeResponse(invokeResponses: responses).tlvEncode()
+    }
+
+    @Test("Every InvokeResponseIB is returned, in order")
+    func allResponsesReturned() throws {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(command: CommandDataIB(commandPath: path2, commandFields: .structure([]))),
+        ])
+        let responses = try IMClient.parseInvokeResponses(data)
+        #expect(responses.count == 2)
+        #expect(responses[0].status?.commandPath == path1)
+        #expect(responses[1].command?.commandPath == path2)
+    }
+
+    @Test("The convenience parser throws when a later response failed, not only the first")
+    func laterFailureThrows() {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path2, status: StatusIB(status: 0x85))),
+        ])
+        #expect(throws: IMError.invalidStatus("Command error: status 133")) { try IMClient.parseInvokeResponse(data) }
+    }
+
+    @Test("SUCCESS carrying a cluster status is not an error")
+    func successWithClusterStatus() throws {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0, clusterStatus: 3))),
+        ])
+        #expect(try IMClient.parseInvokeResponse(data) == nil)
+    }
+
+    @Test("All-success responses return nil")
+    func allSuccessReturnsNil() throws {
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path2, status: StatusIB(status: 0))),
+        ])
+        #expect(try IMClient.parseInvokeResponse(data) == nil)
+    }
+
+    @Test("The convenience parser returns the first command's fields")
+    func firstCommandFields() throws {
+        let fields = TLVElement.structure([.init(tag: .contextSpecific(0), value: .unsignedInt(7))])
+        let data = encode([
+            InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
+            InvokeResponseIB(command: CommandDataIB(commandPath: path2, commandFields: fields)),
+        ])
+        #expect(try IMClient.parseInvokeResponse(data) == fields)
+    }
+
+    @Test("A TimedRequest carries the timeout in milliseconds")
+    func timedRequestTimeout() throws {
+        let data = IMClient.timedRequest(timeout: .milliseconds(1500))
+        #expect(try TimedRequest.fromTLV(data).timeoutMs == 1500)
+    }
+}
+
+@Suite("IMClient write responses")
+struct IMClientWriteResponseTests {
+
+    private let path1 = AttributePath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006), attributeID: AttributeID(rawValue: 0x0000))
+    private let path2 = AttributePath(endpointID: EndpointID(rawValue: 2), clusterID: ClusterID(rawValue: 0x0006), attributeID: AttributeID(rawValue: 0x0000))
+
+    private func encode(_ statuses: [StatusIB]) -> Data {
+        let paths = [path1, path2]
+        return WriteResponse(writeResponses: statuses.enumerated().map {
+            AttributeStatusIB(path: paths[$0.offset], status: $0.element)
+        }).tlvEncode()
+    }
+
+    @Test("SUCCESS carrying a cluster status is success")
+    func successWithClusterStatusIsSuccess() throws {
+        let data = encode([StatusIB(status: 0, clusterStatus: 3)])
+        #expect(try IMClient.parseWriteResponse(data) == true)
+    }
+
+    @Test("A failure alongside a SUCCESS is reported as failure")
+    func mixedSuccessAndFailureIsFailure() throws {
+        let data = encode([StatusIB(status: 0), StatusIB(status: 0x87)])
+        #expect(try IMClient.parseWriteResponse(data) == false)
+    }
+}

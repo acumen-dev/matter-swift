@@ -126,7 +126,7 @@ MatterSwift (umbrella re-export of all modules)
 - `CommissioningController` — Pure commissioning state machine
 - `FabricManager` — Multi-fabric credential management
 - `OperationalController` — Post-commissioning attribute/command operations
-- `SubscriptionClient` — Client-side subscription management
+- `SubscriptionClient` — bookkeeping for the controller's subscriptions (requests with event paths and filters, report parsing, event high-water mark, liveness deadlines). `ControllerSubscription` drives one live subscription, returned by `MatterController.subscribe(nodeID:_:)`.
 - `DeviceRegistry` — Commissioned device tracking
 
 **When to import**: When building a Matter controller or commissioner.
