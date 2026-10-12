@@ -292,6 +292,17 @@ struct MessengerSessionTests {
         await rig.messenger.stop()
     }
 
+    @Test("Unregistering a session removes its subscription routes")
+    func unregisterSessionRemovesRoutes() async throws {
+        let rig = try await makeRig()
+        await rig.messenger.setSubscriptionHandler({ _, _ in }, for: SubscriptionID(rawValue: 7), sessionID: 10)
+        await rig.messenger.setSubscriptionHandler({ _, _ in }, for: SubscriptionID(rawValue: 7), sessionID: 11)
+        await rig.messenger.unregisterSession(localSessionID: 10)
+        let remaining = await rig.messenger.subscriptionHandlers.keys.map(\.sessionID)
+        #expect(remaining == [11])
+        await rig.messenger.stop()
+    }
+
     @Test("With no handler at all, an unsolicited message is acked and its exchange closed")
     func noHandlerAcksAndCloses() async throws {
         let rig = try await makeRig()

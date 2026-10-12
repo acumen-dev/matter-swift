@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterProtocol
 
@@ -37,6 +38,7 @@ public actor ControllerSubscription {
     private let sessionProvider: SessionProvider
     private let livenessMargin: Duration
     private let operationTimeout: Duration
+    private nonisolated let logger = Logger(label: "matter.controller.subscription")
 
     public private(set) var currentSubscriptionID: SubscriptionID?
     /// The local session ID the current subscription was established on.
@@ -73,13 +75,16 @@ public actor ControllerSubscription {
     public func cancel() async {
         guard !cancelled else { return }
         cancelled = true
-        if let id = currentSubscriptionID, let sessionID = currentSessionID {
-            await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
-            await client.remove(subscriptionID: id, peerNodeID: nodeID)
-        }
+        // Cleared before any await so a concurrent establish() cannot commit over it.
+        let id = currentSubscriptionID
+        let sessionID = currentSessionID
         currentSubscriptionID = nil
         currentSessionID = nil
         continuation.finish()
+        if let id, let sessionID {
+            await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
+            await client.remove(subscriptionID: id, peerNodeID: nodeID)
+        }
     }
 
     // MARK: - Establishment
@@ -92,11 +97,14 @@ public actor ControllerSubscription {
     }
 
     private func establish() async throws {
+        guard !cancelled else { throw CancellationError() }
         let sessionID = try await sessionProvider()
+        guard !cancelled else { throw CancellationError() }
         let exchange = try await messenger.openExchange(sessionID: sessionID)
         var outgoing = request
         outgoing.eventMin = nextEventMin
         do {
+            guard !cancelled else { throw CancellationError() }
             var message = try await exchange.request(
                 protocolID: .interactionModel,
                 opcode: InteractionModelOpcode.subscribeRequest.rawValue,
@@ -106,7 +114,9 @@ public actor ControllerSubscription {
             var priming: [SubscriptionReport] = []
             // Priming report: answer every chunk; SubscribeResponse follows the last one.
             while message.opcode == InteractionModelOpcode.reportData.rawValue {
+                guard !cancelled else { throw CancellationError() }
                 let report = try await client.record(reportData: message.payload, from: nodeID, at: messenger.clock.now)
+                guard !cancelled else { throw CancellationError() }
                 priming.append(report)
                 message = try await exchange.request(
                     protocolID: .interactionModel,
@@ -115,6 +125,7 @@ public actor ControllerSubscription {
                     timeout: operationTimeout
                 )
             }
+            guard !cancelled else { throw CancellationError() }
             if message.opcode == InteractionModelOpcode.statusResponse.rawValue {
                 throw ControllerError.imStatus(try IMStatusResponse.fromTLV(message.payload).status)
             }
@@ -122,16 +133,28 @@ public actor ControllerSubscription {
                 throw MessagingError.unexpectedProtocol(protocolID: message.protocolID, opcode: message.opcode)
             }
             let subscription = try await client.register(
-                responseData: message.payload, peerNodeID: nodeID, request: request, at: messenger.clock.now
+                responseData: message.payload, peerNodeID: nodeID, request: outgoing, at: messenger.clock.now
             )
+            let id = subscription.subscriptionID
+            guard !cancelled else {
+                await client.remove(subscriptionID: id, peerNodeID: nodeID)
+                throw CancellationError()
+            }
+            // Commit state and surface events with no await in between, so a
+            // report routed once the handler is live cannot overtake them.
+            currentSubscriptionID = id
+            currentSessionID = sessionID
+            continuation.yield(.established(id, negotiatedMaxInterval: subscription.negotiatedMaxInterval))
+            for report in priming { deliver(report) }
             // Register before closing: a report sent right after SubscribeResponse
             // must reach this subscription, not the messenger's fallback.
-            await messenger.setSubscriptionHandler(handler(for: subscription.subscriptionID), for: subscription.subscriptionID, sessionID: sessionID)
+            await messenger.setSubscriptionHandler(handler(for: id), for: id, sessionID: sessionID)
+            if cancelled {
+                await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
+                await client.remove(subscriptionID: id, peerNodeID: nodeID)
+                throw CancellationError()
+            }
             await exchange.close()
-            currentSubscriptionID = subscription.subscriptionID
-            currentSessionID = sessionID
-            continuation.yield(.established(subscription.subscriptionID, negotiatedMaxInterval: subscription.negotiatedMaxInterval))
-            for report in priming { deliver(report) }
         } catch {
             await exchange.close()
             throw error
@@ -147,19 +170,46 @@ public actor ControllerSubscription {
         { [weak self] message, exchange in
             guard let self else { return }
             var current = message
+            var isFirst = true
             while true {
-                guard let report = try? await self.client.record(reportData: current.payload, from: self.nodeID, at: self.messenger.clock.now) else { return }
+                let decoded: ReportData
+                do {
+                    decoded = try ReportData.fromTLV(current.payload)
+                } catch {
+                    self.logger.warning("Subscription \(id.rawValue): undecodable ReportData: \(error)")
+                    return
+                }
+                if !isFirst, decoded.subscriptionID != id {
+                    self.logger.warning("Subscription \(id.rawValue): chunk carries subscription ID \(String(describing: decoded.subscriptionID?.rawValue)); stopping chain")
+                    return
+                }
+                isFirst = false
+                let report: SubscriptionReport
+                do {
+                    report = try await self.client.record(reportData: current.payload, from: self.nodeID, at: self.messenger.clock.now)
+                } catch {
+                    self.logger.warning("Subscription \(id.rawValue): could not record report: \(error)")
+                    return
+                }
                 if !report.suppressResponse {
-                    try? await exchange.send(
-                        protocolID: .interactionModel,
-                        opcode: InteractionModelOpcode.statusResponse.rawValue,
-                        payload: IMStatusResponse.success.tlvEncode()
-                    )
+                    do {
+                        try await exchange.send(
+                            protocolID: .interactionModel,
+                            opcode: InteractionModelOpcode.statusResponse.rawValue,
+                            payload: IMStatusResponse.success.tlvEncode()
+                        )
+                    } catch {
+                        self.logger.warning("Subscription \(id.rawValue): StatusResponse send failed: \(error)")
+                    }
                 }
                 await self.deliver(report)
-                guard report.moreChunkedMessages,
-                      let next = try? await exchange.receive(timeout: self.operationTimeout) else { return }
-                current = next
+                guard report.moreChunkedMessages else { return }
+                do {
+                    current = try await exchange.receive(timeout: self.operationTimeout)
+                } catch {
+                    self.logger.warning("Subscription \(id.rawValue): chunk chain broken: \(error)")
+                    return
+                }
             }
         }
     }

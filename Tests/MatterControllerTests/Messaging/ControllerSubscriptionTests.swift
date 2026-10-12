@@ -8,7 +8,7 @@ import MatterProtocol
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerSubscription")
+@Suite("ControllerSubscription", .timeLimit(.minutes(1)))
 struct ControllerSubscriptionTests {
 
     private let node = NodeID(rawValue: 0x42)
@@ -16,12 +16,12 @@ struct ControllerSubscriptionTests {
     private let id = SubscriptionID(rawValue: 7)
     private let margin = Duration.seconds(5)
 
-    private func makeSubscription(_ rig: Rig, request: SubscriptionRequest? = nil) -> ControllerSubscription {
+    private func makeSubscription(_ rig: Rig, client: SubscriptionClient = SubscriptionClient(), request: SubscriptionRequest? = nil) -> ControllerSubscription {
         ControllerSubscription(
             nodeID: node,
             request: request ?? SubscriptionRequest(attributePaths: [onOff], minInterval: 1, maxInterval: 10),
             messenger: rig.messenger,
-            client: SubscriptionClient(),
+            client: client,
             sessionProvider: { 10 },
             livenessMargin: margin,
             operationTimeout: .seconds(30)
@@ -79,7 +79,10 @@ struct ControllerSubscriptionTests {
         try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5000, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: report.tlvEncode()))
         // Closing the establishment exchange first acks SubscribeResponse with a standalone ack.
         var status = try await peer.nextSecured(session: rig.peerSession)
-        while status.isStandaloneAck { status = try await peer.nextSecured(session: rig.peerSession) }
+        if status.isStandaloneAck {
+            #expect(status.exchangeHeader.exchangeID != 0x5000, "the ack is for the SubscribeResponse")
+            status = try await peer.nextSecured(session: rig.peerSession)
+        }
         #expect(status.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue)
         #expect(status.exchangeHeader.exchangeID == 0x5000)
         guard case .report(let delivered)? = await iterator.next() else { Issue.record("expected the report"); return }
@@ -111,15 +114,47 @@ struct ControllerSubscriptionTests {
     func cancelFinishes() async throws {
         let rig = try await makeRig()
         var peer = TestPeer(link: rig.link)
-        let sub = makeSubscription(rig)
+        let client = SubscriptionClient()
+        let sub = makeSubscription(rig, client: client)
         let started = Task { try await sub.start() }
         _ = try await playEstablishment(&peer, rig)
         try await started.value
+        #expect(await client.count == 1)
         await sub.cancel()
+        #expect(await client.count == 0)
+        #expect(await rig.messenger.subscriptionHandlers.isEmpty)
         var count = 0
         for await _ in sub.events { count += 1 }
         #expect(count >= 1, "buffered events drain, then the stream finishes")
         #expect(await sub.currentSubscriptionID == nil)
         await rig.messenger.stop()
+    }
+
+    @Test("A report sent right after SubscribeResponse is delivered after the established event and priming reports")
+    func reportImmediatelyAfterEstablishment() async throws {
+        let rig = try await makeRig()
+        var peer = TestPeer(link: rig.link)
+        let sub = makeSubscription(rig)
+        let started = Task { try await sub.start() }
+        _ = try await playEstablishment(&peer, rig)
+        // The controller's ack of SubscribeResponse goes out when it closes the
+        // establishment exchange, after the route is registered. A device only
+        // reports once that ack arrives; sending earlier would race the route.
+        let ack = try await peer.nextSecured(session: rig.peerSession)
+        #expect(ack.isStandaloneAck)
+        try await peer.send(ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x5002, initiator: true, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue, payload: ReportData(subscriptionID: id, suppressResponse: false).tlvEncode()))
+        try await started.value
+
+        var iterator = sub.events.makeAsyncIterator()
+        #expect(await iterator.next() == .established(id, negotiatedMaxInterval: 10))
+        guard case .report(let p1)? = await iterator.next() else { Issue.record("expected priming 1"); return }
+        #expect(p1.attributes.count == 1)
+        guard case .report(let p2)? = await iterator.next() else { Issue.record("expected priming 2"); return }
+        #expect(p2.attributes.isEmpty)
+        guard case .report? = await iterator.next() else { Issue.record("expected the later report"); return }
+        let frame = try await peer.nextSecured(session: rig.peerSession)
+        #expect(frame.exchangeHeader.exchangeID == 0x5002)
+        #expect(frame.exchangeHeader.protocolOpcode == InteractionModelOpcode.statusResponse.rawValue)
+        await sub.cancel(); await rig.messenger.stop()
     }
 }
