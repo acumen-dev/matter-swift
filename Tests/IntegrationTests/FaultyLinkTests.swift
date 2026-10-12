@@ -172,6 +172,9 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            // Commissioning leaves its CASE session cached; drop it so the
+            // operations below must establish (and share) a fresh one.
+            await controller.invalidateSession(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
             // Overlapping reads and one invoke, all issued before any CASE session exists.
@@ -225,6 +228,9 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            // Commissioning leaves its CASE session cached; drop it so the
+            // operations below must establish (and share) a fresh one.
+            await controller.invalidateSession(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
             // Hold the handshake: the device's replies are lost until released.
@@ -278,6 +284,9 @@ struct FaultyLinkTests {
 
         do {
             let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            // Commissioning leaves its CASE session cached; drop it so the
+            // operations below must establish (and share) a fresh one.
+            await controller.invalidateSession(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
             // Hold the handshake: the device's replies are lost until released.

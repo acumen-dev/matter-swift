@@ -13,7 +13,7 @@ import MatterTransport
 
 /// A point in commissioning at which a test can inject a failure.
 enum CommissioningStep: Sendable {
-    case afterArmFailSafe, afterCSR, afterAddNOC, afterACLWrite
+    case afterArmFailSafe, afterCSR, afterAddNOC, afterACLWrite, afterCASE
 }
 
 /// High-level Matter controller that orchestrates commissioning and
@@ -404,8 +404,11 @@ public actor MatterController {
             throw Self.commissioningError(error)
         }
         var device: CommissionedDevice
+        let caseSession: SecureSession
         do {
-            device = try await commissionOverPASE(session: paseSession, context: paseContext)
+            (device, caseSession) = try await commissionOverPASE(
+                session: paseSession, context: paseContext, address: address, mrp: mrp
+            )
         } catch {
             await messenger.unregisterSession(localSessionID: paseSession.localSessionID)
             throw Self.commissioningError(error)
@@ -416,7 +419,9 @@ public actor MatterController {
         device.setOperationalAddress(address)
         device.mrpParameters = mrp
 
-        // Register in device registry
+        // The CASE session CommissioningComplete went over is the node's
+        // operational session; then register the device.
+        sessionCache.store(caseSession, for: device.nodeID)
         await registry.register(device)
 
         // Persist controller state
@@ -427,24 +432,31 @@ public actor MatterController {
         return device
     }
 
-    /// Commissioning steps 2-7 over the established PASE session.
+    /// Commissioning steps 2-6 over the established PASE session, then
+    /// CommissioningComplete over CASE on the new fabric.
     ///
     /// Once ArmFailSafe has succeeded, any later failure disarms it on the
-    /// device (best effort), so the device reverts at once rather than after
-    /// the fail-safe expires, and returns the node ID it allocated. The
-    /// original error is rethrown.
+    /// device (best effort, over the still-open PASE session), so the device
+    /// reverts at once rather than after the fail-safe expires, and returns
+    /// the node ID it allocated. A CASE session already registered is torn
+    /// down. The original error is rethrown.
+    ///
+    /// - Returns: the device and its registered (not yet cached) CASE session.
     private func commissionOverPASE(
         session: SecureSession,
-        context ctx3: CommissioningController.CommissioningContext
-    ) async throws -> CommissionedDevice {
+        context ctx3: CommissioningController.CommissioningContext,
+        address: MatterAddress,
+        mrp: MRPParameters?
+    ) async throws -> (CommissionedDevice, SecureSession) {
         var failSafeArmed = false
         var allocatedNodeID: NodeID?
         var completeSent = false
+        var caseSession: SecureSession?
         do {
             return try await runCommissioningSteps(
-                session: session, context: ctx3,
+                session: session, context: ctx3, address: address, mrp: mrp,
                 failSafeArmed: &failSafeArmed, allocatedNodeID: &allocatedNodeID,
-                completeSent: &completeSent
+                completeSent: &completeSent, caseSession: &caseSession
             )
         } catch {
             // Once CommissioningComplete has gone out the device may have
@@ -455,6 +467,9 @@ public actor MatterController {
             }
             if failSafeArmed {
                 await disarmFailSafe(sessionID: session.localSessionID)
+            }
+            if let caseSession {
+                await messenger.unregisterSession(localSessionID: caseSession.localSessionID)
             }
             throw error
         }
@@ -476,10 +491,13 @@ public actor MatterController {
     private func runCommissioningSteps(
         session: SecureSession,
         context ctx3: CommissioningController.CommissioningContext,
+        address: MatterAddress,
+        mrp: MRPParameters?,
         failSafeArmed: inout Bool,
         allocatedNodeID: inout NodeID?,
-        completeSent: inout Bool
-    ) async throws -> CommissionedDevice {
+        completeSent: inout Bool,
+        caseSession: inout SecureSession?
+    ) async throws -> (CommissionedDevice, SecureSession) {
         let paseSessionID = session.localSessionID
 
         // Step 2: ArmFailSafe
@@ -537,13 +555,31 @@ public actor MatterController {
         try commissioning.handleACLWriteResponse(aclResp.payload)
         try commissioningFailureInjection?(.afterACLWrite)
 
-        // Step 7: CommissioningComplete
+        // Step 7: CASE to the device on the new fabric. A real device
+        // (connectedhomeip) refuses CommissioningComplete over PASE with
+        // InvalidAuthentication ("invalid security context").
+        guard let caseSessionID = await reserveSessionID() else {
+            throw ControllerError.caseSessionFailed("No free local session ID")
+        }
+        // Released once registered: the messenger then holds the ID.
+        defer { sessionCache.releaseSessionID(caseSessionID) }
+        let established = try await caseHandshake(
+            nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID
+        )
+        try await messenger.registerSession(established, peerAddress: address, mrp: mrp)
+        caseSession = established
+        try commissioningFailureInjection?(.afterCASE)
+
+        // Step 8: CommissioningComplete over that CASE session
         let completeMsg = commissioning.buildCommissioningComplete()
         completeSent = true
-        let completeResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: completeMsg)
-        return try commissioning.handleCommissioningComplete(
+        let completeResp = try await imRequest(
+            sessionID: established.localSessionID, opcode: .invokeRequest, payload: completeMsg
+        )
+        let device = try commissioning.handleCommissioningComplete(
             response: completeResp.payload, context: ctx7
         )
+        return (device, established)
     }
 
 
@@ -913,16 +949,53 @@ public actor MatterController {
             throw ControllerError.caseSessionFailed("No free local session ID")
         }
         defer { sessionCache.releaseSessionID(sessionID) }
-        let timeout = configuration.operationTimeout
 
         logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
 
+        let session: SecureSession
+        do {
+            session = try await caseHandshake(
+                nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID
+            )
+        } catch {
+            throw Self.operationalError(error, nodeID: nodeID)
+        }
+
+        // Register before caching so the first request's reply is routable.
+        // Parameters re-read now: setMRPParameters may have run during the
+        // handshake (it then waits for this establishment to finish).
+        // A device removed during the handshake gets no session.
+        guard let current = await registry.device(for: nodeID) else {
+            throw ControllerError.deviceNotFound
+        }
+        do {
+            try await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
+        } catch {
+            throw Self.operationalError(error, nodeID: nodeID)
+        }
+        sessionCache.store(session, for: nodeID)
+
+        logger.debug("CASE session established to node \(nodeID.rawValue)")
+
+        return session
+    }
+
+    /// Sigma1/2/3 with `nodeID` at `address` on one unsecured exchange,
+    /// closed on every path. Returns the established session, not yet
+    /// registered with the message layer.
+    private func caseHandshake(
+        nodeID: NodeID,
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        localSessionID sessionID: UInt16
+    ) async throws -> SecureSession {
+        let timeout = configuration.operationTimeout
         let (sigma1Data, handshakeCtx) = controllerSession.createSigma1(
             peerNodeID: nodeID,
             initiatorSessionID: sessionID
         )
 
-        let handshake = await messenger.openExchange(peer: address, mrp: device.mrpParameters)
+        let handshake = await messenger.openExchange(peer: address, mrp: mrp)
         let session: SecureSession
         do {
             let sigma2 = try await handshake.request(
@@ -957,26 +1030,9 @@ public actor MatterController {
             session = established
         } catch {
             await handshake.close()
-            throw Self.operationalError(error, nodeID: nodeID)
+            throw error
         }
         await handshake.close()
-
-        // Register before caching so the first request's reply is routable.
-        // Parameters re-read now: setMRPParameters may have run during the
-        // handshake (it then waits for this establishment to finish).
-        // A device removed during the handshake gets no session.
-        guard let current = await registry.device(for: nodeID) else {
-            throw ControllerError.deviceNotFound
-        }
-        do {
-            try await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
-        } catch {
-            throw Self.operationalError(error, nodeID: nodeID)
-        }
-        sessionCache.store(session, for: nodeID)
-
-        logger.debug("CASE session established to node \(nodeID.rawValue)")
-
         return session
     }
 

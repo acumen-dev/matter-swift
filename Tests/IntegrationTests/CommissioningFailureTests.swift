@@ -18,8 +18,8 @@ struct CommissioningFailureTests {
 
     struct InjectedFailure: Error {}
 
-    @Test("A failure after ArmFailSafe / CSR / AddNOC / the ACL write disarms the device, commits no fabric, and frees the node ID",
-          arguments: [CommissioningStep.afterArmFailSafe, .afterCSR, .afterAddNOC, .afterACLWrite])
+    @Test("A failure after ArmFailSafe / CSR / AddNOC / the ACL write / CASE disarms the device, commits no fabric, and frees the node ID",
+          arguments: [CommissioningStep.afterArmFailSafe, .afterCSR, .afterAddNOC, .afterACLWrite, .afterCASE])
     fileprivate func failureDisarms(step: CommissioningStep) async throws {
         let link = FaultInjectingLink(seed: 21)
         let bridge = MatterBridge()
@@ -40,6 +40,8 @@ struct CommissioningFailureTests {
             } catch {
                 #expect(error is InjectedFailure, "the original error must be rethrown unchanged, got \(error)")
             }
+            #expect(await controller.messenger.registeredSessionIDs.isEmpty,
+                    "neither the PASE session nor a CASE session may outlive a failed commissioning")
 
             let state = bridge.commissioningState
             let disarmed = await Self.poll { !state.isFailSafeArmed }
@@ -50,7 +52,7 @@ struct CommissioningFailureTests {
             // Every operational advert the device staged was withdrawn.
             let withdrawn = await Self.poll { discovery.unwithdrawnOperationalNames().isEmpty }
             #expect(withdrawn, "staged operational advertisements must be withdrawn")
-            if step == .afterAddNOC || step == .afterACLWrite {
+            if step == .afterAddNOC || step == .afterACLWrite || step == .afterCASE {
                 #expect(!discovery.operationalNamesAdvertised().isEmpty)
             }
             #expect(await controller.nextNodeID == expectedNodeID, "a failed commissioning must not consume a node ID")
