@@ -70,8 +70,9 @@ struct FaultyLinkTests {
     func deviceAssignedFabricIndex() async throws {
         let link = FaultInjectingLink(seed: 11)
         let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
-        // A controller's stop() closes its transport, which would end the
-        // link's single receive stream; the hand-off keeps it for the next.
+        // A controller's stop() cancels its receive task (it does not close
+        // the transport), which would end the link's single receive stream;
+        // the hand-off keeps one reader on it and lends each controller its own.
         let side = HandoffTransport(link.a)
         let first = try makeBorrowingController(transport: side)
         var second: MatterController?
@@ -99,11 +100,14 @@ struct FaultyLinkTests {
         side.shutdown()
     }
 
-    /// The device server leaves OperationalCredentials.Fabrics empty (only
-    /// CommissionedFabrics is maintained), so the fabric-scoped list read
-    /// here is the ACL. It also keeps only the first fabric's ACL entry, so
-    /// the assertion is on whose entries are visible, not on counts.
-    @Test("A second admin's unfiltered ACL read shows the first fabric's entry; a filtered one shows no other fabric's")
+    /// Checks that `isFabricFiltered` reaches the device. The device server
+    /// leaves OperationalCredentials.Fabrics empty (only CommissionedFabrics
+    /// is maintained), so the fabric-scoped list read here is the ACL. It
+    /// keeps one device-wide readable ACL list (a filed device issue), so the
+    /// fabric-1 entry is whatever the last raw ACL write left there, not
+    /// necessarily the first admin's; the assertions are on fabric indices,
+    /// not on whose entries or how many.
+    @Test("isFabricFiltered reaches the device: an unfiltered ACL read shows a fabric-1 entry; a filtered one shows no other fabric's")
     func fabricFilteredRead() async throws {
         let link = FaultInjectingLink(seed: 29)
         let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
@@ -124,7 +128,8 @@ struct FaultyLinkTests {
                 nodeID: device.nodeID, endpointID: .root, clusterID: .accessControl,
                 attributeID: AccessControlCluster.Attribute.acl, isFabricFiltered: false
             )
-            #expect(Self.fabricIndices(all).contains(1), "an unfiltered read shows the first fabric's entry: \(all)")
+            #expect(Self.fabricIndices(all).contains(1),
+                    "an unfiltered read (isFabricFiltered: false) shows an entry of fabric 1, not the reader's: \(all)")
             let own = try await other.readAttribute(
                 nodeID: device.nodeID, endpointID: .root, clusterID: .accessControl,
                 attributeID: AccessControlCluster.Attribute.acl

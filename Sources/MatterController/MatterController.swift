@@ -308,14 +308,22 @@ public actor MatterController {
     /// Drives the full commissioning flow:
     /// 1. PASE session establishment (PBKDFParamRequest → Pake3) on one unsecured exchange
     /// 2. ArmFailSafe
-    /// 3. SetRegulatoryConfig
+    /// 3. LocationCapability read → SetRegulatoryConfig with a location the device supports
     /// 4. CSRRequest → generate NOC
     /// 5. AddTrustedRootCert + AddNOC
     /// 6. ACL write
-    /// 7. CommissioningComplete
+    /// 7. CASE session to the device on the new fabric
+    /// 8. CommissioningComplete over that CASE session
     ///
-    /// Steps 2-7 run over the PASE session, registered with the message layer
-    /// for their duration and unregistered on every exit path.
+    /// Steps 2-6 run over the PASE session, registered with the message layer
+    /// for their duration and unregistered on every exit path. The CASE
+    /// session is kept: on success it is cached as the node's operational
+    /// session; on failure it is unregistered.
+    ///
+    /// A failure after ArmFailSafe disarms the fail-safe on the device (best
+    /// effort). If the caller's task is cancelled, that disarm is sent once,
+    /// but its retransmission stops when the PASE session is torn down, so on
+    /// a lossy link the device may stay armed until its fail-safe expires.
     ///
     /// - Parameters:
     ///   - address: The device's network address.
@@ -396,8 +404,9 @@ public actor MatterController {
 
         logger.info("PASE session established (localSession=\(paseSession.localSessionID))")
 
-        // Steps 2-7 over the encrypted PASE session. Register it before the
-        // first encrypted request so the reply can be decrypted and routed.
+        // Steps 2-6 over the encrypted PASE session, then CASE and
+        // CommissioningComplete. Register the PASE session before the first
+        // encrypted request so the reply can be decrypted and routed.
         do {
             try await messenger.registerSession(paseSession, peerAddress: address, mrp: mrp)
         } catch {
@@ -437,11 +446,14 @@ public actor MatterController {
     /// Commissioning steps 2-6 over the established PASE session, then
     /// CommissioningComplete over CASE on the new fabric.
     ///
-    /// Once ArmFailSafe has succeeded, any later failure disarms it on the
-    /// device (best effort, over the still-open PASE session), so the device
-    /// reverts at once rather than after the fail-safe expires, and returns
-    /// the node ID it allocated. A CASE session already registered is torn
-    /// down. The original error is rethrown.
+    /// Once ArmFailSafe has been sent, the fail-safe counts as armed unless
+    /// the device explicitly refused it (a lost response may still have armed
+    /// it), and any later failure disarms it on the device (best effort, over
+    /// the still-open PASE session), so the device reverts at once rather than
+    /// after the fail-safe expires. The allocated node ID is released only if
+    /// CommissioningComplete was never sent; once sent, the device may have
+    /// committed with it, so it stays consumed (and is persisted). A CASE
+    /// session already registered is torn down. The original error is rethrown.
     ///
     /// - Returns: the device and its registered (not yet cached) CASE session,
     ///   whose local session ID is still reserved: the caller releases it

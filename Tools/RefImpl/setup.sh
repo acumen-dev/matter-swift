@@ -2,11 +2,12 @@
 # setup.sh
 # Copyright 2026 Monagle Pty Ltd
 #
-# Build chip-cert and chip-tool from the connectedhomeip reference implementation.
+# Build chip-cert, chip-tool and chip-all-clusters-app from the connectedhomeip
+# reference implementation.
 # Binaries are placed in Tools/RefImpl/bin/ and cached by CI.
 #
 # Usage:
-#   ./Tools/RefImpl/setup.sh           # build both chip-cert and chip-tool
+#   ./Tools/RefImpl/setup.sh           # build chip-cert, chip-tool and chip-all-clusters-app
 #   ./Tools/RefImpl/setup.sh chip-cert # build chip-cert only (faster)
 #   ./Tools/RefImpl/setup.sh chip-tool # build chip-tool only
 #   ./Tools/RefImpl/setup.sh all-clusters-app # build the all-clusters device app only

@@ -47,7 +47,7 @@ generate-model:
 CHIPCERT     = Tools/RefImpl/bin/chip-cert
 CHIPTOOL     = Tools/RefImpl/bin/chip-tool
 
-## ref-setup      Clone connectedhomeip and build chip-cert + chip-tool
+## ref-setup      Clone connectedhomeip and build chip-cert + chip-tool + chip-all-clusters-app
 ref-setup:
 	./Tools/RefImpl/setup.sh
 

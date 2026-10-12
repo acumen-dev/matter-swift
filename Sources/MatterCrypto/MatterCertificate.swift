@@ -85,9 +85,9 @@ public struct MatterCertificate: Sendable, Equatable {
     /// Matter spec §6.6.1: stored as IEEE P1363 format (64-byte raw r‖s).
     public let signature: Data
 
-    /// Original TLV bytes from which this certificate was decoded, preserved
-    /// so that `tbsData()` can extract authentic TBS bytes rather than
-    /// re-encoding them (which may differ in integer width, encoding choices, etc.).
+    /// Original TLV bytes from which this certificate was decoded, if it was.
+    /// `tbsData()` does not use them: it re-encodes the DER TBS from the
+    /// parsed fields, with the serial number's octets copied verbatim.
     public let rawTLV: Data?
 
     // MARK: - Init
@@ -262,8 +262,8 @@ public struct MatterCertificate: Sendable, Equatable {
 
     /// Decode a Matter certificate from TLV data.
     ///
-    /// The raw bytes are preserved in `rawTLV` so that `tbsData()` can
-    /// extract authentic TBS bytes without re-encoding.
+    /// The raw bytes are preserved in `rawTLV`. `tbsData()` re-encodes the
+    /// DER TBS from the parsed fields, the serial number verbatim.
     public static func fromTLV(_ data: Data) throws -> MatterCertificate {
         let (_, element) = try TLVDecoder.decode(data)
         var cert = try fromTLVElement(element)
@@ -1026,7 +1026,6 @@ extension MatterCertificate {
         )
     }
 
-    /// Generate a random serial number (20 bytes).
     /// A random 20-byte serial whose first byte is 0x01...0x7F, so its
     /// octets are also a minimal, positive DER INTEGER: any X.509 parser
     /// reads the same TBS.

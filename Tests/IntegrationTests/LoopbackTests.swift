@@ -280,8 +280,9 @@ struct LoopbackTests {
         )
 
         do {
-            // Commission: PASE → ArmFailSafe → SetRegulatoryConfig → CSR → AddRootCert
-            //           → AddNOC → ACL write → CommissioningComplete
+            // Commission: PASE → ArmFailSafe → LocationCapability read → SetRegulatoryConfig
+            //           → CSR → AddRootCert → AddNOC → ACL write → CASE
+            //           → CommissioningComplete over CASE (that session stays cached)
             let device = try await controller.commission(
                 address: serverAddress,
                 setupCode: Self.passcode
@@ -289,7 +290,7 @@ struct LoopbackTests {
 
             #expect(device.nodeID.rawValue > 0, "Device should have a valid node ID")
 
-            // Read OnOff attribute via automatic CASE session establishment
+            // Read OnOff attribute over the CASE session commissioning left cached
             let value = try await controller.readAttribute(
                 nodeID: device.nodeID,
                 endpointID: EndpointID(rawValue: 3),

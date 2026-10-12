@@ -18,11 +18,12 @@ import MatterProtocol
 ///
 /// 1. PASE session establishment (PBKDFParamRequest → Pake3)
 /// 2. ArmFailSafe
-/// 3. SetRegulatoryConfig
+/// 3. LocationCapability read → SetRegulatoryConfig
 /// 4. CSRRequest → generate NOC
 /// 5. AddTrustedRootCert + AddNOC
 /// 6. ACL write (grant controller admin access)
-/// 7. CommissioningComplete
+/// 7. CASE session to the device on the new fabric (driven by the caller)
+/// 8. CommissioningComplete, over that CASE session
 ///
 /// ```swift
 /// let cc = CommissioningController(fabricManager: mgr)
@@ -301,6 +302,12 @@ public struct CommissioningController: Sendable {
     ///
     /// The echoed CSRNonce must equal `expectedNonce`, and the CSR's self-signature
     /// must verify; the device key is read from its SubjectPublicKeyInfo.
+    ///
+    /// - Parameters:
+    ///   - deviceNodeID: The operational node ID the caller allocated for the
+    ///     device. It becomes the NOC's subject node ID and is recorded in the
+    ///     returned context, from which
+    ///     ``handleCommissioningComplete(response:context:)`` builds the device.
     public func handleCSRResponse(
         response: Data,
         expectedNonce: Data,
