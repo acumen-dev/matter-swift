@@ -98,6 +98,17 @@ public actor MatterController {
         /// failed one; raise it for networks where that is expected.
         public var commissionableResolveTimeout: Duration
 
+        /// The clock the discovery deadlines run on: `discoveryTimeout`,
+        /// `commissionableResolveTimeout` and `addressRefreshTimeout` (and a
+        /// `timeout` passed to ``MatterController/findCommissionable(_:timeout:)``
+        /// or ``MatterController/discoverDevice(nodeID:timeout:)``). Default:
+        /// `ContinuousClock()`. MRP and the operation timeouts are not on it.
+        ///
+        /// A seam for tests: a clock that only moves when the test says so
+        /// keeps a search's outcome from depending on how quickly a loaded
+        /// host schedules it. Production code leaves the default.
+        public var discoveryClock: any MRPClock
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -108,7 +119,8 @@ public actor MatterController {
             mrp: MRPConfig = .default,
             discoveryTimeout: Duration = .seconds(30),
             addressRefreshTimeout: Duration = .seconds(5),
-            commissionableResolveTimeout: Duration = .seconds(5)
+            commissionableResolveTimeout: Duration = .seconds(5),
+            discoveryClock: any MRPClock = ContinuousClock()
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -120,6 +132,7 @@ public actor MatterController {
             self.discoveryTimeout = discoveryTimeout
             self.addressRefreshTimeout = addressRefreshTimeout
             self.commissionableResolveTimeout = commissionableResolveTimeout
+            self.discoveryClock = discoveryClock
         }
     }
 
@@ -333,6 +346,8 @@ public actor MatterController {
         let discovery = self.discovery
         let logger = self.logger
         let resolveLimit = configuration.commissionableResolveTimeout
+        let clock = configuration.discoveryClock
+        let deadline = clock.now + limit
         let notFound = ControllerError.commissionableNotFound(Self.describe(code.discriminator))
 
         return try await withThrowingTaskGroup(of: CommissionableDevice.self) { group in
@@ -341,7 +356,8 @@ public actor MatterController {
                     // A cancelled stream still delivers what it buffered: stop here.
                     try Task.checkCancellation()
                     if let device = try await Self.commissionable(
-                        record, matching: code, discovery: discovery, resolveLimit: resolveLimit, logger: logger
+                        record, matching: code, discovery: discovery,
+                        resolveLimit: resolveLimit, clock: clock, logger: logger
                     ) {
                         return device
                     }
@@ -351,7 +367,7 @@ public actor MatterController {
                 throw ControllerError.discoveryFailed("browse ended before a match")
             }
             group.addTask {
-                try await Task.sleep(for: limit)
+                try await clock.sleep(until: deadline)
                 throw notFound
             }
             defer { group.cancelAll() }
@@ -366,19 +382,20 @@ public actor MatterController {
         matching code: SetupCode,
         discovery: any MatterDiscovery,
         resolveLimit: Duration,
+        clock: any MRPClock,
         logger: Logger
     ) async throws -> CommissionableDevice? {
         var resolved: ResolvedService?
         var txt = record.txtRecords
         if txt.isEmpty {
-            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
             resolved = service
             txt = service.txtRecords
         }
         guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
 
         if resolved == nil {
-            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
             resolved = service
         }
         guard let resolved else { return nil }
@@ -400,18 +417,20 @@ public actor MatterController {
     }
 
     /// Resolve `record`; nil (logged) when resolution fails or does not
-    /// complete within `limit`. Cancellation propagates.
+    /// complete within `limit` on `clock`. Cancellation propagates.
     private static func resolve(
         _ record: MatterServiceRecord,
         discovery: any MatterDiscovery,
         limit: Duration,
+        clock: any MRPClock,
         logger: Logger
     ) async throws -> ResolvedService? {
+        let deadline = clock.now + limit
         do {
             return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
                 group.addTask { try await discovery.resolveService(record) }
                 group.addTask {
-                    try await Task.sleep(for: limit)
+                    try await clock.sleep(until: deadline)
                     throw ResolveDeadline()
                 }
                 defer { group.cancelAll() }
@@ -491,12 +510,14 @@ public actor MatterController {
         ).instanceName
         let record = MatterServiceRecord(name: name, serviceType: .operational, host: "", port: 0)
         let discovery = self.discovery
+        let clock = configuration.discoveryClock
+        let deadline = clock.now + limit
         let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
         let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
             group.addTask { try await discovery.resolveService(record) }
             group.addTask {
-                try await Task.sleep(for: limit)
+                try await clock.sleep(until: deadline)
                 throw expired
             }
             defer { group.cancelAll() }
