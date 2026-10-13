@@ -71,6 +71,13 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// mDNS discovery failure.
     case discoveryFailed(String)
 
+    /// The onboarding payload could not be used.
+    case invalidSetupCode(String)
+
+    /// No commissionable device matching the setup code was found in time.
+    /// The message names the discriminator sought — never an address or passcode.
+    case commissionableNotFound(String)
+
     /// Cached session has expired.
     case sessionExpired
 

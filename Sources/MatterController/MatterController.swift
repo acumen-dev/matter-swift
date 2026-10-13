@@ -72,6 +72,9 @@ public actor MatterController {
         /// parameters of their own.
         public var mrp: MRPConfig
 
+        /// How long `findCommissionable` searches before giving up (default: 30s).
+        public var discoveryTimeout: Duration
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -79,7 +82,8 @@ public actor MatterController {
             rootKey: P256.Signing.PrivateKey = P256.Signing.PrivateKey(),
             operationTimeout: Duration = .seconds(30),
             commissioningTimeout: Duration = .seconds(120),
-            mrp: MRPConfig = .default
+            mrp: MRPConfig = .default,
+            discoveryTimeout: Duration = .seconds(30)
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -88,6 +92,7 @@ public actor MatterController {
             self.operationTimeout = operationTimeout
             self.commissioningTimeout = commissioningTimeout
             self.mrp = mrp
+            self.discoveryTimeout = discoveryTimeout
         }
     }
 
@@ -261,6 +266,93 @@ public actor MatterController {
     /// Browse for commissionable devices on the local network.
     public func discoverCommissionable() -> AsyncStream<MatterServiceRecord> {
         discovery.browse(type: .commissionable)
+    }
+
+    /// Find the commissionable device a setup code refers to.
+    ///
+    /// Browses `_matterc._udp` and takes the **first** record whose TXT
+    /// matches: `D` is a 12-bit value the code's discriminator matches, `CM`
+    /// is non-zero, and — only when the code carries them — `VP` names the
+    /// code's vendor (and product). A record browsed without TXT is resolved
+    /// and filtered on the resolved TXT. The match is resolved for its
+    /// address and final TXT, from which `mrp` is built; a record whose
+    /// resolve fails is skipped.
+    ///
+    /// A short (manual-code) discriminator has 16 values, so two devices can
+    /// both match; the first one wins. Callers must **not** try PASE against
+    /// several candidates: a wrong passcode counts against the other device's
+    /// commissioning window.
+    ///
+    /// - Parameters:
+    ///   - code: The parsed onboarding payload.
+    ///   - timeout: How long to search (default: `configuration.discoveryTimeout`).
+    /// - Throws: `ControllerError.commissionableNotFound` when nothing matches
+    ///   in time; `CancellationError` if the calling task is cancelled.
+    public func findCommissionable(_ code: SetupCode, timeout: Duration? = nil) async throws -> CommissionableDevice {
+        let limit = timeout ?? configuration.discoveryTimeout
+        let discovery = self.discovery
+        let notFound = ControllerError.commissionableNotFound(Self.describe(code.discriminator))
+
+        return try await withThrowingTaskGroup(of: CommissionableDevice.self) { group in
+            group.addTask {
+                for await record in discovery.browse(type: .commissionable) {
+                    if let device = await Self.commissionable(record, matching: code, discovery: discovery) {
+                        return device
+                    }
+                }
+                // The stream ended: cancelled by the caller, or a finite browse ran out.
+                try Task.checkCancellation()
+                throw notFound
+            }
+            group.addTask {
+                try await Task.sleep(for: limit)
+                throw notFound
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw notFound }
+            return first
+        }
+    }
+
+    /// Filter one browsed record against `code`, resolving it as needed.
+    private static func commissionable(
+        _ record: MatterServiceRecord,
+        matching code: SetupCode,
+        discovery: any MatterDiscovery
+    ) async -> CommissionableDevice? {
+        var resolved: ResolvedService?
+        var txt = record.txtRecords
+        if txt.isEmpty {
+            guard let service = try? await discovery.resolveService(record) else { return nil }
+            resolved = service
+            txt = service.txtRecords
+        }
+        guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
+
+        if resolved == nil {
+            guard let service = try? await discovery.resolveService(record) else { return nil }
+            resolved = service
+        }
+        guard let resolved else { return nil }
+        // Resolution may return no TXT (by contract); keep what was matched on.
+        let finalTXT = resolved.txtRecords.isEmpty ? txt : resolved.txtRecords
+        guard let advertisement = CommissionableDevice.Advertisement(txt: finalTXT, matching: code) else {
+            return nil
+        }
+        return CommissionableDevice(
+            instanceName: record.name,
+            address: resolved.address,
+            advertisement: advertisement,
+            txtRecords: finalTXT
+        )
+    }
+
+    /// Names the discriminator sought, for `commissionableNotFound`.
+    private static func describe(_ discriminator: SetupCode.Discriminator) -> String {
+        switch discriminator {
+        case .long(let value): return "no commissionable device with discriminator \(value)"
+        case .short(let value): return "no commissionable device with short discriminator \(value)"
+        }
     }
 
     /// Browse for operational devices on the local network.
