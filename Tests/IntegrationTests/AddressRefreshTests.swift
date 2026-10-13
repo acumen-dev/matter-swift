@@ -33,6 +33,11 @@ struct AddressRefreshTests {
     /// before completing anyway (so a missed deadline shows as a result).
     static let suspendGuard = Duration.seconds(30)
 
+    /// The deadline tests' `discoveryTimeout`: well past `suspendGuard`, so
+    /// a resolve that used it instead of the bound under test would complete
+    /// and succeed, failing the primary assertions deterministically.
+    static let longDiscoveryTimeout = Duration.seconds(60)
+
     struct HangGuard: Error {}
 
     /// Commissionable records resolve to the device; operational ones to `operational`.
@@ -177,7 +182,15 @@ struct AddressRefreshTests {
         let discovery = SuspendingOperationalDiscovery(
             inner: InMemoryDiscovery { _ in link.b.address }, hangGuard: Self.suspendGuard
         )
-        let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery)
+        let controller = try MatterController(
+            transport: link.a,
+            discovery: discovery,
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
+                discoveryTimeout: Self.longDiscoveryTimeout
+            )
+        )
         await #expect {
             _ = try await controller.discoverDevice(nodeID: NodeID(rawValue: 2), timeout: .milliseconds(200))
         } throws: { error in
@@ -202,6 +215,7 @@ struct AddressRefreshTests {
             configuration: .init(
                 fabricID: FabricID(rawValue: 1),
                 mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
+                discoveryTimeout: Self.longDiscoveryTimeout,
                 addressRefreshTimeout: .milliseconds(200)
             )
         )

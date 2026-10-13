@@ -549,7 +549,9 @@ public actor MatterController {
     ///   - setupCode: The device's setup passcode (e.g., 20202021).
     ///   - mrp: The device's advertised MRP parameters (SII/SAI/SAT from its
     ///     commissionable TXT record), if known. Recorded with the device and
-    ///     used for its CASE sessions.
+    ///     used for its CASE sessions until an address refresh finds the
+    ///     node at a new address, when the timing from its operational TXT
+    ///     replaces it (an empty operational TXT keeps it).
     /// - Returns: The commissioned device record.
     public func commission(
         address: MatterAddress,
