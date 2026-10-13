@@ -147,6 +147,10 @@ public actor AppleUDPTransport: MatterUDPTransport {
     }
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
+        // Discovery gives IPv6 hosts in URL form ("[fd00::1]"); the socket
+        // APIs below take the bare literal.
+        let address = MatterAddress(host: MatterAddress.strippingBrackets(address.host), port: address.port)
+
         // Detect IPv4 vs IPv6 by presence of ':' (IPv6 always contains colons).
         if !address.host.contains(":") {
             try sendIPv4(data, to: address)

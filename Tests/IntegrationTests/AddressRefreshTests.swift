@@ -177,6 +177,73 @@ struct AddressRefreshTests {
         await controller.stop(); await server.stop()
     }
 
+    // MARK: - (a'') address forms
+
+    @Test("A refresh that resolves a bracketed IPv6 host persists it unbracketed")
+    func bracketedIPv6IsPersistedUnbracketed() async throws {
+        let link = FaultInjectingLink(seed: 69)
+        let operational = LockedValue(link.b.address)
+        let discovery = Self.makeDiscovery(link, operational: operational)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0), discovery: discovery)
+        let store = InMemoryControllerStore()
+        let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery, store: store)
+
+        do {
+            let (device, _) = try await Self.commissionThenGoStale(controller, link, discovery)
+            // The link carries IPv4 only: the retry's outcome is not under
+            // test here, just what the refresh records. Nothing answers at
+            // the new address, and an empty TXT keeps `fast`, so the retry
+            // gives up quickly.
+            let moved = MatterAddress(host: "fd00::5", port: 5540)
+            operational.withLock { $0 = MatterAddress(host: "[fd00::5]", port: 5540) }
+            let advertised = try await Self.operationalRecord(discovery)
+            try await discovery.advertise(service: ServiceRecord(
+                name: advertised.name, serviceType: .operational, host: advertised.host,
+                port: advertised.port, txtRecords: [:], subtypes: advertised.subtypes))
+            link.setAddressedInterceptor { _, side, destination in
+                side == .a && (destination == Self.stale || destination == moved) ? .drop : .deliver(after: .zero)
+            }
+
+            await #expect(throws: ControllerError.peerUnreachable(device.nodeID)) {
+                _ = try await Self.readOnOff(controller, device, light)
+            }
+            #expect(await controller.device(for: device.nodeID)?.operationalAddress == moved)
+            let stored = try #require(await store.load()?.devices.first { $0.nodeID == device.nodeID.rawValue })
+            #expect(stored.operationalHost == "fd00::5")
+            #expect(stored.operationalPort == 5540)
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await controller.stop(); await server.stop()
+    }
+
+    @Test("A refresh that resolves a host name, not an IP literal, does not adopt it: the original error, address unchanged")
+    func hostNameIsNotAdopted() async throws {
+        let link = FaultInjectingLink(seed: 70)
+        let operational = LockedValue(MatterAddress(host: "device.local", port: 5540))
+        let discovery = Self.makeDiscovery(link, operational: operational)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0), discovery: discovery)
+        let store = InMemoryControllerStore()
+        let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery, store: store)
+
+        do {
+            let (device, name) = try await Self.commissionThenGoStale(controller, link, discovery)
+
+            await #expect(throws: ControllerError.peerUnreachable(device.nodeID)) {
+                _ = try await Self.readOnOff(controller, device, light)
+            }
+            #expect(discovery.resolveCount(name: name, serviceType: .operational) == 1)
+            #expect(await controller.device(for: device.nodeID)?.operationalAddress == Self.stale)
+            let stored = try #require(await store.load()?.devices.first { $0.nodeID == device.nodeID.rawValue })
+            #expect(stored.operationalHost == Self.stale.host)
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await controller.stop(); await server.stop()
+    }
+
     // MARK: - Resolve deadlines
 
     @Test("discoverDevice gives up at its timeout when the resolve never completes")

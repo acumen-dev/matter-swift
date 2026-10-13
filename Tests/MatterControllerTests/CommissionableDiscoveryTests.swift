@@ -178,6 +178,54 @@ struct CommissionableDiscoveryTests {
         #expect(discovery.resolveCount(name: "second") == 0)
     }
 
+    // MARK: - Address Forms
+
+    @Test("an IPv6 host resolved in URL form (\"[fd00::1]\") is returned unbracketed")
+    func bracketedIPv6HostIsUnbracketed() async throws {
+        let discovery = InMemoryDiscovery { record in MatterAddress(host: "[fd00::1]", port: record.port) }
+        try await discovery.advertise(service: Self.record("device", port: 5541, txt: ["D": "3840", "CM": "1"]))
+        let controller = try Self.makeController(discovery)
+
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+
+        #expect(device.address == MatterAddress(host: "fd00::1", port: 5541))
+    }
+
+    @Test("a record that resolves to a host name, not an IP literal, is skipped; a later match is found")
+    func hostNameAddressIsSkipped() async throws {
+        let discovery = InMemoryDiscovery { record in
+            MatterAddress(host: record.name == "named" ? "named.local" : "192.0.2.10", port: record.port)
+        }
+        try await discovery.advertise(service: Self.record("named", port: 5541, txt: ["D": "3840", "CM": "1"]))
+        try await discovery.advertise(service: Self.record("literal", port: 5542, txt: ["D": "3840", "CM": "1"]))
+        let controller = try Self.makeController(discovery)
+
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+
+        #expect(device.instanceName == "literal")
+        #expect(device.address == MatterAddress(host: "192.0.2.10", port: 5542))
+        #expect(discovery.resolveCount(name: "named") == 1)
+    }
+
+    @Test("resolve(_:) returns an IPv6 host unbracketed, and rejects a host name")
+    func resolveNormalisesHost() async throws {
+        let discovery = InMemoryDiscovery { record in
+            MatterAddress(host: record.name == "named" ? "named.local" : "[fd00::1]", port: record.port)
+        }
+        try await discovery.advertise(service: Self.record("bracketed", port: 5541, txt: [:]))
+        try await discovery.advertise(service: Self.record("named", port: 5542, txt: [:]))
+        let controller = try Self.makeController(discovery)
+
+        #expect(try await controller.resolve(Self.record("bracketed", port: 0, txt: [:]))
+            == MatterAddress(host: "fd00::1", port: 5541))
+        await #expect {
+            _ = try await controller.resolve(Self.record("named", port: 0, txt: [:]))
+        } throws: { error in
+            guard case ControllerError.discoveryFailed(let message) = error else { return false }
+            return !message.contains("named.local")
+        }
+    }
+
     // MARK: - Browse Without TXT
 
     @Test("records browsed without TXT are matched through resolveService, resolved once")

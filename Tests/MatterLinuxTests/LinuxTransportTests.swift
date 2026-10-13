@@ -201,6 +201,40 @@ struct MatterLinuxTests {
         #expect(received == testPayload)
     }
 
+    @Test("LinuxUDPTransport sends to a bracketed IPv6 host (\"[::1]\", the URL-host form discovery returns)")
+    func bracketedIPv6Send() async throws {
+        let receiver = LinuxUDPTransport()
+        try await receiver.bind(port: 0)
+        let receiverPort = try #require(await receiver.boundPort())
+
+        let sender = LinuxUDPTransport()
+        try await sender.bind(port: 0)
+
+        let testPayload = Data("bracketed".utf8)
+        try await sender.send(testPayload, to: MatterAddress(host: "[::1]", port: receiverPort))
+
+        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
+        let stream = receiver.receive()
+        let received = await withTaskGroup(of: Data?.self) { group in
+            group.addTask {
+                for await (data, _) in stream { return data }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: hangGuard)
+                return nil
+            }
+            let result = await group.next()!
+            group.cancelAll()
+            return result
+        }
+
+        await receiver.close()
+        await sender.close()
+
+        #expect(received == testPayload)
+    }
+
     @Test("An IPv4 sender is reported in plain IPv4 form, not IPv4-mapped IPv6")
     func ipv4SenderIsCanonical() async throws {
         let receiver = LinuxUDPTransport()

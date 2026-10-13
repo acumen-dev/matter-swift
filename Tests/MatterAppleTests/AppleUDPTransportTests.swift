@@ -56,6 +56,40 @@ struct AppleUDPTransportTests {
         #expect(received == testData)
     }
 
+    @Test("A bracketed IPv6 host (\"[::1]\", the URL-host form discovery returns) is sent to")
+    func bracketedIPv6Send() async throws {
+        let receiver = AppleUDPTransport()
+        try await receiver.bind(port: 0)
+        let receiverPort = try #require(await receiver.boundPort())
+
+        let sender = AppleUDPTransport()
+        try await sender.bind(port: 0)
+
+        let testData = Data([0x5B, 0x3A, 0x3A, 0x31, 0x5D])
+        try await sender.send(testData, to: MatterAddress(host: "[::1]", port: receiverPort))
+
+        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
+        let stream = receiver.receive()
+        let received = await withTaskGroup(of: Data?.self) { group in
+            group.addTask {
+                for await (data, _) in stream { return data }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: hangGuard)
+                return nil
+            }
+            let result = await group.next()!
+            group.cancelAll()
+            return result
+        }
+
+        await receiver.close()
+        await sender.close()
+
+        #expect(received == testData)
+    }
+
     @Test("IPv6 loopback send and receive")
     func ipv6LoopbackSendReceive() async throws {
         let receiver = AppleUDPTransport()

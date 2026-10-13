@@ -304,10 +304,12 @@ public actor MatterController {
     /// against what the record advertises: a missing `VP`, or a `VP` without
     /// the `+pid` part, leaves that ID unknown and passes; only an
     /// advertised ID that differs (or does not parse) rejects. A record
-    /// browsed without TXT is resolved and filtered on the resolved TXT. The
-    /// match is resolved for its address and final TXT, from which `mrp` is
-    /// built. A record whose resolve fails, or does not complete within
-    /// `configuration.commissionableResolveTimeout`, is logged (instance
+    /// browsed without TXT is resolved and filtered on the resolved TXT. The match is resolved
+    /// for its address and final TXT, from which `mrp` is built; the
+    /// address's host is a bare IP literal (an IPv6 host without the
+    /// brackets discovery gives it). A record whose resolve fails, does not
+    /// complete within `configuration.commissionableResolveTimeout`, or
+    /// yields a host name rather than an IP address is logged (instance
     /// name only) and skipped.
     ///
     /// A short (manual-code) discriminator has 16 values, so two devices can
@@ -383,9 +385,13 @@ public actor MatterController {
         guard let advertisement = CommissionableDevice.Advertisement(txt: finalTXT, matching: code) else {
             return nil
         }
+        guard let address = resolved.address.withIPLiteralHost else {
+            logger.notice("Skipping commissionable instance \(record.name): it resolved to a host name, not an IP address")
+            return nil
+        }
         return CommissionableDevice(
             instanceName: record.name,
-            address: resolved.address,
+            address: address,
             advertisement: advertisement,
             txtRecords: finalTXT
         )
@@ -448,15 +454,18 @@ public actor MatterController {
     /// fabric (compressed fabric ID and node ID). `mrp` is built from the
     /// resolved TXT; it is nil when the resolution returns no TXT (allowed by
     /// the discovery contract), so a caller can keep the timing it has
-    /// rather than take the defaults.
+    /// rather than take the defaults. The address's host is a bare IP
+    /// literal (an IPv6 host is returned without the brackets discovery
+    /// gives it).
     ///
     /// - Parameters:
     ///   - nodeID: The target device's operational node ID.
     ///   - timeout: How long to wait for the resolution (default:
     ///     `configuration.discoveryTimeout`).
     /// - Throws: `ControllerError.discoveryFailed` when nothing resolves in
-    ///   time; the discovery's error if resolution fails; `CancellationError`
-    ///   if the calling task is cancelled.
+    ///   time, or the node resolves to a host name rather than an IP
+    ///   address; the discovery's error if resolution fails;
+    ///   `CancellationError` if the calling task is cancelled.
     public func discoverDevice(nodeID: NodeID, timeout: Duration? = nil) async throws -> (address: MatterAddress, mrp: MRPParameters?) {
         let resolved = try await resolveOperational(nodeID: nodeID, timeout: timeout)
         return (resolved.address, Self.mrpParameters(fromOperationalTXT: resolved.txtRecords))
@@ -468,8 +477,10 @@ public actor MatterController {
     }
 
     /// Resolve `nodeID`'s operational instance, bounded by `timeout`
-    /// (default: `configuration.discoveryTimeout`). The TXT is returned as
-    /// resolved, so a caller can tell an empty one from one with defaults.
+    /// (default: `configuration.discoveryTimeout`). The host is normalised
+    /// to a bare IP literal; a host name throws `discoveryFailed` (naming
+    /// the node, not the host). The TXT is returned as resolved, so a
+    /// caller can tell an empty one from one with defaults.
     private func resolveOperational(nodeID: NodeID, timeout: Duration? = nil) async throws -> ResolvedService {
         let limit = timeout ?? configuration.discoveryTimeout
         let name = OperationalInstanceName(
@@ -480,7 +491,7 @@ public actor MatterController {
         let discovery = self.discovery
         let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
-        return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+        let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
             group.addTask { try await discovery.resolveService(record) }
             group.addTask {
                 try await Task.sleep(for: limit)
@@ -490,6 +501,10 @@ public actor MatterController {
             guard let first = try await group.next() else { throw expired }
             return first
         }
+        guard let address = resolved.address.withIPLiteralHost else {
+            throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name, not an IP address")
+        }
+        return ResolvedService(address: address, txtRecords: resolved.txtRecords)
     }
 
     /// Record a node's new operational address and persist it. `mrp`
@@ -506,8 +521,19 @@ public actor MatterController {
     }
 
     /// Resolve a discovered service record to a network address.
+    ///
+    /// The host is a bare IP literal: an IPv6 host that discovery returned
+    /// in brackets (`"[fd00::1]"`) is returned without them.
+    ///
+    /// - Throws: `ControllerError.discoveryFailed` when the record resolves
+    ///   to a host name rather than an IP address (discovery does this for
+    ///   an interface-scoped address on Apple platforms); the discovery's
+    ///   error if resolution fails.
     public func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
-        try await discovery.resolve(record)
+        guard let address = try await discovery.resolve(record).withIPLiteralHost else {
+            throw ControllerError.discoveryFailed("\(record.name) resolved to a host name, not an IP address")
+        }
+        return address
     }
 
     // MARK: - Commissioning
@@ -1312,7 +1338,8 @@ public actor MatterController {
     /// empty TXT (allowed by the discovery contract) keeps the stored
     /// parameters rather than overwriting them with defaults. Returns the
     /// new address and the parameters to retry with, or nil when resolution
-    /// fails (logged) or names the address already tried, or when the
+    /// fails or yields a host name rather than an IP address (logged), or
+    /// names the address already tried, or when the
     /// device was removed or the controller stopped meanwhile. Resolution is
     /// bounded by `configuration.addressRefreshTimeout`; cancellation
     /// propagates.
