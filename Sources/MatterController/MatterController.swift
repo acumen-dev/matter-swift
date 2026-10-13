@@ -82,6 +82,16 @@ public actor MatterController {
         /// subscription re-subscribe, for one) would otherwise pay it in full.
         public var addressRefreshTimeout: Duration
 
+        /// How long `findCommissionable` waits for any one record's resolve
+        /// before skipping it and moving on to the next (default: 5s).
+        /// Records are taken one at a time, in browse order, so without it a
+        /// resolve that never completes (an instance being withdrawn can
+        /// leave one parked) would cost the whole search its deadline. The
+        /// default clears a healthy but slow resolve on Apple: up to 2 s for
+        /// the IPv4-preferring address attempt plus up to 2 s for a TXT
+        /// lookup when the browse carried none.
+        public var commissionableResolveTimeout: Duration
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -91,7 +101,8 @@ public actor MatterController {
             commissioningTimeout: Duration = .seconds(120),
             mrp: MRPConfig = .default,
             discoveryTimeout: Duration = .seconds(30),
-            addressRefreshTimeout: Duration = .seconds(5)
+            addressRefreshTimeout: Duration = .seconds(5),
+            commissionableResolveTimeout: Duration = .seconds(5)
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -102,6 +113,7 @@ public actor MatterController {
             self.mrp = mrp
             self.discoveryTimeout = discoveryTimeout
             self.addressRefreshTimeout = addressRefreshTimeout
+            self.commissionableResolveTimeout = commissionableResolveTimeout
         }
     }
 
@@ -288,8 +300,9 @@ public actor MatterController {
     /// advertised ID that differs (or does not parse) rejects. A record
     /// browsed without TXT is resolved and filtered on the resolved TXT. The
     /// match is resolved for its address and final TXT, from which `mrp` is
-    /// built. A record whose resolve fails is logged (instance name only)
-    /// and skipped.
+    /// built. A record whose resolve fails, or does not complete within
+    /// `configuration.commissionableResolveTimeout`, is logged (instance
+    /// name only) and skipped.
     ///
     /// A short (manual-code) discriminator has 16 values, so two devices can
     /// both match; the first one wins. Callers must **not** try PASE against
@@ -309,6 +322,7 @@ public actor MatterController {
         let limit = timeout ?? configuration.discoveryTimeout
         let discovery = self.discovery
         let logger = self.logger
+        let resolveLimit = configuration.commissionableResolveTimeout
         let notFound = ControllerError.commissionableNotFound(Self.describe(code.discriminator))
 
         return try await withThrowingTaskGroup(of: CommissionableDevice.self) { group in
@@ -317,7 +331,7 @@ public actor MatterController {
                     // A cancelled stream still delivers what it buffered: stop here.
                     try Task.checkCancellation()
                     if let device = try await Self.commissionable(
-                        record, matching: code, discovery: discovery, logger: logger
+                        record, matching: code, discovery: discovery, resolveLimit: resolveLimit, logger: logger
                     ) {
                         return device
                     }
@@ -341,19 +355,20 @@ public actor MatterController {
         _ record: MatterServiceRecord,
         matching code: SetupCode,
         discovery: any MatterDiscovery,
+        resolveLimit: Duration,
         logger: Logger
     ) async throws -> CommissionableDevice? {
         var resolved: ResolvedService?
         var txt = record.txtRecords
         if txt.isEmpty {
-            guard let service = try await resolve(record, discovery: discovery, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, logger: logger) else { return nil }
             resolved = service
             txt = service.txtRecords
         }
         guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
 
         if resolved == nil {
-            guard let service = try await resolve(record, discovery: discovery, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, logger: logger) else { return nil }
             resolved = service
         }
         guard let resolved else { return nil }
@@ -370,22 +385,39 @@ public actor MatterController {
         )
     }
 
-    /// Resolve `record`; nil (logged) when resolution fails. Cancellation propagates.
+    /// Resolve `record`; nil (logged) when resolution fails or does not
+    /// complete within `limit`. Cancellation propagates.
     private static func resolve(
         _ record: MatterServiceRecord,
         discovery: any MatterDiscovery,
+        limit: Duration,
         logger: Logger
     ) async throws -> ResolvedService? {
         do {
-            return try await discovery.resolveService(record)
+            return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                group.addTask { try await discovery.resolveService(record) }
+                group.addTask {
+                    try await Task.sleep(for: limit)
+                    throw ResolveDeadline()
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
         } catch let cancellation as CancellationError {
             throw cancellation
+        } catch is ResolveDeadline {
+            try Task.checkCancellation()
+            logger.notice("Skipping commissionable instance \(record.name): resolve did not complete within \(limit)")
+            return nil
         } catch {
             try Task.checkCancellation()
             logger.notice("Skipping commissionable instance \(record.name): resolve failed: \(error)")
             return nil
         }
     }
+
+    /// A commissionable record's resolve outlived its bound.
+    private struct ResolveDeadline: Error {}
 
     /// Names the discriminator sought, for `commissionableNotFound`.
     private static func describe(_ discriminator: SetupCode.Discriminator) -> String {

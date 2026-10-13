@@ -256,6 +256,32 @@ struct CommissionableDiscoveryTests {
         #expect(inner.resolveCount(name: "after") == 0)
     }
 
+    @Test("a record whose resolve never completes is skipped after commissionableResolveTimeout; a later match is found")
+    func stuckResolveIsSkipped() async throws {
+        // Measured against real mDNS: an instance being withdrawn was browsed
+        // without TXT and its resolve never completed, so a search that took
+        // records one at a time never reached the device it was looking for.
+        let inner = Self.makeDiscovery()
+        inner.setBrowseTXTHidden(true)
+        try await inner.advertise(service: Self.record("stuck", port: 5541, txt: ["D": "3840", "CM": "1"]))
+        try await inner.advertise(service: Self.record("match", port: 5542, txt: ["D": "3840", "CM": "1"]))
+        // The stuck resolve outlives the search: without the per-record bound
+        // the outcome is commissionableNotFound, deterministically.
+        let search = Self.hangGuard
+        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "stuck", hangGuard: search * 3)
+        let controller = try MatterController(
+            transport: MockUDPTransport(),
+            discovery: discovery,
+            configuration: .init(fabricID: FabricID(rawValue: 1), commissionableResolveTimeout: .milliseconds(200))
+        )
+
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: search)
+
+        #expect(device.instanceName == "match")
+        #expect(device.address == MatterAddress(host: "::1", port: 5542))
+        #expect(discovery.resolveCancelled, "the stuck resolve was cancelled at its bound")
+    }
+
     /// Wait (bounded by the hang guard) until a browse stream is open.
     private static func awaitBrowse(_ discovery: InMemoryDiscovery) async throws {
         let deadline = ContinuousClock.now + Self.hangGuard

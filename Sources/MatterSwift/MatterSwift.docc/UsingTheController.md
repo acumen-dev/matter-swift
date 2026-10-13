@@ -35,6 +35,7 @@ The controller generates a root CA key pair automatically and manages fabric cre
 | `operationTimeout` | 30s | Timeout for individual messages |
 | `commissioningTimeout` | 120s | Timeout for the full commissioning flow |
 | `discoveryTimeout` | 30s | How long to search for a commissionable device when commissioning from a setup code |
+| `commissionableResolveTimeout` | 5s | How long that search waits for any one advertisement to resolve before skipping it |
 
 ## Commissioning a Device
 
