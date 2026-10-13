@@ -212,7 +212,14 @@ public actor ControllerMessenger {
 
     /// Open an exchange on the unsecured session with `peer` (PASE and CASE
     /// handshakes). `mrp` is the peer's advertised parameters, if known.
+    ///
+    /// The unsecured session is keyed by `peer` in canonical form (see
+    /// `MatterAddress.canonicalised`), as every inbound sender is, so any
+    /// text for the same IP address (`"0:0:0:0:0:0:0:1"`, `"[::1]"`) gets
+    /// the reply from `"::1"`. A host name is used as given; the transport
+    /// rejects it when the exchange sends.
     public func openExchange(peer: MatterAddress, mrp: MRPParameters? = nil) -> ControllerExchange {
+        let peer = peer.canonicalised
         start()
         let key = ExchangeKey(scope: .unsecured(peer: peer), exchangeID: manager.allocateExchangeID(), initiatedLocally: true)
         manager.open(key, peerAddress: peer, config: mrpConfig(for: mrp), now: clock.now)
@@ -364,6 +371,9 @@ public actor ControllerMessenger {
 
     func handleDatagram(_ data: Data, from sender: MatterAddress) async {
         guard !isStopped else { return }
+        // Transports report senders as inet_ntop writes them; canonicalise
+        // anyway, so a key never depends on which transport produced it.
+        let sender = sender.canonicalised
         var outgoing: [Outgoing] = []
         do {
             try process(data, from: sender, now: clock.now, into: &outgoing)

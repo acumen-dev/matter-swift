@@ -72,6 +72,43 @@ public actor MatterController {
         /// parameters of their own.
         public var mrp: MRPConfig
 
+        /// How long `findCommissionable` searches before giving up (default: 30s).
+        public var discoveryTimeout: Duration
+
+        /// How long a CASE attempt that got no answer waits to re-resolve the
+        /// node's operational address before giving up with its original
+        /// error (default: 5s). Kept short: an unadvertised name may never
+        /// resolve, and every CASE attempt to a powered-off device (each
+        /// subscription re-subscribe, for one) would otherwise pay it in full.
+        public var addressRefreshTimeout: Duration
+
+        /// How long `findCommissionable` waits for any one record's resolve
+        /// before skipping it and moving on to the next (default: 5s).
+        /// Records are taken one at a time, in browse order, so without it a
+        /// resolve that never completes (an instance being withdrawn can
+        /// leave one parked) would cost the whole search its deadline.
+        ///
+        /// The bound works by cancelling the resolve, so it relies on the
+        /// discovery's `resolveService` honouring task cancellation, as the
+        /// `ServiceDiscovery` contract requires. The default is sized for a
+        /// healthy but slow resolve: on Apple, an IPv4-preferring address
+        /// attempt (up to 2 s), the unconstrained attempt that follows one
+        /// that timed out, and a TXT lookup (up to 2 s) when the browse
+        /// carried none. A resolve slower than the bound is skipped like a
+        /// failed one; raise it for networks where that is expected.
+        public var commissionableResolveTimeout: Duration
+
+        /// The clock the discovery deadlines run on: `discoveryTimeout`,
+        /// `commissionableResolveTimeout` and `addressRefreshTimeout` (and a
+        /// `timeout` passed to ``MatterController/findCommissionable(_:timeout:)``
+        /// or ``MatterController/discoverDevice(nodeID:timeout:)``). Default:
+        /// `ContinuousClock()`. MRP and the operation timeouts are not on it.
+        ///
+        /// A seam for tests: a clock that only moves when the test says so
+        /// keeps a search's outcome from depending on how quickly a loaded
+        /// host schedules it. Production code leaves the default.
+        public var discoveryClock: any MRPClock
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -79,7 +116,11 @@ public actor MatterController {
             rootKey: P256.Signing.PrivateKey = P256.Signing.PrivateKey(),
             operationTimeout: Duration = .seconds(30),
             commissioningTimeout: Duration = .seconds(120),
-            mrp: MRPConfig = .default
+            mrp: MRPConfig = .default,
+            discoveryTimeout: Duration = .seconds(30),
+            addressRefreshTimeout: Duration = .seconds(5),
+            commissionableResolveTimeout: Duration = .seconds(5),
+            discoveryClock: any MRPClock = ContinuousClock()
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -88,6 +129,10 @@ public actor MatterController {
             self.operationTimeout = operationTimeout
             self.commissioningTimeout = commissioningTimeout
             self.mrp = mrp
+            self.discoveryTimeout = discoveryTimeout
+            self.addressRefreshTimeout = addressRefreshTimeout
+            self.commissionableResolveTimeout = commissionableResolveTimeout
+            self.discoveryClock = discoveryClock
         }
     }
 
@@ -263,6 +308,158 @@ public actor MatterController {
         discovery.browse(type: .commissionable)
     }
 
+    /// Find the commissionable device a setup code refers to.
+    ///
+    /// Browses `_matterc._udp` and takes the **first** record whose TXT
+    /// matches: `D` is a 12-bit value the code's discriminator matches, and
+    /// `CM` is non-zero. Vendor and product are checked only when the code
+    /// carries them, and, as chip-tool's `SetUpCodePairer` does, only
+    /// against what the record advertises: a missing `VP`, a `VP` without
+    /// the `+pid` part, or an empty part (`VP=`, `65521+`, `+32768`) leaves
+    /// that ID unknown and passes; only an advertised ID that differs (or is
+    /// non-empty and does not parse) rejects. A record browsed without TXT
+    /// is resolved and filtered on the resolved TXT. The match is resolved
+    /// for its address and final TXT, from which `mrp` is built; the
+    /// address's host is a bare IP literal in canonical form (an IPv6 host
+    /// without the brackets discovery gives it, compressed as `inet_ntop`
+    /// writes it: `"fd00::1"`). A record whose resolve fails, does not
+    /// complete within `configuration.commissionableResolveTimeout`, or
+    /// yields a host name or a zoned IPv6 literal rather than an IP address
+    /// is logged (instance name only) and skipped.
+    ///
+    /// A short (manual-code) discriminator has 16 values, so two devices can
+    /// both match; the first one wins. Callers must **not** try PASE against
+    /// several candidates: a wrong passcode counts against the other device's
+    /// commissioning window.
+    ///
+    /// The deadline cancels the search, including a resolve in flight.
+    ///
+    /// - Parameters:
+    ///   - code: The parsed onboarding payload.
+    ///   - timeout: How long to search (default: `configuration.discoveryTimeout`).
+    /// - Throws: `ControllerError.commissionableNotFound` when nothing matches
+    ///   in time; `ControllerError.discoveryFailed` if the browse stream ends
+    ///   before a match (nothing more can arrive); `CancellationError` if the
+    ///   calling task is cancelled.
+    public func findCommissionable(_ code: SetupCode, timeout: Duration? = nil) async throws -> CommissionableDevice {
+        let limit = timeout ?? configuration.discoveryTimeout
+        let discovery = self.discovery
+        let logger = self.logger
+        let resolveLimit = configuration.commissionableResolveTimeout
+        let clock = configuration.discoveryClock
+        let deadline = clock.now + limit
+        let notFound = ControllerError.commissionableNotFound(Self.describe(code.discriminator))
+
+        return try await withThrowingTaskGroup(of: CommissionableDevice.self) { group in
+            group.addTask {
+                for await record in discovery.browse(type: .commissionable) {
+                    // A cancelled stream still delivers what it buffered: stop here.
+                    try Task.checkCancellation()
+                    if let device = try await Self.commissionable(
+                        record, matching: code, discovery: discovery,
+                        resolveLimit: resolveLimit, clock: clock, logger: logger
+                    ) {
+                        return device
+                    }
+                }
+                // The stream ended: cancelled, or the browser finished.
+                try Task.checkCancellation()
+                throw ControllerError.discoveryFailed("browse ended before a match")
+            }
+            group.addTask {
+                try await clock.sleep(until: deadline)
+                throw notFound
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw notFound }
+            return first
+        }
+    }
+
+    /// Filter one browsed record against `code`, resolving it as needed.
+    private static func commissionable(
+        _ record: MatterServiceRecord,
+        matching code: SetupCode,
+        discovery: any MatterDiscovery,
+        resolveLimit: Duration,
+        clock: any MRPClock,
+        logger: Logger
+    ) async throws -> CommissionableDevice? {
+        var resolved: ResolvedService?
+        var txt = record.txtRecords
+        if txt.isEmpty {
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
+            resolved = service
+            txt = service.txtRecords
+        }
+        guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
+
+        if resolved == nil {
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
+            resolved = service
+        }
+        guard let resolved else { return nil }
+        // Resolution may return no TXT (by contract); keep what was matched on.
+        let finalTXT = resolved.txtRecords.isEmpty ? txt : resolved.txtRecords
+        guard let advertisement = CommissionableDevice.Advertisement(txt: finalTXT, matching: code) else {
+            return nil
+        }
+        guard let address = resolved.address.withIPLiteralHost else {
+            logger.notice("Skipping commissionable instance \(record.name): it resolved to a host name or a zoned IPv6 address, not a bare IP literal")
+            return nil
+        }
+        return CommissionableDevice(
+            instanceName: record.name,
+            address: address,
+            advertisement: advertisement,
+            txtRecords: finalTXT
+        )
+    }
+
+    /// Resolve `record`; nil (logged) when resolution fails or does not
+    /// complete within `limit` on `clock`. Cancellation propagates.
+    private static func resolve(
+        _ record: MatterServiceRecord,
+        discovery: any MatterDiscovery,
+        limit: Duration,
+        clock: any MRPClock,
+        logger: Logger
+    ) async throws -> ResolvedService? {
+        let deadline = clock.now + limit
+        do {
+            return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                group.addTask { try await discovery.resolveService(record) }
+                group.addTask {
+                    try await clock.sleep(until: deadline)
+                    throw ResolveDeadline()
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        } catch let cancellation as CancellationError {
+            throw cancellation
+        } catch is ResolveDeadline {
+            try Task.checkCancellation()
+            logger.notice("Skipping commissionable instance \(record.name): resolve did not complete within \(limit)")
+            return nil
+        } catch {
+            try Task.checkCancellation()
+            logger.notice("Skipping commissionable instance \(record.name): resolve failed: \(error)")
+            return nil
+        }
+    }
+
+    /// A commissionable record's resolve outlived its bound.
+    private struct ResolveDeadline: Error {}
+
+    /// Names the discriminator sought, for `commissionableNotFound`.
+    private static func describe(_ discriminator: SetupCode.Discriminator) -> String {
+        switch discriminator {
+        case .long(let value): return "no commissionable device with discriminator \(value)"
+        case .short(let value): return "no commissionable device with short discriminator \(value)"
+        }
+    }
+
     /// Browse for operational devices on the local network.
     ///
     /// Returns all operational `_matter._tcp` advertisements, regardless of fabric.
@@ -272,36 +469,147 @@ public actor MatterController {
         discovery.browse(type: .operational)
     }
 
-    /// Discover a specific operational device by node ID on this controller's fabric.
+    /// Resolves a commissioned node's current operational address and TXT via _matter._tcp.
     ///
-    /// Constructs the expected operational instance name from the controller's
-    /// compressed fabric ID and the target node ID, then resolves it via mDNS.
+    /// Resolves the node's operational instance name on this controller's
+    /// fabric (compressed fabric ID and node ID). `mrp` is built from the
+    /// resolved TXT; it is nil when the resolution returns no TXT (allowed by
+    /// the discovery contract), so a caller can keep the timing it has
+    /// rather than take the defaults. The address's host is a bare IP
+    /// literal in canonical form (an IPv6 host is returned without the
+    /// brackets discovery gives it, compressed: `"fd00::1"`).
     ///
-    /// - Parameter nodeID: The target device's operational node ID.
-    /// - Returns: The resolved network address of the device.
-    public func discoverDevice(nodeID: NodeID) async throws -> MatterAddress {
-        let cfid = fabricManager.compressedFabricID()
-        let opName = OperationalInstanceName(
-            compressedFabricID: cfid,
+    /// - Parameters:
+    ///   - nodeID: The target device's operational node ID.
+    ///   - timeout: How long to wait for the resolution (default:
+    ///     `configuration.discoveryTimeout`).
+    /// - Throws: `ControllerError.discoveryFailed` when nothing resolves in
+    ///   time, or the node resolves to a host name or an IPv6 literal with a
+    ///   `%<zone>` rather than a bare IP literal; the discovery's error if
+    ///   resolution fails;
+    ///   `CancellationError` if the calling task is cancelled.
+    public func discoverDevice(nodeID: NodeID, timeout: Duration? = nil) async throws -> (address: MatterAddress, mrp: MRPParameters?) {
+        let resolved = try await resolveOperational(nodeID: nodeID, timeout: timeout)
+        return (resolved.address, Self.mrpParameters(fromOperationalTXT: resolved.txtRecords))
+    }
+
+    /// MRP parameters from an operational TXT; nil when it is empty.
+    private static func mrpParameters(fromOperationalTXT txt: [String: String]) -> MRPParameters? {
+        txt.isEmpty ? nil : MRPParameters(txtRecords: txt)
+    }
+
+    /// Resolve `nodeID`'s operational instance, bounded by `timeout`
+    /// (default: `configuration.discoveryTimeout`). The host is normalised
+    /// to a bare IP literal; a host name or a zoned IPv6 literal throws
+    /// `discoveryFailed` (naming the node, not the host). The TXT is returned as resolved, so a
+    /// caller can tell an empty one from one with defaults.
+    private func resolveOperational(nodeID: NodeID, timeout: Duration? = nil) async throws -> ResolvedService {
+        let limit = timeout ?? configuration.discoveryTimeout
+        let name = OperationalInstanceName(
+            compressedFabricID: fabricManager.compressedFabricID(),
             nodeID: nodeID.rawValue
-        )
+        ).instanceName
+        let record = MatterServiceRecord(name: name, serviceType: .operational, host: "", port: 0)
+        let discovery = self.discovery
+        let clock = configuration.discoveryClock
+        let deadline = clock.now + limit
+        let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
-        let record = MatterServiceRecord(
-            name: opName.instanceName,
-            serviceType: .operational,
-            host: "",
-            port: 0
-        )
+        let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+            group.addTask { try await discovery.resolveService(record) }
+            group.addTask {
+                try await clock.sleep(until: deadline)
+                throw expired
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw expired }
+            return first
+        }
+        guard let address = resolved.address.withIPLiteralHost else {
+            throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
+        }
+        return ResolvedService(address: address, txtRecords: resolved.txtRecords)
+    }
 
-        return try await discovery.resolve(record)
+    /// Record a node's new operational address and persist it. `mrp`
+    /// replaces its MRP parameters; `nil` leaves them as they are. A cached
+    /// session is untouched: it keeps the address it was registered with.
+    /// Nothing is saved once the controller has stopped.
+    func updateOperationalAddress(_ address: MatterAddress, mrp: MRPParameters?, for nodeID: NodeID) async {
+        await registry.updateAddress(for: nodeID, address: address)
+        if let mrp {
+            await registry.updateMRPParameters(for: nodeID, parameters: mrp)
+        }
+        guard !stopped else { return }
+        await saveState()
     }
 
     /// Resolve a discovered service record to a network address.
+    ///
+    /// The host is a bare IP literal in canonical form: an IPv6 host that
+    /// discovery returned in brackets (`"[fd00::1]"`, or uncompressed
+    /// `"[fd00:0:0:0:0:0:0:1]"`) is returned as `"fd00::1"`.
+    ///
+    /// - Throws: `ControllerError.discoveryFailed` when the record resolves
+    ///   to a host name rather than an IP address (discovery does this for
+    ///   an interface-scoped address on Apple platforms), or to an IPv6
+    ///   literal with a `%<zone>`; the discovery's error if resolution fails.
     public func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
-        try await discovery.resolve(record)
+        guard let address = try await discovery.resolve(record).withIPLiteralHost else {
+            throw ControllerError.discoveryFailed("\(record.name) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
+        }
+        return address
     }
 
     // MARK: - Commissioning
+
+    /// Commission a device from its setup code (manual or QR): find it by
+    /// discriminator, then commission it at the address it advertises.
+    ///
+    /// The device's advertised MRP timing (SII/SAI/SAT) is used for
+    /// commissioning and persisted with the device, unless `mrp` overrides it.
+    /// An override lasts until the node's address is refreshed: when a CASE
+    /// attempt gets no answer and re-resolving finds the node at a new
+    /// address, the timing from its operational TXT replaces the stored one
+    /// (an empty operational TXT keeps it).
+    /// The same rules as ``findCommissionable(_:timeout:)`` apply: a short
+    /// discriminator may match more than one device, and the first wins.
+    ///
+    /// - Parameters:
+    ///   - setupCode: The manual pairing code or `MT:` QR payload.
+    ///   - discoveryTimeout: How long to search (default: `configuration.discoveryTimeout`).
+    ///   - mrp: Overrides the advertised MRP parameters (until an address
+    ///     refresh; see above).
+    /// - Throws: `ControllerError.invalidSetupCode` (naming the problem, never
+    ///   the code); the errors of `findCommissionable` and of
+    ///   ``commission(address:setupCode:mrp:)``.
+    public func commission(
+        setupCode: String,
+        discoveryTimeout: Duration? = nil,
+        mrp: MRPParameters? = nil
+    ) async throws -> CommissionedDevice {
+        let code: SetupCode
+        do {
+            code = try SetupCode(parsing: setupCode)
+        } catch {
+            throw ControllerError.invalidSetupCode(Self.describe(error))
+        }
+        let found = try await findCommissionable(code, timeout: discoveryTimeout)
+        return try await commission(address: found.address, setupCode: code.passcode, mrp: mrp ?? found.mrp)
+    }
+
+    /// The case name only: a payload (`malformedQRCode`) may carry the code text.
+    private static func describe(_ error: SetupCodeError) -> String {
+        switch error {
+        case .empty: "empty setup code"
+        case .invalidCharacters: "setup code has invalid characters"
+        case .invalidLength: "setup code has an invalid length"
+        case .checkDigitMismatch: "setup code check digit mismatch"
+        case .unsupportedVersion: "unsupported setup code version"
+        case .invalidPasscode: "setup code passcode is not allowed"
+        case .malformedQRCode: "malformed QR setup code"
+        }
+    }
 
     /// Commission a device at the given address using the setup passcode.
     ///
@@ -326,11 +634,21 @@ public actor MatterController {
     /// a lossy link the device may stay armed until its fail-safe expires.
     ///
     /// - Parameters:
-    ///   - address: The device's network address.
+    ///   - address: The device's network address. An IP-literal host is
+    ///     used and stored in canonical form (brackets removed, IPv6
+    ///     compressed: `"[FD00:0:0:0:0:0:0:1]"` becomes `"fd00::1"`), so any
+    ///     text for the address matches the device's replies. A host name is
+    ///     not resolved: it is passed to the transport as given, which
+    ///     rejects every send to it, so commissioning fails at PASE once MRP
+    ///     gives up (as before). An IPv6 `%<zone>` is kept and stored as
+    ///     given (as before); it names an interface of this host, so the
+    ///     stored address may not survive a restart.
     ///   - setupCode: The device's setup passcode (e.g., 20202021).
     ///   - mrp: The device's advertised MRP parameters (SII/SAI/SAT from its
     ///     commissionable TXT record), if known. Recorded with the device and
-    ///     used for its CASE sessions.
+    ///     used for its CASE sessions until an address refresh finds the
+    ///     node at a new address, when the timing from its operational TXT
+    ///     replaces it (an empty operational TXT keeps it).
     /// - Returns: The commissioned device record.
     public func commission(
         address: MatterAddress,
@@ -338,6 +656,7 @@ public actor MatterController {
         mrp: MRPParameters? = nil
     ) async throws -> CommissionedDevice {
         let timeout = configuration.operationTimeout
+        let address = address.canonicalised
 
         logger.info("Beginning commissioning to \(address.host):\(address.port)")
 
@@ -651,6 +970,11 @@ public actor MatterController {
     /// Set (or clear) a device's advertised MRP parameters (SII/SAI/SAT).
     /// Persisted with the device and applied to new exchanges at once,
     /// including on its cached session.
+    ///
+    /// Explicit parameters last until the node's address is refreshed: when
+    /// a CASE attempt gets no answer and re-resolving finds the node at a new
+    /// address, the timing from its operational TXT replaces them (an empty
+    /// operational TXT keeps them). The last registry write wins.
     public func setMRPParameters(_ parameters: MRPParameters?, for nodeID: NodeID) async {
         await registry.updateMRPParameters(for: nodeID, parameters: parameters)
         await saveState()
@@ -971,6 +1295,17 @@ public actor MatterController {
 
     /// Establish a new CASE session to a device via Sigma1/2/3 on one
     /// unsecured exchange, and register it before caching it.
+    ///
+    /// If the handshake fails with `peerUnreachable` or `timeout` (taken to
+    /// mean nothing answered; a `timeout` can also follow a Sigma2), the
+    /// node's operational address is re-resolved once, within
+    /// `configuration.addressRefreshTimeout` (see
+    /// ``refreshedAddress(nodeID:tried:)``). At a different address the
+    /// handshake is retried once there, under the same reserved session ID,
+    /// and the session is registered with that address. Otherwise the
+    /// original error is thrown unchanged: retrying an unchanged address
+    /// would only double a dead peer's failure latency. Any other failure,
+    /// such as a refusal (`caseSessionFailed`), never triggers a re-resolve.
     private func establishCASESession(nodeID: NodeID) async throws -> SecureSession {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
@@ -989,13 +1324,27 @@ public actor MatterController {
 
         logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
 
+        var usedAddress = address
         let session: SecureSession
         do {
             session = try await caseHandshake(
                 nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID
             )
         } catch {
-            throw Self.operationalError(error, nodeID: nodeID)
+            let original = Self.operationalError(error, nodeID: nodeID)
+            guard Self.nothingAnswered(original, nodeID: nodeID),
+                  let refreshed = try await refreshedAddress(nodeID: nodeID, tried: address) else {
+                throw original
+            }
+            logger.info("Node \(nodeID.rawValue) did not answer CASE; retrying at its re-resolved address")
+            usedAddress = refreshed.address
+            do {
+                session = try await caseHandshake(
+                    nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID
+                )
+            } catch {
+                throw Self.operationalError(error, nodeID: nodeID)
+            }
         }
 
         // Register before caching so the first request's reply is routable.
@@ -1006,7 +1355,7 @@ public actor MatterController {
             throw ControllerError.deviceNotFound
         }
         do {
-            try await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
+            try await messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
         } catch {
             throw Self.operationalError(error, nodeID: nodeID)
         }
@@ -1015,6 +1364,53 @@ public actor MatterController {
         logger.debug("CASE session established to node \(nodeID.rawValue)")
 
         return session
+    }
+
+    /// Re-resolve `nodeID`'s operational address after a handshake at
+    /// `tried` got no answer. When it differs, the new address is recorded
+    /// and persisted, with the MRP parameters from the operational TXT; an
+    /// empty TXT (allowed by the discovery contract) keeps the stored
+    /// parameters rather than overwriting them with defaults. Returns the
+    /// new address and the parameters to retry with, or nil when resolution
+    /// fails or yields a host name rather than an IP address (logged), or
+    /// names the address already tried, or when the
+    /// device was removed or the controller stopped meanwhile. Resolution is
+    /// bounded by `configuration.addressRefreshTimeout`; cancellation
+    /// propagates.
+    private func refreshedAddress(
+        nodeID: NodeID,
+        tried: MatterAddress
+    ) async throws -> (address: MatterAddress, mrp: MRPParameters?)? {
+        let resolved: ResolvedService
+        do {
+            resolved = try await resolveOperational(nodeID: nodeID, timeout: configuration.addressRefreshTimeout)
+        } catch let cancellation as CancellationError {
+            throw cancellation
+        } catch {
+            try Task.checkCancellation()
+            logger.notice("Node \(nodeID.rawValue): operational re-resolve failed: \(error)")
+            return nil
+        }
+        guard !stopped, await registry.device(for: nodeID) != nil else { return nil }
+        // `resolved` is canonical; `tried` is as stored, which may predate that.
+        guard resolved.address != tried.canonicalised else { return nil }
+        // A device removed from here on is a no-op in the registry; a stop
+        // from here on skips the save (see updateOperationalAddress).
+        await updateOperationalAddress(
+            resolved.address, mrp: Self.mrpParameters(fromOperationalTXT: resolved.txtRecords), for: nodeID
+        )
+        // The registry's value: an empty TXT kept what was stored.
+        return (resolved.address, await registry.device(for: nodeID)?.mrpParameters)
+    }
+
+    /// Whether `error` (already mapped by ``operationalError(_:nodeID:)``)
+    /// means nothing answered, rather than a device that answered badly.
+    private static func nothingAnswered(_ error: any Error, nodeID: NodeID) -> Bool {
+        switch error as? ControllerError {
+        case .peerUnreachable(let node)?: return node == nodeID
+        case .timeout?: return true
+        default: return false
+        }
     }
 
     /// Sigma1/2/3 with `nodeID` at `address` on one unsecured exchange,

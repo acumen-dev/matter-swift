@@ -39,7 +39,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
-        .package(url: "https://github.com/acumen-dev/mdns-swift.git", from: "1.0.0"),
+        .package(url: "https://github.com/acumen-dev/mdns-swift.git", from: "1.2.0"),
     ],
     targets: [
         // MARK: - Core Types
@@ -218,6 +218,7 @@ let package = Package(
                 .target(name: "MatterApple",
                         condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
                 "MatterTransport",
+                "MatterTestSupport",
             ]
         ),
         .testTarget(
@@ -225,6 +226,7 @@ let package = Package(
             dependencies: [
                 "MatterLinux",
                 "MatterTransport",
+                "MatterTestSupport",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "MDNSLinux", package: "mdns-swift"),
@@ -237,6 +239,8 @@ let package = Package(
                 "MatterController",
                 .target(name: "MatterApple",
                         condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
+                .target(name: "MatterLinux",
+                        condition: .when(platforms: [.linux])),
                 "MatterCrypto",
                 "MatterProtocol",
                 "MatterTransport",
@@ -249,7 +253,9 @@ let package = Package(
             name: "ReferenceTests",
             dependencies: [
                 "MatterCrypto",
+                "MatterDevice",
                 "MatterTypes",
+                "MatterTestSupport",
             ],
             path: "Tests/ReferenceTests"
         ),

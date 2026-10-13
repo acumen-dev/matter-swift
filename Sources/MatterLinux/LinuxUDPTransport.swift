@@ -71,6 +71,9 @@ public actor LinuxUDPTransport: MatterUDPTransport {
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
         guard let ch = channel else { throw LinuxTransportError.notBound }
+        // Discovery gives IPv6 hosts in URL form ("[fd00::1]");
+        // SocketAddress(ipAddress:) takes the bare literal.
+        let address = MatterAddress(host: MatterAddress.strippingBrackets(address.host), port: address.port)
 
         // The channel is bound to "::" (AF_INET6 dual-stack).  Sending to a
         // plain IPv4 SocketAddress from an AF_INET6 socket raises EINVAL on

@@ -9,9 +9,17 @@ import MatterTransport
 
 // Network tests are serialized: they bind real sockets and using SO_REUSEPORT
 // means fixed-port tests can share a socket with a concurrent test, causing
-// the expected packet to be delivered to the wrong consumer.
-@Suite("AppleUDPTransport", .serialized)
+// the expected packet to be delivered to the wrong consumer. Waits for a
+// datagram have no deadline of their own: the time limit is the hang guard.
+@Suite("AppleUDPTransport", .serialized, .timeLimit(.minutes(5)))
 struct AppleUDPTransportTests {
+
+    /// The first datagram `transport` receives (no deadline: the suite's
+    /// time limit cancels the wait, and nil is returned).
+    private static func firstDatagram(_ transport: AppleUDPTransport) async -> (Data, MatterAddress)? {
+        for await datagram in transport.receive() { return datagram }
+        return nil
+    }
 
     @Test("Bind to ephemeral port and close")
     func bindAndClose() async throws {
@@ -35,20 +43,27 @@ struct AppleUDPTransportTests {
 
         try await sender.send(testData, to: address)
 
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: Data?.self) { group in
-            group.addTask {
-                for await (data, _) in stream { return data }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(2))
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)?.0
+
+        await receiver.close()
+        await sender.close()
+
+        #expect(received == testData)
+    }
+
+    @Test("A bracketed IPv6 host (\"[::1]\", the URL-host form discovery returns) is sent to")
+    func bracketedIPv6Send() async throws {
+        let receiver = AppleUDPTransport()
+        try await receiver.bind(port: 0)
+        let receiverPort = try #require(await receiver.boundPort())
+
+        let sender = AppleUDPTransport()
+        try await sender.bind(port: 0)
+
+        let testData = Data([0x5B, 0x3A, 0x3A, 0x31, 0x5D])
+        try await sender.send(testData, to: MatterAddress(host: "[::1]", port: receiverPort))
+
+        let received = await Self.firstDatagram(receiver)?.0
 
         await receiver.close()
         await sender.close()
@@ -71,20 +86,7 @@ struct AppleUDPTransportTests {
 
         try await sender.send(testData, to: address)
 
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: (Data, MatterAddress)?.self) { group in
-            group.addTask {
-                for await pair in stream { return pair }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(2))
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)
 
         await receiver.close()
         await sender.close()

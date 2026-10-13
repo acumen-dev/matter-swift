@@ -254,7 +254,9 @@ struct ChipDeviceCommissioningTests {
         let kvs = FileManager.default.temporaryDirectory.appendingPathComponent("chip-kvs-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: kvs) }
 
-        let app = try await ChipAppRunner.start(passcode: Self.passcode, port: freeUDPPort(), kvsPath: kvs)
+        let port = freeUDPPort()
+        try #require(port != 0, "a free port for the app")
+        let app = try await ChipAppRunner.start(passcode: Self.passcode, port: port, kvsPath: kvs)
         let transport = LoopbackTransport()
         let controller: MatterController
         do {

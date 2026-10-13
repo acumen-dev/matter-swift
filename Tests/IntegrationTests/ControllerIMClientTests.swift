@@ -23,7 +23,7 @@ struct ControllerIMClientTests {
         let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
 
             // The device answers with an InvokeResponse carrying the command
             // status NeedsTimedInteraction (0xC6 = 198), not a top-level
@@ -50,24 +50,13 @@ struct ControllerIMClientTests {
         await controller.stop(); await server.stop()
     }
 
-    /// Poll until `condition` holds. The ceiling is a hang guard, not a latency
-    /// budget: passing runs return as soon as the outcome holds.
-    private func waitUntil(_ condition: @Sendable () async -> Bool) async throws -> Bool {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while ContinuousClock.now < deadline {
-            if await condition() { return true }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        return await condition()
-    }
-
     @Test("A subscription delivers the priming report and a report after a toggle")
     func subscribeAndReport() async throws {
         let link = FaultInjectingLink(seed: 12)
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
             let seen = LockedValue<[Bool]>([])
@@ -80,9 +69,9 @@ struct ControllerIMClientTests {
                     }
                 }
             }
-            #expect(try await waitUntil { seen.value.first == false }, "priming report states the current value")
+            try await seen.wait { $0.first == false } // priming report states the current value
             _ = try await controller.invokeCommand(nodeID: device.nodeID, endpointID: light.endpointID, clusterID: .onOff, commandID: OnOffCluster.Command.toggle)
-            #expect(try await waitUntil { seen.value.contains(true) }, "the toggle is reported")
+            try await seen.wait { $0.contains(true) } // the toggle is reported
             await subscription.cancel()
             reader.cancel()
         } catch {
@@ -98,7 +87,9 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 2)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The drop phase needs a silent device to give up quickly.
+            await controller.setMRPParameters(fast, for: device.nodeID)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 2))
             let log = LockedValue<[String]>([])
@@ -114,12 +105,12 @@ struct ControllerIMClientTests {
                     }
                 }
             }
-            #expect(try await waitUntil { log.value == ["established"] })
+            try await log.wait { $0 == ["established"] }
             link.setDropProbability(1.0, from: .b)    // the device goes silent
-            #expect(try await waitUntil { log.value.contains("lost") })
+            try await log.wait { $0.contains("lost") }
             #expect(first.value?.hasPrefix("no report within") == true)
             link.setDropProbability(0.0, from: .b)    // and comes back
-            #expect(try await waitUntil { log.value.filter { $0 == "established" }.count >= 2 }, "re-subscribed")
+            try await log.wait { $0.filter { $0 == "established" }.count >= 2 } // re-subscribed
             await subscription.cancel()
             reader.cancel()
         } catch {
@@ -135,7 +126,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
             let finished = LockedValue(false)
@@ -144,7 +135,7 @@ struct ControllerIMClientTests {
                 finished.withLock { $0 = true }
             }
             await controller.stop()
-            #expect(try await waitUntil { finished.value }, "events finishes once the controller stops")
+            try await finished.wait { $0 } // events finishes once the controller stops
             reader.cancel()
         } catch {
             await controller.stop(); await server.stop()
@@ -159,7 +150,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             await controller.stop()
             await #expect(throws: MessagingError.stopped) {
@@ -178,7 +169,9 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 2)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The drop phase needs a silent device to give up quickly.
+            await controller.setMRPParameters(fast, for: device.nodeID)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 2))
             let before = try await controller.session(for: device.nodeID).localSessionID
@@ -193,11 +186,11 @@ struct ControllerIMClientTests {
                     }
                 }
             }
-            #expect(try await waitUntil { established.value == 1 })
+            try await established.wait { $0 == 1 }
             link.setDropProbability(1.0, from: .b)
-            #expect(try await waitUntil { reasons.value.contains { $0.hasPrefix("re-subscribe failed") } })
+            try await reasons.wait { $0.contains { $0.hasPrefix("re-subscribe failed") } }
             link.setDropProbability(0.0, from: .b)
-            #expect(try await waitUntil { established.value >= 2 }, "re-subscribed")
+            try await established.wait { $0 >= 2 } // re-subscribed
             let after = try await controller.session(for: device.nodeID).localSessionID
             #expect(after != before, "the dead session was replaced by a fresh handshake")
             await subscription.cancel()
@@ -215,7 +208,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let nodeID = device.nodeID
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             // One already tracked, so concurrent calls have an entry to prune-check.
@@ -240,7 +233,7 @@ struct ControllerIMClientTests {
                 }
             }
             await controller.stop()
-            #expect(try await waitUntil { finished.value == 5 }, "every subscription's events finishes")
+            try await finished.wait { $0 == 5 } // every subscription's events finishes
             readers.forEach { $0.cancel() }
         } catch {
             await controller.stop(); await server.stop()

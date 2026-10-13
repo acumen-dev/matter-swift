@@ -9,6 +9,7 @@
 
 #if canImport(Network)
 import Foundation
+import MatterTestSupport
 
 // MARK: - ChipAppRunner
 
@@ -32,10 +33,18 @@ final class ChipAppRunner: @unchecked Sendable {
     /// Line the app prints once its server is up and listening.
     static let readinessMarker = "Server Listening"
 
+    /// Prefixes of the app's onboarding-code lines. Measured on v1.4.0.0
+    /// (printed before `readinessMarker`, inside ANSI colour codes):
+    ///     [SVR] SetupQRCode: [MT:...]
+    ///     [SVR] Manual pairing code: [<11 digits>]
+    static let manualCodeMarker = "Manual pairing code: ["
+    static let qrCodeMarker = "SetupQRCode: ["
+
     // MARK: - State
 
     let port: UInt16
     let kvsPath: URL
+    let discriminator: UInt16
 
     private let process: Process
     private let lock = NSLock()
@@ -56,6 +65,20 @@ final class ChipAppRunner: @unchecked Sendable {
         return String(decoding: buffer, as: UTF8.self)
     }
 
+    /// The manual pairing code the app printed, once it has.
+    var manualPairingCode: String? { Self.bracketed(after: Self.manualCodeMarker, in: log) }
+
+    /// The `MT:` QR payload the app printed, once it has.
+    var qrCode: String? { Self.bracketed(after: Self.qrCodeMarker, in: log) }
+
+    /// The text between `marker` (which ends in `[`) and the next `]`, first occurrence.
+    static func bracketed(after marker: String, in text: String) -> String? {
+        guard let start = text.range(of: marker)?.upperBound,
+              let end = text[start...].firstIndex(of: "]") else { return nil }
+        let value = text[start..<end]
+        return value.isEmpty ? nil : String(value)
+    }
+
     // MARK: - Locating
 
     static func findBinary(sourceFile: String = #filePath) -> URL? {
@@ -69,17 +92,18 @@ final class ChipAppRunner: @unchecked Sendable {
 
     // MARK: - Init
 
-    private init(process: Process, port: UInt16, kvsPath: URL) {
+    private init(process: Process, port: UInt16, kvsPath: URL, discriminator: UInt16) {
         self.process = process
         self.port = port
         self.kvsPath = kvsPath
+        self.discriminator = discriminator
     }
 
     // MARK: - Start
 
     /// Start with a fresh (or given) KVS file. Returns once the app logs that it is ready.
     static func start(
-        discriminator: UInt16 = 3840,
+        discriminator: UInt16 = RealMDNSDiscriminators.chipDefault,
         passcode: UInt32 = 20202021,
         port: UInt16,
         kvsPath: URL,
@@ -100,7 +124,7 @@ final class ChipAppRunner: @unchecked Sendable {
         process.standardOutput = pipe
         process.standardError = pipe
 
-        let runner = ChipAppRunner(process: process, port: port, kvsPath: kvsPath)
+        let runner = ChipAppRunner(process: process, port: port, kvsPath: kvsPath, discriminator: discriminator)
         pipe.fileHandleForReading.readabilityHandler = { [weak runner] handle in
             let data = handle.availableData
             if data.isEmpty {

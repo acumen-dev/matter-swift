@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import MatterTypes
 
 // MARK: - Errors
 
@@ -25,7 +26,7 @@ public enum SetupPayloadError: Error, Sendable {
 ///     discriminator: 3840,
 ///     passcode: 20202021
 /// )
-/// print(payload.qrCodeString)       // MT:Y.GHY00 00KA0648G00
+/// print(payload.qrCodeString)       // MT:Y.K90AFN00KA0648G00
 /// print(payload.manualPairingCode)  // 34970112332
 /// ```
 public struct SetupPayload: Sendable {
@@ -88,22 +89,15 @@ public struct SetupPayload: Sendable {
 
     // MARK: - Passcode Validation
 
-    private static let invalidPasscodes: Set<UInt32> = [
-        00000000, 11111111, 22222222, 33333333, 44444444,
-        55555555, 66666666, 77777777, 88888888, 99999999,
-        12345678, 87654321,
-    ]
-
     private static func isValidPasscode(_ code: UInt32) -> Bool {
-        guard code > 0, code < 0x8000000 else { return false }
-        return !invalidPasscodes.contains(code)
+        SetupCode.isValidPasscode(code)
     }
 
     // MARK: - Bit-Packed Payload
 
-    /// Packs all fields into a 96-bit (12-byte) buffer, LSB-first per field.
+    /// Packs all fields into an 88-bit (11-byte) buffer, LSB-first per field.
     ///
-    /// Field layout (88 bits used, 8-bit zero-pad appended):
+    /// Field layout (88 bits):
     /// ```
     /// [2:0]   version          (3 bits)
     /// [18:3]  vendorID         (16 bits)
@@ -113,11 +107,10 @@ public struct SetupPayload: Sendable {
     /// [56:45] discriminator    (12 bits)
     /// [83:57] setupPINCode     (27 bits)
     /// [87:84] padding          (4 bits, zero)
-    /// [95:88] padding          (8 bits, zero)
     /// ```
     private var packedBits: Data {
         var bits: UInt64 = 0
-        var hi: UInt32 = 0   // bits 64–95
+        var hi: UInt32 = 0   // bits 64–87
 
         var cursor = 0
 
@@ -140,14 +133,14 @@ public struct SetupPayload: Sendable {
         bits |= passcodeLow << cursor  // cursor == 57
         hi   |= UInt32(passcodeHi)     // hi bits 0–19 = passcode bits 7–26
         // padding 4 bits at bits 84–87 → hi bits 20–23 (already zero)
-        // padding 8 bits at bits 88–95 → hi bits 24–31 (already zero)
 
-        // Pack into 12 bytes, little-endian
-        var data = Data(count: 12)
+        // Pack into 11 bytes, little-endian. CHIP reads anything beyond 88 bits as optional TLV,
+        // so a trailing zero byte makes it reject the payload.
+        var data = Data(count: 11)
         for i in 0..<8 {
             data[i] = UInt8((bits >> (i * 8)) & 0xFF)
         }
-        for i in 0..<4 {
+        for i in 0..<3 {
             data[8 + i] = UInt8((hi >> (i * 8)) & 0xFF)
         }
         return data
@@ -155,46 +148,9 @@ public struct SetupPayload: Sendable {
 
     // MARK: - QR Code
 
-    // Matter Base38 alphabet: 10 digits + 26 uppercase letters + '-' + '.' = 38 chars exactly.
-    // No space — the space sometimes seen in reference QR strings is a display separator only.
-    private static let base38Alphabet = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-.")
-
-    /// Encodes `data` using Matter's Base38 scheme.
-    ///
-    /// - 3 bytes → 5 characters
-    /// - 2 bytes → 4 characters
-    /// - 1 byte  → 2 characters
-    private static func base38Encode(_ data: Data) -> String {
-        var result = ""
-        var index = 0
-        while index < data.count {
-            let remaining = data.count - index
-            let (value, outLen): (UInt32, Int)
-            if remaining >= 3 {
-                value = UInt32(data[index]) | UInt32(data[index + 1]) << 8 | UInt32(data[index + 2]) << 16
-                outLen = 5
-                index += 3
-            } else if remaining == 2 {
-                value = UInt32(data[index]) | UInt32(data[index + 1]) << 8
-                outLen = 4
-                index += 2
-            } else {
-                value = UInt32(data[index])
-                outLen = 2
-                index += 1
-            }
-            var v = value
-            for _ in 0..<outLen {
-                result.append(base38Alphabet[Int(v % 38)])
-                v /= 38
-            }
-        }
-        return result
-    }
-
-    /// The QR code payload string, e.g. `"MT:Y.GHY00 00KA0648G00"`.
+    /// The QR code payload string, e.g. `"MT:Y.K90AFN00KA0648G00"`.
     public var qrCodeString: String {
-        "MT:" + Self.base38Encode(packedBits)
+        "MT:" + Base38.encode(packedBits)
     }
 
     // MARK: - Manual Pairing Code
@@ -213,50 +169,7 @@ public struct SetupPayload: Sendable {
         let chunk2 = ((d >> 8) & 0x3) << 14 | (passcode & 0x3FFF)
         let chunk3 = passcode >> 14
         let digits = String(format: "%01d%05d%04d", chunk1, chunk2, chunk3)
-        let checksum = Self.verhoeffChecksum(digits)
+        let checksum = Verhoeff.checkDigit(for: digits)
         return digits + String(checksum)
-    }
-
-    // MARK: - Verhoeff Checksum
-
-    /// Computes the Verhoeff checksum digit for the given decimal string.
-    private static func verhoeffChecksum(_ string: String) -> Int {
-        // Multiplication table for dihedral group D5
-        let d: [[Int]] = [
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
-            [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
-            [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
-            [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
-            [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
-            [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
-            [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
-            [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
-            [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
-        ]
-        // Permutation table
-        let p: [[Int]] = [
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-            [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
-            [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
-            [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
-            [9, 4, 5, 3, 1, 2, 6, 8, 7, 0],
-            [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
-            [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
-            [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
-        ]
-        // Inverse table for dihedral group D5:
-        // Only values 1-4 are inverted (n - val where n = 5).
-        // 0 and 5-9 map to themselves.
-        let inv = [0, 4, 3, 2, 1, 5, 6, 7, 8, 9]
-
-        // Digits are processed right-to-left starting at position 1 (not 0),
-        // reserving position 0 for the check digit that will be appended.
-        var c = 0
-        let digits = string.compactMap { $0.wholeNumberValue }
-        for (i, digit) in digits.reversed().enumerated() {
-            c = d[c][p[(i + 1) % 8][digit]]
-        }
-        return inv[c]
     }
 }

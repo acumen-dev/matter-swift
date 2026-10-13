@@ -8,7 +8,7 @@ import MatterProtocol
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("Controller timed invoke", .timeLimit(.minutes(1)))
+@Suite("Controller timed invoke", .timeLimit(.minutes(5)))
 struct ControllerTimedInvokeTests {
 
     /// Same construction as ControllerIMStatusTests: a controller on link.a

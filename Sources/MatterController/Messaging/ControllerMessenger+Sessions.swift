@@ -29,8 +29,12 @@ extension ControllerMessenger {
     /// unregistered concurrently, use ``updateSession(localSessionID:mrp:)``:
     /// it never registers.
     ///
+    /// An IP-literal `peerAddress` is recorded in canonical form (see
+    /// `MatterAddress.canonicalised`), the form inbound senders are matched in.
+    ///
     /// - Throws: ``MessagingError/sessionIDInUse(_:)``.
     public func registerSession(_ session: SecureSession, peerAddress: MatterAddress, mrp: MRPParameters? = nil) throws {
+        let peerAddress = peerAddress.canonicalised
         if var existing = sessions[session.localSessionID] {
             guard existing.session === session else {
                 throw MessagingError.sessionIDInUse(session.localSessionID)

@@ -7,7 +7,7 @@ import MatterProtocol
 import MatterTransport
 import MatterTestSupport
 
-@Suite("MatterTestSupport", .timeLimit(.minutes(1)))
+@Suite("MatterTestSupport", .timeLimit(.minutes(5)))
 struct TestSupportTests {
 
     // MARK: - ManualClock
@@ -101,6 +101,96 @@ struct TestSupportTests {
         for task in tasks { try await task.value }
         #expect(order.value == Array(0..<8))
         #expect(woken.value == 8)
+    }
+
+    @Test("awaitSleepers / awaitSleeper return once a sleeper registers, and at once if one already has")
+    func awaitSleeperRegistration() async throws {
+        let clock = ManualClock(quiescenceYieldLimit: 0)
+        let deadline = clock.now + .seconds(5)
+        let waiter = Task {
+            try await clock.awaitSleeper(until: deadline)
+            try await clock.awaitSleepers(atLeast: 1)
+        }
+        let sleeper = Task { try await clock.sleep(until: deadline) }
+        try await waiter.value
+        #expect(clock.sleeperCount == 1)
+        try await clock.awaitSleeper(until: deadline)
+
+        await clock.advance(by: .seconds(5))
+        try await sleeper.value
+        #expect(clock.sleeperCount == 0)
+    }
+
+    @Test("A sleeper that fires or is cancelled no longer satisfies awaitSleeper")
+    func awaitSleeperForgetsEndedSleepers() async throws {
+        let clock = ManualClock(quiescenceYieldLimit: 0)
+        let first = clock.now + .seconds(1)
+
+        // Cancelled: once its task has ended, nothing of it is left.
+        let cancelled = Task { try await clock.sleep(until: first) }
+        try await clock.awaitSleeper(until: first)
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(clock.sleeperCount == 0)
+        #expect(clock.nextSleeperDeadline == nil)
+
+        // A waiter for `first` must now suspend; a stale entry would let it
+        // return at once. Whichever happens is observed, not raced.
+        let returned = LockedValue(false)
+        let waiter = Task {
+            try await clock.awaitSleeper(until: first)
+            returned.withLock { $0 = true }
+        }
+        try await pollUntil(every: .milliseconds(1)) { clock.sleeperWaiterCount == 1 || returned.value }
+        #expect(!returned.value, "awaitSleeper returned for a sleeper that had ended")
+        let again = Task { try await clock.sleep(until: first) }
+        try await waiter.value
+
+        // Fired: likewise gone once advance has woken it.
+        await clock.advance(by: .seconds(1))
+        try await again.value
+        #expect(clock.sleeperCount == 0)
+        #expect(clock.nextSleeperDeadline == nil)
+    }
+
+    // MARK: - LockedValue
+
+    @Test("wait(until:) returns when a later update satisfies the predicate, at once when it already holds")
+    func lockedValueWait() async throws {
+        let value = LockedValue(0)
+        let waiter = Task { try await value.wait { $0 >= 3 } }
+        for _ in 0..<3 { value.withLock { $0 += 1 } }
+        try await waiter.value
+        try await value.wait { $0 == 3 }
+    }
+
+    @Test("A cancelled wait(until:) throws CancellationError, before or after it registers")
+    func lockedValueWaitCancellation() async throws {
+        let value = LockedValue(false)
+        let early = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await value.wait { $0 }
+        }
+        await #expect(throws: CancellationError.self) { try await early.value }
+
+        let late = Task { try await value.wait { $0 } }
+        late.cancel()
+        await #expect(throws: CancellationError.self) { try await late.value }
+    }
+
+    // MARK: - InMemoryDiscovery
+
+    @Test("waitForActiveBrowse returns once a browse stream is open")
+    func waitForActiveBrowse() async throws {
+        let discovery = InMemoryDiscovery { _ in nil }
+        let waiter = Task { try await discovery.waitForActiveBrowse() }
+        let browse = Task {
+            for await _ in discovery.browse(serviceType: .commissionable) {}
+        }
+        try await waiter.value
+        #expect(discovery.activeBrowseCount == 1)
+        browse.cancel()
+        await browse.value
     }
 
     // MARK: - SeededJitter

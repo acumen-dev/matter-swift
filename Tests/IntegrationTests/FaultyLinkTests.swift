@@ -175,7 +175,7 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             _ = try await controller.readAttribute(
                 nodeID: device.nodeID, endpointID: light.endpointID,
                 clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff
@@ -228,7 +228,9 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The body assumes the default timing once commissioned.
+            await controller.setMRPParameters(nil, for: device.nodeID)
             // Commissioning leaves its CASE session cached; drop it so the
             // operations below must establish (and share) a fresh one.
             await controller.invalidateSession(for: device.nodeID)
@@ -284,7 +286,9 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The body assumes the default timing once commissioned.
+            await controller.setMRPParameters(nil, for: device.nodeID)
             // Commissioning leaves its CASE session cached; drop it so the
             // operations below must establish (and share) a fresh one.
             await controller.invalidateSession(for: device.nodeID)
@@ -340,7 +344,9 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The body assumes the default timing once commissioned.
+            await controller.setMRPParameters(nil, for: device.nodeID)
             // Commissioning leaves its CASE session cached; drop it so the
             // operations below must establish (and share) a fresh one.
             await controller.invalidateSession(for: device.nodeID)
@@ -396,7 +402,9 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The body waits out exhaustion at the default timing.
+            await controller.setMRPParameters(nil, for: device.nodeID)
             let stale = try await controller.session(for: device.nodeID)
             let sentBefore = link.sent(from: .a).count
 
@@ -433,10 +441,10 @@ struct FaultyLinkTests {
         let controller = try makeController(on: link, maxRetransmissions: 4)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let session = try await controller.session(for: device.nodeID)
             let scope = SessionScope.secured(localSessionID: session.localSessionID)
-            #expect(await controller.messenger.parameters(for: scope) == nil)
+            #expect(await controller.messenger.parameters(for: scope) == patient)
 
             await controller.setMRPParameters(fast, for: device.nodeID)
             #expect(await controller.messenger.parameters(for: scope) == fast)

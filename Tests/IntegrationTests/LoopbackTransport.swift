@@ -22,10 +22,18 @@ final class LoopbackTransport: MatterUDPTransport, @unchecked Sendable {
     private var receiveContinuation: AsyncStream<(Data, MatterAddress)>.Continuation?
     private var receiveStream: AsyncStream<(Data, MatterAddress)>?
     private var running = false
+    /// The local IPv4 address the socket binds to (host byte order).
+    private let bindAddress: in_addr_t
 
     // MARK: - Init
 
-    init() {
+    /// - Parameter bindAddress: Loopback by default. A peer at a non-loopback
+    ///   address of this host (one found over mDNS) needs `INADDR_ANY`: from
+    ///   a loopback-bound socket the datagram's source is 127.0.0.1, so the
+    ///   reply comes back from 127.0.0.1 rather than the address sent to, and
+    ///   matches no exchange.
+    init(bindAddress: in_addr_t = INADDR_LOOPBACK) {
+        self.bindAddress = bindAddress
         let (stream, continuation) = AsyncStream<(Data, MatterAddress)>.makeStream()
         self.receiveStream = stream
         self.receiveContinuation = continuation
@@ -46,7 +54,7 @@ final class LoopbackTransport: MatterUDPTransport, @unchecked Sendable {
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = port.bigEndian
-        addr.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
+        addr.sin_addr.s_addr = bindAddress.bigEndian
 
         let bindResult = withUnsafePointer(to: &addr) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in

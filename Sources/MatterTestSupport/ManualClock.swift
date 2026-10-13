@@ -48,7 +48,10 @@ public final class ManualClock: MRPClock, Sendable {
         case waiting, resumeNow, cancelled
     }
 
-    private let state: Mutex<State>
+    /// One lock for everything, sleepers included: ``awaitSleepers(atLeast:)``
+    /// and ``awaitSleeper(until:)`` wait on it directly, so what they see is
+    /// what ``advance(by:)`` sees.
+    private let state: LockedValue<State>
     private let timeouts = Mutex(0)
 
     /// Bound on the scheduler yields spent waiting for sleepers to re-register.
@@ -62,7 +65,7 @@ public final class ManualClock: MRPClock, Sendable {
 
     public init(origin: ContinuousClock.Instant = .now, quiescenceYieldLimit: Int = 100_000) {
         precondition(quiescenceYieldLimit >= 0, "quiescenceYieldLimit must not be negative")
-        state = Mutex(State(now: origin))
+        state = LockedValue(State(now: origin))
         self.quiescenceYieldLimit = quiescenceYieldLimit
     }
 
@@ -123,6 +126,26 @@ public final class ManualClock: MRPClock, Sendable {
         }
     }
 
+    /// Returns once at least `count` sleepers are registered — at once if
+    /// they already are. Woken by the registration itself, so it has no
+    /// bound of its own: the test's `.timeLimit` is the hang guard. Throws
+    /// `CancellationError` if the calling task is cancelled first.
+    public func awaitSleepers(atLeast count: Int) async throws {
+        try await state.wait { $0.sleepers.count >= count }
+    }
+
+    /// How many ``awaitSleepers(atLeast:)`` / ``awaitSleeper(until:)`` calls
+    /// are suspended. For tests of the clock itself.
+    public var sleeperWaiterCount: Int {
+        state.waiterCount
+    }
+
+    /// Returns once a sleeper waits for exactly `deadline` (unbounded, as
+    /// ``awaitSleepers(atLeast:)``).
+    public func awaitSleeper(until deadline: ContinuousClock.Instant) async throws {
+        try await state.wait { $0.sleepers.values.contains { $0.deadline == deadline } }
+    }
+
     /// Run `action` when ``advance(by:)`` reaches `deadline` — immediately if
     /// it already has.
     public func schedule(at deadline: ContinuousClock.Instant, _ action: @escaping @Sendable () -> Void) {
@@ -141,7 +164,13 @@ public final class ManualClock: MRPClock, Sendable {
 
     /// Move time forward by `duration`, stopping at every sleeper or
     /// scheduled deadline on the way (see the type documentation).
-    public func advance(by duration: Duration) async {
+    ///
+    /// - Parameter awaitingRearm: whether to wait, after each step, for the
+    ///   woken sleepers to go back to sleep. Pass `false` when a step wakes a
+    ///   one-shot sleeper (a backoff, a deadline) and the test awaits what
+    ///   the wake triggers by other means: otherwise the wait spins to
+    ///   `quiescenceYieldLimit` for a re-arm that never comes.
+    public func advance(by duration: Duration, awaitingRearm: Bool = true) async {
         let target = now + duration
         while true {
             let step: Step? = state.withLock { state in
@@ -171,7 +200,9 @@ public final class ManualClock: MRPClock, Sendable {
             for sleeper in step.sleepers {
                 sleeper.continuation.resume()
             }
-            await waitForSleepers(step.sleeperCountBefore)
+            if awaitingRearm {
+                await waitForSleepers(step.sleeperCountBefore)
+            }
         }
     }
 

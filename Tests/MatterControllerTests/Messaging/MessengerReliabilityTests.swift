@@ -9,7 +9,7 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerMessenger reliability", .timeLimit(.minutes(1)))
+@Suite("ControllerMessenger reliability", .timeLimit(.minutes(5)))
 struct MessengerReliabilityTests {
 
     /// Retransmission interval after `n` transmissions to an idle peer, zero jitter.

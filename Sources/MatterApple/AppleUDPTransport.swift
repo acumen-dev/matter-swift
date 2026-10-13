@@ -147,6 +147,10 @@ public actor AppleUDPTransport: MatterUDPTransport {
     }
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
+        // Discovery gives IPv6 hosts in URL form ("[fd00::1]"); the socket
+        // APIs below take the bare literal.
+        let address = MatterAddress(host: MatterAddress.strippingBrackets(address.host), port: address.port)
+
         // Detect IPv4 vs IPv6 by presence of ':' (IPv6 always contains colons).
         if !address.host.contains(":") {
             try sendIPv4(data, to: address)
@@ -171,6 +175,8 @@ public actor AppleUDPTransport: MatterUDPTransport {
         dest.sin6_family   = sa_family_t(AF_INET6)
         dest.sin6_port     = in_port_t(address.port).bigEndian
         dest.sin6_scope_id = ifIndex
+        // `hostStr` has had its `%<zone>` split off above: Darwin's inet_pton
+        // accepts a zone and silently embeds the scope in sin6_addr.
         guard Darwin.inet_pton(AF_INET6, hostStr, &dest.sin6_addr) == 1 else {
             throw TransportError.invalidAddress(hostStr)
         }

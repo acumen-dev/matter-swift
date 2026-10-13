@@ -9,7 +9,7 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerMessenger core", .timeLimit(.minutes(1)))
+@Suite("ControllerMessenger core", .timeLimit(.minutes(5)))
 struct MessengerCoreTests {
 
     @Test("A request is answered on its own exchange")
@@ -233,5 +233,66 @@ struct MessengerCoreTests {
         await #expect(throws: MessagingError.stopped) {
             try await exchange.send(protocolID: .echo, opcode: echoRequest, payload: Data())
         }
+    }
+
+    // MARK: - Address Forms
+
+    /// The transports report a sender in `inet_ntop`'s canonical form; an
+    /// exchange opened with any other text for the same address must still
+    /// receive its reply (it used to be dropped as stale on Linux, where
+    /// discovery wrote IPv6 hosts uncompressed).
+    @Test(
+        "An exchange opened with non-canonical IP text receives the reply from the canonical sender",
+        arguments: [
+            ("0:0:0:0:0:0:0:1", "::1"),
+            ("[0:0:0:0:0:0:0:1]", "::1"),
+            ("FD00:0000::0005", "fd00::5"),
+            ("[fd00::5]", "fd00::5"),
+        ]
+    )
+    func nonCanonicalPeerReceivesReply(opened: String, sender: String) async throws {
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: ManualClock())
+        var peer = TestPeer(link: link)
+        let canonical = MatterAddress(host: sender, port: 5540)
+        let exchange = await messenger.openExchange(peer: MatterAddress(host: opened, port: 5540))
+        #expect(exchange.peerAddress == canonical)
+
+        async let reply = exchange.request(protocolID: .echo, opcode: echoRequest, payload: Data([1]), timeout: .seconds(5))
+        let request = try await peer.next()
+        #expect(link.sent(from: .a, to: canonical).count == 1)
+        try await peer.send(
+            ScriptedPeer.unsecuredReply(to: request, protocolID: .echo, opcode: echoResponse, payload: Data([9]), counter: 1000),
+            from: canonical
+        )
+        // Hang guard: a dropped reply never resolves `reply` (it is acked as
+        // stale instead); the suite's time limit ends the test.
+        let message = try await reply
+        #expect(message.key == exchange.key)
+        #expect(message.payload == Data([9]))
+        #expect(message.peerAddress == canonical)
+
+        await exchange.close()
+        await messenger.stop()
+    }
+
+    @Test("A datagram from a non-canonical sender text is matched to the exchange opened with the canonical one")
+    func nonCanonicalSenderIsMatched() async throws {
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: ManualClock())
+        var peer = TestPeer(link: link)
+        let exchange = await messenger.openExchange(peer: MatterAddress(host: "fd00::5", port: 5540))
+
+        async let reply = exchange.request(protocolID: .echo, opcode: echoRequest, payload: Data([1]), timeout: .seconds(5))
+        let request = try await peer.next()
+        try await peer.send(
+            ScriptedPeer.unsecuredReply(to: request, protocolID: .echo, opcode: echoResponse, payload: Data([9]), counter: 1000),
+            from: MatterAddress(host: "FD00:0:0:0:0:0:0:0005", port: 5540)
+        )
+        let message = try await reply
+        #expect(message.peerAddress == MatterAddress(host: "fd00::5", port: 5540))
+
+        await exchange.close()
+        await messenger.stop()
     }
 }

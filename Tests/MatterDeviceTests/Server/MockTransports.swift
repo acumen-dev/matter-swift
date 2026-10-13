@@ -4,6 +4,7 @@
 import Foundation
 import Synchronization
 import MatterTransport
+import MatterTestSupport
 @testable import MatterDevice
 
 /// Mock UDP transport for device server tests.
@@ -13,6 +14,8 @@ import MatterTransport
 final class MockServerUDPTransport: MatterUDPTransport, @unchecked Sendable {
 
     private let state = Mutex(TransportState())
+    /// How many messages have been sent, for ``awaitSent(atLeast:)``.
+    private let sentSignal = LockedValue(0)
     private var continuation: AsyncStream<(Data, MatterAddress)>.Continuation?
     private let stream: AsyncStream<(Data, MatterAddress)>
 
@@ -45,6 +48,14 @@ final class MockServerUDPTransport: MatterUDPTransport, @unchecked Sendable {
         state.withLock { $0.sentMessages.count }
     }
 
+    /// Returns once at least `count` messages have been sent — at once if
+    /// they have. Woken by the send itself, so it has no deadline: the
+    /// test's `.timeLimit` is the hang guard. Throws `CancellationError` if
+    /// the calling task is cancelled first.
+    func awaitSent(atLeast count: Int) async throws {
+        try await sentSignal.wait { $0 >= count }
+    }
+
     /// Datagrams whose send was made to throw by ``failNextSends(_:)``.
     var droppedMessages: [(Data, MatterAddress)] {
         state.withLock { $0.droppedMessages }
@@ -75,7 +86,11 @@ final class MockServerUDPTransport: MatterUDPTransport, @unchecked Sendable {
             return true
         }
         if shouldFail { throw InjectedSendFailure() }
-        state.withLock { $0.sentMessages.append((data, address)) }
+        let sent = state.withLock { state in
+            state.sentMessages.append((data, address))
+            return state.sentMessages.count
+        }
+        sentSignal.withLock { $0 = max($0, sent) }
     }
 
     func receive() -> AsyncStream<(Data, MatterAddress)> {

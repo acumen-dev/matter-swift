@@ -7,6 +7,7 @@ import Foundation
 import MatterModel
 import MatterTypes
 import MatterCrypto
+import MatterTestSupport
 
 /// State a failed or finished commissioning must not leave behind.
 ///
@@ -15,7 +16,7 @@ import MatterCrypto
 /// straight to operational discovery for a node that was never issued — every later
 /// pairing then times out. A removed fabric's operational advert and CommissionedFabrics
 /// count must likewise not outlive the fabric.
-@Suite("Commissioning cleanup")
+@Suite("Commissioning cleanup", .timeLimit(.minutes(5)))
 struct CommissioningCleanupTests {
 
     private let ep0 = EndpointID(rawValue: 0)
@@ -45,18 +46,11 @@ struct CommissioningCleanupTests {
         return (server, discovery)
     }
 
-    /// Poll until `condition` holds. The ceiling is a hang guard, not a latency budget:
-    /// passing runs return as soon as the condition is true, and loaded CI runners can
-    /// take several seconds to schedule the server's callback tasks.
-    private func waitUntil(
-        timeout: Duration = .seconds(30),
-        _ condition: () async -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !(await condition()) {
-            guard ContinuousClock.now < deadline else { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+    /// Poll until `condition` holds. No deadline: loaded runners can take
+    /// seconds to schedule the server's callback tasks, so the suite's
+    /// `.timeLimit` is the only hang guard.
+    private func waitUntil(_ condition: () async -> Bool) async throws {
+        try await pollUntil { await condition() }
     }
 
     private func commitTestFabric(_ state: CommissioningState) throws {

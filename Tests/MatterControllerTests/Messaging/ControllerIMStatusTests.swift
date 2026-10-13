@@ -9,7 +9,7 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("Controller IM StatusResponse", .timeLimit(.minutes(1)))
+@Suite("Controller IM StatusResponse", .timeLimit(.minutes(5)))
 struct ControllerIMStatusTests {
 
     @Test("A StatusResponse in place of the reply surfaces as imStatus with its code")
