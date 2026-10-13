@@ -25,7 +25,13 @@ let fast = MRPParameters(
     sessionActiveThreshold: .milliseconds(4000)
 )
 
-func startServer(on link: FaultInjectingLink, toggles: LockedValue<Int>) async throws -> (MatterDeviceServer, BridgedEndpoint) {
+/// `discovery` is where the device advertises; share one `InMemoryDiscovery`
+/// with the controller so it can find the device. The default advertises nowhere.
+func startServer(
+    on link: FaultInjectingLink,
+    toggles: LockedValue<Int>,
+    discovery: any MatterDiscovery = FaultyLinkDiscovery()
+) async throws -> (MatterDeviceServer, BridgedEndpoint) {
     let bridge = MatterBridge()
     let light = bridge.addDimmableLight(name: "Faulty Light", onOffChanged: { _ in
         toggles.withLock { $0 += 1 }
@@ -33,7 +39,7 @@ func startServer(on link: FaultInjectingLink, toggles: LockedValue<Int>) async t
     let server = MatterDeviceServer(
         bridge: bridge,
         transport: link.b,
-        discovery: FaultyLinkDiscovery(),
+        discovery: discovery,
         config: .init(
             discriminator: 3840,
             passcode: passcode,
@@ -46,14 +52,20 @@ func startServer(on link: FaultInjectingLink, toggles: LockedValue<Int>) async t
     return (server, light)
 }
 
-func makeController(on link: FaultInjectingLink, maxRetransmissions: Int) throws -> MatterController {
+func makeController(
+    on link: FaultInjectingLink,
+    maxRetransmissions: Int,
+    discovery: any MatterDiscovery = FaultyLinkDiscovery(),
+    store: (any MatterControllerStore)? = nil
+) throws -> MatterController {
     try MatterController(
         transport: link.a,
-        discovery: FaultyLinkDiscovery(),
+        discovery: discovery,
         configuration: .init(
             fabricID: FabricID(rawValue: 1),
             mrp: MRPConfig(maxRetransmissions: maxRetransmissions)
-        )
+        ),
+        store: store
     )
 }
 

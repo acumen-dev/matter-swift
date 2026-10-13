@@ -426,6 +426,49 @@ public actor MatterController {
 
     // MARK: - Commissioning
 
+    /// Commission a device from its setup code (manual or QR): find it by
+    /// discriminator, then commission it at the address it advertises.
+    ///
+    /// The device's advertised MRP timing (SII/SAI/SAT) is used for
+    /// commissioning and persisted with the device, unless `mrp` overrides it.
+    /// The same rules as ``findCommissionable(_:timeout:)`` apply: a short
+    /// discriminator may match more than one device, and the first wins.
+    ///
+    /// - Parameters:
+    ///   - setupCode: The manual pairing code or `MT:` QR payload.
+    ///   - discoveryTimeout: How long to search (default: `configuration.discoveryTimeout`).
+    ///   - mrp: Overrides the advertised MRP parameters.
+    /// - Throws: `ControllerError.invalidSetupCode` (naming the problem, never
+    ///   the code); the errors of `findCommissionable` and of
+    ///   ``commission(address:setupCode:mrp:)``.
+    public func commission(
+        setupCode: String,
+        discoveryTimeout: Duration? = nil,
+        mrp: MRPParameters? = nil
+    ) async throws -> CommissionedDevice {
+        let code: SetupCode
+        do {
+            code = try SetupCode(parsing: setupCode)
+        } catch {
+            throw ControllerError.invalidSetupCode(Self.describe(error))
+        }
+        let found = try await findCommissionable(code, timeout: discoveryTimeout)
+        return try await commission(address: found.address, setupCode: code.passcode, mrp: mrp ?? found.mrp)
+    }
+
+    /// The case name only: a payload (`malformedQRCode`) may carry the code text.
+    private static func describe(_ error: SetupCodeError) -> String {
+        switch error {
+        case .empty: "empty setup code"
+        case .invalidCharacters: "setup code has invalid characters"
+        case .invalidLength: "setup code has an invalid length"
+        case .checkDigitMismatch: "setup code check digit mismatch"
+        case .unsupportedVersion: "unsupported setup code version"
+        case .invalidPasscode: "setup code passcode is not allowed"
+        case .malformedQRCode: "malformed QR setup code"
+        }
+    }
+
     /// Commission a device at the given address using the setup passcode.
     ///
     /// Drives the full commissioning flow:

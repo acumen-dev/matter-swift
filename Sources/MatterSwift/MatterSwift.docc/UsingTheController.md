@@ -37,7 +37,7 @@ The controller generates a root CA key pair automatically and manages fabric cre
 
 ## Commissioning a Device
 
-To commission a device, you need its network address and setup code (from the QR code or manual pairing code):
+To commission a device at a known address, you need the address and the numeric setup passcode:
 
 ```swift
 let device = try await controller.commission(
@@ -55,6 +55,16 @@ The commissioning flow handles:
 6. Commissioning completion
 
 After commissioning, the device is part of your fabric and all further communication uses encrypted CASE sessions.
+
+### Commissioning from a setup code
+
+With the manual pairing code or the `MT:` QR payload, the controller finds the device on the network by its discriminator, so no address is needed:
+
+```swift
+let device = try await controller.commission(setupCode: "34970112332")
+```
+
+The device must have its commissioning window open. The controller uses the device's advertised retransmission timing and records it with the device; pass `mrp:` to override it, or `discoveryTimeout:` to change how long it searches (`Configuration.discoveryTimeout`, 30 seconds by default). A code that cannot be parsed throws `ControllerError.invalidSetupCode` before anything is sent; its message never repeats the code. A manual code carries only a short discriminator, so if two nearby devices share it the first one found is commissioned.
 
 ## Reading Attributes
 
