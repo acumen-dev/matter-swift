@@ -242,12 +242,15 @@ struct ControllerSubscriptionTests {
         guard case .lost? = await iterator.next() else { Issue.record("expected .lost"); return }
 
         // First re-subscribe follows after backoff(0) = 1 s and carries eventMin 13.
+        // The backoff sleep is one-shot: the re-subscribe it starts is awaited
+        // through the peer, not through the clock.
         #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(1)))
-        await rig.clock.advance(by: .seconds(1))
+        await rig.clock.advance(by: .seconds(1), awaitingRearm: false)
         let resubscribe = try await playEstablishment(&peer, rig, maxInterval: 10)
         let decoded = try SubscribeRequest.fromTLV(resubscribe.payload)
         #expect(decoded.eventFilters.map(\.eventMin) == [EventNumber(rawValue: 13)])
         #expect(await iterator.next() == .established(id, negotiatedMaxInterval: 10))
+        #expect(rig.clock.quiescenceTimeouts == 0)
         await sub.cancel(); await rig.messenger.stop()
     }
 
@@ -296,8 +299,10 @@ struct ControllerSubscriptionTests {
         await rig.clock.advance(by: .seconds(15))
         guard case .lost? = await iterator.next() else { Issue.record("expected .lost"); return }
 
+        // Backoff sleeps are one-shot: what each starts is awaited through the
+        // peer, not through the clock.
         #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(1)))
-        await rig.clock.advance(by: .seconds(1))
+        await rig.clock.advance(by: .seconds(1), awaitingRearm: false)
         let request = try await peer.nextSecured(session: rig.peerSession)
         #expect(request.exchangeHeader.protocolOpcode == InteractionModelOpcode.subscribeRequest.rawValue)
         try await peer.send(ScriptedPeer.securedReply(to: request, session: rig.peerSession, protocolID: .interactionModel, opcode: InteractionModelOpcode.statusResponse.rawValue, payload: IMStatusResponse(status: 0x80).tlvEncode(), reliable: false))
@@ -308,10 +313,11 @@ struct ControllerSubscriptionTests {
         #expect(await rig.clock.waitForSleeper(until: rig.clock.now + .seconds(2)))
         await rig.clock.advance(by: .seconds(1))
         #expect(rig.link.sent(from: .a).count == sentAfterFailure, "backoff(1) is 2 s; nothing sent at 1 s")
-        await rig.clock.advance(by: .seconds(1))
+        await rig.clock.advance(by: .seconds(1), awaitingRearm: false)
         let retry = try await playEstablishment(&peer, rig)
         #expect(retry.exchangeHeader.protocolOpcode == InteractionModelOpcode.subscribeRequest.rawValue)
         #expect(await iterator.next() == .established(id, negotiatedMaxInterval: 10))
+        #expect(rig.clock.quiescenceTimeouts == 0)
         await sub.cancel(); await rig.messenger.stop()
     }
 

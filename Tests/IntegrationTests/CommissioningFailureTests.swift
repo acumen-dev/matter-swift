@@ -71,11 +71,8 @@ struct CommissioningFailureTests {
         await server.stop()
     }
 
-    @Test(
-        "An ArmFailSafe whose response is lost still gets a best-effort disarm",
-        arguments: [false, true]
-    )
-    func lostArmResponseIsDisarmed(strayControllerFrame: Bool) async throws {
+    @Test("An ArmFailSafe whose response is lost still gets a best-effort disarm")
+    func lostArmResponseIsDisarmed() async throws {
         let link = FaultInjectingLink(seed: 22)
         let bridge = MatterBridge()
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
@@ -83,12 +80,14 @@ struct CommissioningFailureTests {
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
         let state = bridge.commissioningState
-        // The stray frame stands in for what a loaded run produced: a
-        // fresh-counter standalone ack (of a device retransmission) reaching
-        // the device just after the ArmFailSafe response was dropped. It must
-        // not reopen the window and let a retransmitted response through.
+        // At the first drop, a stray controller frame reaches the device: a
+        // fresh-counter standalone ack, as the controller sends for a device
+        // retransmission (a loaded run produced one here). The device ignores
+        // it; it proves the drop window ignores controller traffic, so it
+        // cannot reopen and let a retransmitted ArmFailSafe response through.
+        // (The window used to end at such a frame, and commissioning then
+        // succeeded, every time.)
         Self.dropDeviceReplies(on: link, while: { state.isFailSafeArmed }) {
-            guard strayControllerFrame else { return }
             let stray = Self.strayStandaloneAck()
             Task { try? await link.a.send(stray, to: link.b.address) }
         }
@@ -120,6 +119,12 @@ struct CommissioningFailureTests {
             store: store
         )
         let state = bridge.commissioningState
+        // The window is device state and the fabric stays committed, so the
+        // reply to the disarm the controller sends after giving up on
+        // CommissioningComplete is lost too, deliberately: it costs one more
+        // MRP exhaustion. The disarm is best effort; the outcomes asserted
+        // below (fabric committed, node ID kept and persisted) do not depend
+        // on its reply.
         Self.dropDeviceReplies(on: link, while: { !state.fabrics.isEmpty })
 
         let expectedNodeID = await controller.nextNodeID

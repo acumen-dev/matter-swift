@@ -164,7 +164,13 @@ public final class ManualClock: MRPClock, Sendable {
 
     /// Move time forward by `duration`, stopping at every sleeper or
     /// scheduled deadline on the way (see the type documentation).
-    public func advance(by duration: Duration) async {
+    ///
+    /// - Parameter awaitingRearm: whether to wait, after each step, for the
+    ///   woken sleepers to go back to sleep. Pass `false` when a step wakes a
+    ///   one-shot sleeper (a backoff, a deadline) and the test awaits what
+    ///   the wake triggers by other means: otherwise the wait spins to
+    ///   `quiescenceYieldLimit` for a re-arm that never comes.
+    public func advance(by duration: Duration, awaitingRearm: Bool = true) async {
         let target = now + duration
         while true {
             let step: Step? = state.withLock { state in
@@ -194,7 +200,9 @@ public final class ManualClock: MRPClock, Sendable {
             for sleeper in step.sleepers {
                 sleeper.continuation.resume()
             }
-            await waitForSleepers(step.sleeperCountBefore)
+            if awaitingRearm {
+                await waitForSleepers(step.sleeperCountBefore)
+            }
         }
     }
 
