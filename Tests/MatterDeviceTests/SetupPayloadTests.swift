@@ -37,17 +37,16 @@ struct SetupPayloadTests {
         }
     }
 
-    @Test("QR code has correct length for 12-byte payload")
+    @Test("QR code has correct length for 11-byte payload")
     func qrCodeLength() throws {
-        // 12 bytes = 4 groups of 3 bytes → 4×5 = 20 Base38 chars, plus "MT:" prefix
+        // 11 bytes = 3 groups of 3 bytes + 1 group of 2 → 15 + 4 = 19 Base38 chars, plus "MT:" prefix
         let payload = try SetupPayload(
             vendorID: 0xFFF1,
             productID: 0x8000,
             discriminator: 3840,
             passcode: 20202021
         )
-        // 12 bytes: 4 full 3-byte groups → 20 chars + "MT:"
-        #expect(payload.qrCodeString.count == 23)
+        #expect(payload.qrCodeString.count == 22)
     }
 
     // MARK: - Manual Pairing Code

@@ -95,9 +95,9 @@ public struct SetupPayload: Sendable {
 
     // MARK: - Bit-Packed Payload
 
-    /// Packs all fields into a 96-bit (12-byte) buffer, LSB-first per field.
+    /// Packs all fields into an 88-bit (11-byte) buffer, LSB-first per field.
     ///
-    /// Field layout (88 bits used, 8-bit zero-pad appended):
+    /// Field layout (88 bits):
     /// ```
     /// [2:0]   version          (3 bits)
     /// [18:3]  vendorID         (16 bits)
@@ -107,11 +107,10 @@ public struct SetupPayload: Sendable {
     /// [56:45] discriminator    (12 bits)
     /// [83:57] setupPINCode     (27 bits)
     /// [87:84] padding          (4 bits, zero)
-    /// [95:88] padding          (8 bits, zero)
     /// ```
     private var packedBits: Data {
         var bits: UInt64 = 0
-        var hi: UInt32 = 0   // bits 64–95
+        var hi: UInt32 = 0   // bits 64–87
 
         var cursor = 0
 
@@ -134,14 +133,14 @@ public struct SetupPayload: Sendable {
         bits |= passcodeLow << cursor  // cursor == 57
         hi   |= UInt32(passcodeHi)     // hi bits 0–19 = passcode bits 7–26
         // padding 4 bits at bits 84–87 → hi bits 20–23 (already zero)
-        // padding 8 bits at bits 88–95 → hi bits 24–31 (already zero)
 
-        // Pack into 12 bytes, little-endian
-        var data = Data(count: 12)
+        // Pack into 11 bytes, little-endian. CHIP reads anything beyond 88 bits as optional TLV,
+        // so a trailing zero byte makes it reject the payload.
+        var data = Data(count: 11)
         for i in 0..<8 {
             data[i] = UInt8((bits >> (i * 8)) & 0xFF)
         }
-        for i in 0..<4 {
+        for i in 0..<3 {
             data[8 + i] = UInt8((hi >> (i * 8)) & 0xFF)
         }
         return data
