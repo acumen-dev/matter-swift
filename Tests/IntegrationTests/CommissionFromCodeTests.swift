@@ -25,24 +25,13 @@ struct CommissionFromCodeTests {
 
     /// The device's own commissionable record, as it advertised it. The
     /// server advertises from an unawaited task, so the record may not be
-    /// registered yet; the browse is live and yields it when it is. The
-    /// guard only bounds a hang — it is not a timing margin.
+    /// registered yet; the browse is live and yields it when it is. No
+    /// deadline: the suite's `.timeLimit` is the hang guard (its
+    /// cancellation ends the browse).
     private static func advertisedRecord(_ discovery: InMemoryDiscovery) async throws -> MatterServiceRecord {
-        try await withThrowingTaskGroup(of: MatterServiceRecord.self) { group in
-            group.addTask {
-                for await record in discovery.browse(serviceType: .commissionable) { return record }
-                throw CancellationError()
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(10))
-                throw HangGuard()
-            }
-            defer { group.cancelAll() }
-            return try await group.next()!
-        }
+        for await record in discovery.browse(serviceType: .commissionable) { return record }
+        throw CancellationError()
     }
-
-    struct HangGuard: Error {}
 
     private static func storedMRP(_ store: InMemoryControllerStore, _ device: CommissionedDevice) async throws -> MRPParameters? {
         let stored = try #require(await store.load())

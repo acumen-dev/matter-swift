@@ -6,9 +6,12 @@ import Foundation
 import MatterTransport
 import MatterProtocol
 import MatterCrypto
+import MatterTestSupport
 @testable import MatterDevice
 
-@Suite("MatterDeviceServer")
+/// Waits here have no deadlines of their own: the suite's `.timeLimit` is the
+/// only hang guard.
+@Suite("MatterDeviceServer", .timeLimit(.minutes(2)))
 struct MatterDeviceServerTests {
 
     // MARK: - Lifecycle Tests
@@ -65,11 +68,7 @@ struct MatterDeviceServerTests {
 
         // Wait for the background advertising Task (fired by onWindowOpened) to complete
         // before stopping, otherwise stop() races with the pending advertise().
-        let deadline = ContinuousClock.now + .seconds(2)
-        while await !discovery.isAdvertising {
-            guard ContinuousClock.now < deadline else { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await pollUntil { await discovery.isAdvertising }
 
         await server.stop()
 
@@ -282,30 +281,14 @@ struct MatterDeviceServerTests {
 
     // MARK: - Helpers
 
-    /// Poll until the mock transport has sent at least `count` messages, or timeout.
-    private func waitForSentCount(
-        _ transport: MockServerUDPTransport,
-        atLeast count: Int,
-        timeout: Duration = .seconds(30)
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while transport.sentCount < count {
-            guard ContinuousClock.now < deadline else { return }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+    /// Wait until the mock transport has sent at least `count` messages.
+    private func waitForSentCount(_ transport: MockServerUDPTransport, atLeast count: Int) async throws {
+        try await transport.awaitSent(atLeast: count)
     }
 
-    /// Poll until the mock discovery has at least `count` advertised services, or timeout.
-    private func waitForAdvertisedCount(
-        _ discovery: MockServerDiscovery,
-        atLeast count: Int,
-        timeout: Duration = .seconds(5)
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while await discovery.advertisedServices.count < count {
-            guard ContinuousClock.now < deadline else { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+    /// Poll until the mock discovery has at least `count` advertised services.
+    private func waitForAdvertisedCount(_ discovery: MockServerDiscovery, atLeast count: Int) async throws {
+        try await pollUntil { await discovery.advertisedServices.count >= count }
     }
 
     /// Build an unsecured message (same pattern as MatterController).

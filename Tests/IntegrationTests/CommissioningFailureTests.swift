@@ -34,6 +34,7 @@ struct CommissioningFailureTests {
             await controller.setCommissioningFailureInjection { reached in
                 if reached == step { throw InjectedFailure() }
             }
+            let start = Date()
             do {
                 _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
                 Issue.record("commission should have thrown at \(step)")
@@ -44,14 +45,13 @@ struct CommissioningFailureTests {
                     "neither the PASE session nor a CASE session may outlive a failed commissioning")
 
             let state = bridge.commissioningState
-            let disarmed = await Self.poll { !state.isFailSafeArmed }
+            let disarmed = try await Self.disarmedBeforeExpiry(state, armedAfter: start)
             #expect(disarmed, "the device's fail-safe must be disarmed without waiting for its expiry")
             #expect(state.fabrics.isEmpty)
             #expect(state.stagedNOC == nil, "the staged NOC must be reverted")
             #expect(state.stagedRCAC == nil, "the staged root certificate must be reverted")
             // Every operational advert the device staged was withdrawn.
-            let withdrawn = await Self.poll { discovery.unwithdrawnOperationalNames().isEmpty }
-            #expect(withdrawn, "staged operational advertisements must be withdrawn")
+            try await pollUntil { discovery.unwithdrawnOperationalNames().isEmpty }
             if step == .afterAddNOC || step == .afterACLWrite || step == .afterCASE {
                 #expect(!discovery.operationalNamesAdvertised().isEmpty)
             }
@@ -82,11 +82,12 @@ struct CommissioningFailureTests {
         let state = bridge.commissioningState
         Self.dropDeviceReplies(on: link) { state.isFailSafeArmed }
 
+        let start = Date()
         do {
             _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
             Issue.record("commission should have thrown")
         } catch {}
-        let disarmed = await Self.poll { !state.isFailSafeArmed }
+        let disarmed = try await Self.disarmedBeforeExpiry(state, armedAfter: start)
         #expect(disarmed, "the device must be disarmed without waiting for its expiry")
         #expect(state.fabrics.isEmpty)
         await controller.stop()
@@ -146,6 +147,7 @@ struct CommissioningFailureTests {
         }
 
         let expectedNodeID = await controller.nextNodeID
+        let start = Date()
         do {
             _ = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
             Issue.record("commission should have thrown")
@@ -153,7 +155,7 @@ struct CommissioningFailureTests {
         #expect(dropped.value > 0, "the failure must be the CASE handshake: no Sigma2 was dropped")
         #expect(await controller.messenger.registeredSessionIDs.isEmpty,
                 "neither the PASE session nor a CASE session may outlive a failed commissioning")
-        let disarmed = await Self.poll { !state.isFailSafeArmed }
+        let disarmed = try await Self.disarmedBeforeExpiry(state, armedAfter: start)
         #expect(disarmed, "the device's fail-safe must be disarmed without waiting for its expiry")
         #expect(state.fabrics.isEmpty)
         #expect(await controller.nextNodeID == expectedNodeID, "a failed commissioning must not consume a node ID")
@@ -198,15 +200,21 @@ struct CommissioningFailureTests {
         }
     }
 
-    /// Poll `condition` until it holds. The 30 s deadline is a hang guard, not
-    /// a timing margin: the outcome is what is asserted.
-    static func poll(_ condition: @Sendable () async -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while ContinuousClock.now < deadline, !Task.isCancelled {
-            if await condition() { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+    /// The fail-safe the controller arms: `CommissioningController`'s
+    /// ArmFailSafe default, in seconds.
+    static let failSafeExpiry: TimeInterval = 60
+
+    /// Waits until the device's fail-safe is disarmed, then returns whether
+    /// that was seen before a fail-safe armed after `start` could have
+    /// expired on its own — so the disarm was the controller's, not the
+    /// device's expiry.
+    ///
+    /// The bound is the protocol's, not a margin: no deadline ends the wait
+    /// (the suite's `.timeLimit` is the hang guard), and the expiry falls 60 s
+    /// after an arm that came after `start`.
+    static func disarmedBeforeExpiry(_ state: CommissioningState, armedAfter start: Date) async throws -> Bool {
+        try await pollUntil { !state.isFailSafeArmed }
+        return Date() < start.addingTimeInterval(failSafeExpiry)
     }
 }
 

@@ -9,7 +9,12 @@ import MatterTransport
 import MatterTypes
 import MatterTestSupport
 
-@Suite("CommissionableDiscovery")
+/// Every search here runs on a `ManualClock`, so no deadline falls on a
+/// host's schedule: a search expected to match runs on a clock that never
+/// moves (its deadline cannot fire), and a test of a deadline advances the
+/// clock once the controller is waiting on it. The suite's `.timeLimit` is
+/// the only hang guard.
+@Suite("CommissionableDiscovery", .timeLimit(.minutes(1)))
 struct CommissionableDiscoveryTests {
 
     // MARK: - Fixtures
@@ -20,12 +25,29 @@ struct CommissionableDiscoveryTests {
         InMemoryDiscovery { record in MatterAddress(host: "::1", port: record.port) }
     }
 
-    private static func makeController(_ discovery: InMemoryDiscovery) throws -> MatterController {
+    /// A controller whose discovery deadlines run on `clock` (by default one
+    /// that never moves).
+    private static func makeController(
+        _ discovery: any ServiceDiscovery,
+        clock: ManualClock = ManualClock(),
+        commissionableResolveTimeout: Duration = .seconds(5)
+    ) throws -> MatterController {
         try MatterController(
             transport: MockUDPTransport(),
             discovery: discovery,
-            configuration: .init(fabricID: FabricID(rawValue: 1))
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                commissionableResolveTimeout: commissionableResolveTimeout,
+                discoveryClock: clock
+            )
         )
+    }
+
+    /// A clock for a test that fires a one-shot deadline: after a step,
+    /// `advance(by:)` would otherwise yield-wait for that sleeper to re-arm,
+    /// which it never does.
+    private static func oneShotClock() -> ManualClock {
+        ManualClock(quiescenceYieldLimit: 0)
     }
 
     private static func record(_ name: String, port: UInt16, txt: [String: String]) -> MatterServiceRecord {
@@ -46,9 +68,6 @@ struct CommissionableDiscoveryTests {
         return code
     }
 
-    /// Bounds a search that is expected to succeed quickly; a hang guard only.
-    private static let hangGuard: Duration = .seconds(10)
-
     // MARK: - Matching
 
     @Test("short discriminator skips wrong D and CM=0, takes MRP timing from TXT")
@@ -60,7 +79,7 @@ struct CommissionableDiscoveryTests {
             "open", port: 5543, txt: ["D": "3841", "CM": "1", "SII": "5000", "SAI": "300"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.short(15)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.short(15)))
 
         #expect(device.instanceName == "open")
         #expect(device.address == MatterAddress(host: "::1", port: 5543))
@@ -84,7 +103,7 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record("exact", port: 5542, txt: ["D": "3840", "CM": "2"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)))
 
         #expect(device.instanceName == "exact")
         #expect(device.commissioningMode == 2)
@@ -98,13 +117,14 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record("not-a-number", port: 5542, txt: ["D": "abc", "CM": "1"]))
         try await discovery.advertise(service: Self.record("negative", port: 5543, txt: ["D": "-256", "CM": "1"]))
         try await discovery.advertise(service: Self.record("max", port: 5544, txt: ["D": "4095", "CM": "1"]))
-        let controller = try Self.makeController(discovery)
+        let clock = Self.oneShotClock()
+        let controller = try Self.makeController(discovery, clock: clock)
 
-        let device = try await controller.findCommissionable(try Self.code(.long(4095)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.long(4095)))
         #expect(device.instanceName == "max")
 
         await #expect(throws: ControllerError.commissionableNotFound("no commissionable device with discriminator 3840")) {
-            try await controller.findCommissionable(try Self.code(.long(3840)), timeout: .milliseconds(200))
+            try await Self.searchUntilDeadline(controller, clock, try Self.code(.long(3840)))
         }
     }
 
@@ -126,7 +146,7 @@ struct CommissionableDiscoveryTests {
         let controller = try Self.makeController(discovery)
 
         let device = try await controller.findCommissionable(
-            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000), timeout: Self.hangGuard)
+            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000))
 
         #expect(device.instanceName == "right")
         #expect(device.vendorID == 0xFFF1)
@@ -147,7 +167,7 @@ struct CommissionableDiscoveryTests {
         let controller = try Self.makeController(discovery)
 
         let device = try await controller.findCommissionable(
-            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000), timeout: Self.hangGuard)
+            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000))
 
         #expect(device.instanceName == "partial")
         #expect(device.vendorID == vp.map { _ in 0xFFF1 })
@@ -171,7 +191,7 @@ struct CommissionableDiscoveryTests {
         let controller = try Self.makeController(discovery)
 
         let device = try await controller.findCommissionable(
-            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000), timeout: Self.hangGuard)
+            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000))
 
         #expect(device.instanceName == "partial")
         #expect(device.vendorID == vendorID)
@@ -185,7 +205,7 @@ struct CommissionableDiscoveryTests {
             "device", port: 5541, txt: ["D": "3840", "CM": "1", "VP": "65521"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.short(15)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.short(15)))
 
         #expect(device.vendorID == 0xFFF1)
         #expect(device.productID == nil)
@@ -198,7 +218,7 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record("second", port: 5542, txt: ["D": "3860", "CM": "1"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.short(15)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.short(15)))
 
         #expect(device.instanceName == "first")
         #expect(discovery.resolveCount(name: "second") == 0)
@@ -215,7 +235,7 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record("device", port: 5541, txt: ["D": "3840", "CM": "1"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)))
 
         #expect(device.address == MatterAddress(host: "fd00::1", port: 5541))
     }
@@ -229,7 +249,7 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record("literal", port: 5542, txt: ["D": "3840", "CM": "1"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)))
 
         #expect(device.instanceName == "literal")
         #expect(device.address == MatterAddress(host: "192.0.2.10", port: 5542))
@@ -266,7 +286,7 @@ struct CommissionableDiscoveryTests {
             "match", port: 5542, txt: ["D": "3840", "CM": "1", "SII": "5000"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)))
 
         #expect(device.instanceName == "match")
         #expect(device.address == MatterAddress(host: "::1", port: 5542))
@@ -277,14 +297,37 @@ struct CommissionableDiscoveryTests {
 
     // MARK: - Timing
 
+    /// Search for `code` with a 200 ms timeout on `clock`, and advance the
+    /// clock past it once the search is waiting on that deadline.
+    private static func searchUntilDeadline(
+        _ controller: MatterController,
+        _ clock: ManualClock,
+        _ code: SetupCode,
+        beforeAdvancing: @Sendable () async throws -> Void = {}
+    ) async throws -> CommissionableDevice {
+        let timeout = Duration.milliseconds(200)
+        let deadline = clock.now + timeout
+        let search = Task { try await controller.findCommissionable(code, timeout: timeout) }
+        do {
+            try await clock.awaitSleeper(until: deadline)
+            try await beforeAdvancing()
+        } catch {
+            search.cancel()
+            throw error
+        }
+        await clock.advance(by: timeout)
+        return try await search.value
+    }
+
     @Test("no match within the timeout throws commissionableNotFound naming the discriminator")
     func notFound() async throws {
         let discovery = Self.makeDiscovery()
         try await discovery.advertise(service: Self.record("other", port: 5541, txt: ["D": "1234", "CM": "1"]))
-        let controller = try Self.makeController(discovery)
+        let clock = Self.oneShotClock()
+        let controller = try Self.makeController(discovery, clock: clock)
 
         do {
-            _ = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: .milliseconds(200))
+            _ = try await Self.searchUntilDeadline(controller, clock, try Self.code(.long(3840)))
             Issue.record("expected commissionableNotFound")
         } catch let error as ControllerError {
             guard case .commissionableNotFound(let message) = error else {
@@ -303,8 +346,8 @@ struct CommissionableDiscoveryTests {
         let controller = try Self.makeController(discovery)
         let code = try Self.code(.long(3840))
 
-        let search = Task { try await controller.findCommissionable(code, timeout: Self.hangGuard) }
-        try await Self.awaitBrowse(discovery)
+        let search = Task { try await controller.findCommissionable(code) }
+        try await discovery.waitForActiveBrowse()
         discovery.finishBrowsing()
 
         await #expect(throws: ControllerError.discoveryFailed("browse ended before a match")) {
@@ -317,21 +360,19 @@ struct CommissionableDiscoveryTests {
         let inner = Self.makeDiscovery()
         try await inner.advertise(service: Self.record("slow", port: 5541, txt: ["D": "3840", "CM": "1"]))
         try await inner.advertise(service: Self.record("after", port: 5542, txt: ["D": "3840", "CM": "1"]))
-        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "slow", hangGuard: Self.hangGuard)
-        let controller = try MatterController(
-            transport: MockUDPTransport(),
-            discovery: discovery,
-            configuration: .init(fabricID: FabricID(rawValue: 1))
-        )
+        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "slow")
+        let clock = Self.oneShotClock()
+        let controller = try Self.makeController(discovery, clock: clock)
 
-        // The search throws at the deadline either way; a resolve that
-        // ignored the cancellation would hold it open until the hang guard,
-        // then finish uncancelled. A resolve not yet entered when the
-        // deadline fell (a starved runner) has nothing to cancel.
+        // The deadline falls only once the resolve is in flight. A resolve
+        // that ignored the cancellation would hold the search open: a hang,
+        // caught by the time limit.
         await #expect(throws: ControllerError.commissionableNotFound("no commissionable device with discriminator 3840")) {
-            try await controller.findCommissionable(try Self.code(.long(3840)), timeout: .milliseconds(200))
+            try await Self.searchUntilDeadline(controller, clock, try Self.code(.long(3840))) {
+                try await discovery.awaitResolveEntered()
+            }
         }
-        #expect(discovery.resolveCancelled == discovery.resolveEntered)
+        #expect(discovery.resolveCancelled)
         #expect(inner.resolveCount(name: "after") == 0)
     }
 
@@ -344,17 +385,26 @@ struct CommissionableDiscoveryTests {
         inner.setBrowseTXTHidden(true)
         try await inner.advertise(service: Self.record("stuck", port: 5541, txt: ["D": "3840", "CM": "1"]))
         try await inner.advertise(service: Self.record("match", port: 5542, txt: ["D": "3840", "CM": "1"]))
-        // The stuck resolve outlives the search: without the per-record bound
-        // the outcome is commissionableNotFound, deterministically.
-        let search = Self.hangGuard
-        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "stuck", hangGuard: search * 3)
-        let controller = try MatterController(
-            transport: MockUDPTransport(),
-            discovery: discovery,
-            configuration: .init(fabricID: FabricID(rawValue: 1), commissionableResolveTimeout: .milliseconds(200))
-        )
+        // The stuck resolve never completes on its own: without the
+        // per-record bound the search never reaches "match" (a hang, caught
+        // by the time limit). The search's own deadline never falls.
+        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "stuck")
+        let clock = Self.oneShotClock()
+        let resolveBound = Duration.milliseconds(200)
+        let controller = try Self.makeController(discovery, clock: clock, commissionableResolveTimeout: resolveBound)
+        let code = try Self.code(.long(3840))
+        let boundDeadline = clock.now + resolveBound
 
-        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: search)
+        let search = Task { try await controller.findCommissionable(code) }
+        do {
+            try await discovery.awaitResolveEntered()
+            try await clock.awaitSleeper(until: boundDeadline)
+        } catch {
+            search.cancel()
+            throw error
+        }
+        await clock.advance(by: resolveBound)
+        let device = try await search.value
 
         #expect(device.instanceName == "match")
         #expect(device.address == MatterAddress(host: "::1", port: 5542))
@@ -371,7 +421,7 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record("match", port: 5542, txt: ["D": "3840", "CM": "1"]))
         let controller = try Self.makeController(discovery)
 
-        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)))
 
         #expect(device.instanceName == "match")
         #expect(device.address == MatterAddress(host: "::1", port: 5542))
@@ -382,32 +432,17 @@ struct CommissionableDiscoveryTests {
     func callerCancelDuringResolve() async throws {
         let inner = Self.makeDiscovery()
         try await inner.advertise(service: Self.record("slow", port: 5541, txt: ["D": "3840", "CM": "1"]))
-        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "slow", hangGuard: Self.hangGuard)
-        let controller = try MatterController(
-            transport: MockUDPTransport(),
-            discovery: discovery,
-            configuration: .init(
-                fabricID: FabricID(rawValue: 1),
-                commissionableResolveTimeout: Self.hangGuard * 2
-            )
-        )
+        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "slow")
+        // Neither deadline can fall: the clock never moves.
+        let controller = try Self.makeController(discovery)
         let code = try Self.code(.long(3840))
 
-        let search = Task { try await controller.findCommissionable(code, timeout: Self.hangGuard * 2) }
-        try await discovery.awaitResolveEntered(within: Self.hangGuard)
+        let search = Task { try await controller.findCommissionable(code) }
+        try await discovery.awaitResolveEntered()
         search.cancel()
 
         await #expect(throws: CancellationError.self) { try await search.value }
         #expect(discovery.resolveCancelled)
-    }
-
-    /// Wait (bounded by the hang guard) until a browse stream is open.
-    private static func awaitBrowse(_ discovery: InMemoryDiscovery) async throws {
-        let deadline = ContinuousClock.now + Self.hangGuard
-        while discovery.activeBrowseCount == 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try #require(discovery.activeBrowseCount == 1)
     }
 
     @Test("a record advertised after the browse starts is found")
@@ -416,11 +451,11 @@ struct CommissionableDiscoveryTests {
         let controller = try Self.makeController(discovery)
         let code = try Self.code(.long(3840))
 
-        let search = Task { try await controller.findCommissionable(code, timeout: Self.hangGuard) }
+        let search = Task { try await controller.findCommissionable(code) }
         // Advertise only once the browse is registered, so the live-yield path
-        // (not the current-records path) is what finds it. Bounded by the
-        // same hang guard as the search.
-        try await Self.awaitBrowse(discovery)
+        // (not the current-records path) is what finds it.
+        try await discovery.waitForActiveBrowse()
+        try #require(discovery.activeBrowseCount == 1)
         try await discovery.advertise(service: Self.record("late", port: 5541, txt: ["D": "3840", "CM": "1"]))
 
         let device = try await search.value
@@ -432,47 +467,27 @@ struct CommissionableDiscoveryTests {
 // MARK: - Suspending Resolve
 
 /// Delegates to an `InMemoryDiscovery`, except that resolving the instance
-/// `suspending` waits until cancelled. If it is never cancelled, it resolves
-/// normally after `hangGuard`, so a missed cancellation shows as a result.
+/// `suspending` waits until it is cancelled, however long that takes: a
+/// missed cancellation shows as a hang, which the suite's time limit fails.
 private final class SuspendingResolveDiscovery: ServiceDiscovery, Sendable {
     private let inner: InMemoryDiscovery
     private let suspending: String
-    private let hangGuard: Duration
     private let cancelled = LockedValue(false)
     private let entered = LockedValue(false)
-    private let enteredSignal: AsyncStream<Void>
-    private let enteredSink: AsyncStream<Void>.Continuation
+    /// Never set: the suspended resolve waits on it until cancelled.
+    private let released = LockedValue(false)
 
-    init(inner: InMemoryDiscovery, suspending: String, hangGuard: Duration) {
+    init(inner: InMemoryDiscovery, suspending: String) {
         self.inner = inner
         self.suspending = suspending
-        self.hangGuard = hangGuard
-        (enteredSignal, enteredSink) = AsyncStream.makeStream(of: Void.self)
     }
-
-    /// Whether the suspending resolve was entered at all.
-    var resolveEntered: Bool { entered.value }
 
     var resolveCancelled: Bool { cancelled.value }
 
-    struct NotEntered: Error {}
-
-    /// Returns once the suspending resolve has been entered; throws
-    /// `NotEntered` if that has not happened within `bound` (a hang guard).
-    func awaitResolveEntered(within bound: Duration) async throws {
-        let signal = enteredSignal
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask {
-                for await _ in signal { return }
-                throw CancellationError()
-            }
-            group.addTask {
-                try await Task.sleep(for: bound)
-                throw NotEntered()
-            }
-            defer { group.cancelAll() }
-            try await group.next()
-        }
+    /// Returns once the suspending resolve has been entered (unbounded: the
+    /// time limit is the hang guard).
+    func awaitResolveEntered() async throws {
+        try await entered.wait { $0 }
     }
 
     func advertise(service: ServiceRecord) async throws {
@@ -490,9 +505,8 @@ private final class SuspendingResolveDiscovery: ServiceDiscovery, Sendable {
     func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
         if record.name == suspending {
             entered.withLock { $0 = true }
-            enteredSink.yield()
             do {
-                try await Task.sleep(for: hangGuard)
+                try await released.wait { $0 }
             } catch {
                 cancelled.withLock { $0 = true }
                 throw error

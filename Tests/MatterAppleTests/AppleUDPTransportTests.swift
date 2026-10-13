@@ -9,9 +9,17 @@ import MatterTransport
 
 // Network tests are serialized: they bind real sockets and using SO_REUSEPORT
 // means fixed-port tests can share a socket with a concurrent test, causing
-// the expected packet to be delivered to the wrong consumer.
-@Suite("AppleUDPTransport", .serialized)
+// the expected packet to be delivered to the wrong consumer. Waits for a
+// datagram have no deadline of their own: the time limit is the hang guard.
+@Suite("AppleUDPTransport", .serialized, .timeLimit(.minutes(1)))
 struct AppleUDPTransportTests {
+
+    /// The first datagram `transport` receives (no deadline: the suite's
+    /// time limit cancels the wait, and nil is returned).
+    private static func firstDatagram(_ transport: AppleUDPTransport) async -> (Data, MatterAddress)? {
+        for await datagram in transport.receive() { return datagram }
+        return nil
+    }
 
     @Test("Bind to ephemeral port and close")
     func bindAndClose() async throws {
@@ -35,20 +43,7 @@ struct AppleUDPTransportTests {
 
         try await sender.send(testData, to: address)
 
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: Data?.self) { group in
-            group.addTask {
-                for await (data, _) in stream { return data }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(2))
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)?.0
 
         await receiver.close()
         await sender.close()
@@ -68,21 +63,7 @@ struct AppleUDPTransportTests {
         let testData = Data([0x5B, 0x3A, 0x3A, 0x31, 0x5D])
         try await sender.send(testData, to: MatterAddress(host: "[::1]", port: receiverPort))
 
-        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: Data?.self) { group in
-            group.addTask {
-                for await (data, _) in stream { return data }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: hangGuard)
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)?.0
 
         await receiver.close()
         await sender.close()
@@ -105,20 +86,7 @@ struct AppleUDPTransportTests {
 
         try await sender.send(testData, to: address)
 
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: (Data, MatterAddress)?.self) { group in
-            group.addTask {
-                for await pair in stream { return pair }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(2))
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)
 
         await receiver.close()
         await sender.close()

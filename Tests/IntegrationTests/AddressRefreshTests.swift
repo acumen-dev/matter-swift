@@ -26,21 +26,13 @@ struct AddressRefreshTests {
 
     static let retransmissions = 4
 
-    /// On top of every protocol-derived bound; never a latency budget.
-    static let hangGuard = Duration.seconds(10)
+    /// The deadline tests' `discoveryTimeout`: a resolve bounded by it
+    /// instead of by the bound under test registers a different deadline on
+    /// the test's clock, which the test asserts before advancing it.
+    static let longDiscoveryTimeout = Duration.seconds(60)
 
-    /// How long a suspended operational resolve waits for its cancellation
-    /// before completing anyway (so a missed deadline shows as a result).
-    static let suspendGuard = Duration.seconds(30)
-
-    /// The deadline tests' `discoveryTimeout`: past `suspendGuard`, so a
-    /// resolve bounded by it instead of the bound under test would run on to
-    /// complete — failing the primary assertions deterministically (with
-    /// the device's address in `refreshDeadline`; with `notFound` in
-    /// `discoverDeviceDeadline`, where nothing is advertised).
-    static let longDiscoveryTimeout = suspendGuard * 2
-
-    struct HangGuard: Error {}
+    /// The bound under test in the deadline tests.
+    static let shortBound = Duration.milliseconds(200)
 
     /// Commissionable records resolve to the device; operational ones to `operational`.
     private static func makeDiscovery(
@@ -58,29 +50,32 @@ struct AddressRefreshTests {
         try await operationalRecord(discovery).name
     }
 
+    /// No deadline: the suite's `.timeLimit` is the hang guard (its
+    /// cancellation ends the browse).
     private static func operationalRecord(_ discovery: any ServiceDiscovery) async throws -> ServiceRecord {
-        try await withThrowingTaskGroup(of: ServiceRecord.self) { group in
-            group.addTask {
-                for await record in discovery.browse(serviceType: .operational) { return record }
-                throw CancellationError()
-            }
-            group.addTask {
-                try await Task.sleep(for: hangGuard)
-                throw HangGuard()
-            }
-            defer { group.cancelAll() }
-            return try await group.next()!
-        }
+        for await record in discovery.browse(serviceType: .operational) { return record }
+        throw CancellationError()
     }
 
-    /// Poll until `condition` holds or `bound` passes.
-    private static func waitUntil(within bound: Duration, _ condition: @Sendable () async -> Bool) async throws -> Bool {
-        let deadline = ContinuousClock.now + bound
-        while ContinuousClock.now < deadline {
-            if await condition() { return true }
-            try await Task.sleep(for: .milliseconds(20))
+    /// Runs `operation` until it suspends on the refresh or discovery
+    /// deadline, checks that deadline is `shortBound` away (not, say,
+    /// `discoveryTimeout`), then lets it fall.
+    private static func runPastShortBound<T: Sendable>(
+        _ clock: ManualClock,
+        _ discovery: SuspendingOperationalDiscovery,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let task = Task { try await operation() }
+        do {
+            try await discovery.awaitResolveEntered()
+            try await clock.awaitSleepers(atLeast: 1)
+            try #require(clock.nextSleeperDeadline == clock.now + shortBound, "the resolve is bounded by the bound under test")
+        } catch {
+            task.cancel()
+            throw error
         }
-        return await condition()
+        await clock.advance(by: shortBound)
+        return try await task.value
     }
 
     private static func readOnOff(_ controller: MatterController, _ device: CommissionedDevice, _ light: BridgedEndpoint) async throws -> TLVElement {
@@ -254,20 +249,22 @@ struct AddressRefreshTests {
     @Test("discoverDevice gives up at its timeout when the resolve never completes")
     func discoverDeviceDeadline() async throws {
         let link = FaultInjectingLink(seed: 67)
-        let discovery = SuspendingOperationalDiscovery(
-            inner: InMemoryDiscovery { _ in link.b.address }, hangGuard: Self.suspendGuard
-        )
+        let discovery = SuspendingOperationalDiscovery(inner: InMemoryDiscovery { _ in link.b.address })
+        let clock = ManualClock(quiescenceYieldLimit: 0)
         let controller = try MatterController(
             transport: link.a,
             discovery: discovery,
             configuration: .init(
                 fabricID: FabricID(rawValue: 1),
                 mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
-                discoveryTimeout: Self.longDiscoveryTimeout
+                discoveryTimeout: Self.longDiscoveryTimeout,
+                discoveryClock: clock
             )
         )
         await #expect {
-            _ = try await controller.discoverDevice(nodeID: NodeID(rawValue: 2), timeout: .milliseconds(200))
+            _ = try await Self.runPastShortBound(clock, discovery) {
+                try await controller.discoverDevice(nodeID: NodeID(rawValue: 2), timeout: Self.shortBound)
+            }
         } throws: { error in
             if case ControllerError.discoveryFailed = error { return true }
             return false
@@ -280,10 +277,9 @@ struct AddressRefreshTests {
     func refreshDeadline() async throws {
         let link = FaultInjectingLink(seed: 68)
         let operational = LockedValue(link.b.address)
-        let discovery = SuspendingOperationalDiscovery(
-            inner: Self.makeDiscovery(link, operational: operational), hangGuard: Self.suspendGuard
-        )
+        let discovery = SuspendingOperationalDiscovery(inner: Self.makeDiscovery(link, operational: operational))
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0), discovery: discovery)
+        let clock = ManualClock(quiescenceYieldLimit: 0)
         let controller = try MatterController(
             transport: link.a,
             discovery: discovery,
@@ -291,16 +287,17 @@ struct AddressRefreshTests {
                 fabricID: FabricID(rawValue: 1),
                 mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
                 discoveryTimeout: Self.longDiscoveryTimeout,
-                addressRefreshTimeout: .milliseconds(200)
+                addressRefreshTimeout: Self.shortBound,
+                discoveryClock: clock
             )
         )
 
         do {
             let (device, _) = try await Self.commissionThenGoStale(controller, link, discovery)
-            // Had the deadline been missed, the resolve would complete after
-            // the suspend guard, and the retry at the device's address succeed.
             await #expect(throws: ControllerError.peerUnreachable(device.nodeID)) {
-                _ = try await Self.readOnOff(controller, device, light)
+                _ = try await Self.runPastShortBound(clock, discovery) {
+                    try await Self.readOnOff(controller, device, light)
+                }
             }
             #expect(discovery.resolveCancelled)
             #expect(await controller.device(for: device.nodeID)?.operationalAddress == Self.stale)
@@ -468,8 +465,10 @@ struct AddressRefreshTests {
                     }
                 }
             }
-            #expect(try await Self.waitUntil(within: Self.hangGuard) { established.value.count == 1 && !values.value.isEmpty })
-            let maxInterval = try #require(established.value.first)
+            // Waits below have no deadline: the suite's `.timeLimit` is the
+            // hang guard.
+            try await established.wait { $0.count == 1 }
+            try await values.wait { !$0.isEmpty }
 
             // The device moves: it sends from the new address, its old one
             // goes dead both ways, and its advert names the new one. It is
@@ -491,24 +490,19 @@ struct AddressRefreshTests {
 
             // Lost one granted max interval plus the MRP exhaustion horizon
             // after the last report (the priming one, before the move).
-            let exhaustion = MRPConfig(peer: fast, maxRetransmissions: Self.retransmissions)
-                .exhaustionHorizon(peerActive: false)
-            let liveness = Duration.seconds(Int(maxInterval)) + exhaustion
-            #expect(try await Self.waitUntil(within: liveness + Self.hangGuard) { lost.value >= 1 }, "declared lost")
+            try await lost.wait { $0 >= 1 }
 
             // Re-established after: the first backoff; a re-subscribe on the
             // cached (dead) session that exhausts; the second backoff; and a
             // CASE attempt at the old address that exhausts before the
             // refresh and the handshake at the new one.
-            let reestablish = ControllerSubscription.backoff(attempt: 0) + exhaustion
-                + ControllerSubscription.backoff(attempt: 1) + exhaustion
-            #expect(try await Self.waitUntil(within: reestablish + Self.hangGuard) { established.value.count >= 2 }, "re-subscribed")
+            try await established.wait { $0.count >= 2 }
 
             _ = try await controller.invokeCommand(
                 nodeID: device.nodeID, endpointID: light.endpointID,
                 clusterID: .onOff, commandID: OnOffCluster.Command.toggle
             )
-            #expect(try await Self.waitUntil(within: Self.hangGuard) { values.value.contains(true) }, "the toggle is reported")
+            try await values.wait { $0.contains(true) } // the toggle is reported
             #expect(await controller.device(for: device.nodeID)?.operationalAddress == moved)
             #expect(await controller.device(for: device.nodeID)?.mrpParameters == Self.advertisedMRP)
             #expect(discovery.resolveCount(name: name, serviceType: .operational) == 1)
@@ -557,19 +551,26 @@ private final class MovableEndpoint: MatterUDPTransport, Sendable {
 }
 
 /// Delegates to `inner`, except that resolving an operational instance
-/// waits until cancelled. If it is never cancelled, it resolves normally
-/// after `hangGuard`, so a missed deadline shows as a result.
+/// waits until it is cancelled, however long that takes: a missed deadline
+/// shows as a hang, which the suite's time limit fails (and the deadline
+/// tests check which deadline is pending before they let it fall).
 private final class SuspendingOperationalDiscovery: ServiceDiscovery, Sendable {
     private let inner: InMemoryDiscovery
-    private let hangGuard: Duration
     private let cancelled = LockedValue(false)
+    private let entered = LockedValue(false)
+    /// Never set: a suspended resolve waits on it until cancelled.
+    private let released = LockedValue(false)
 
-    init(inner: InMemoryDiscovery, hangGuard: Duration) {
+    init(inner: InMemoryDiscovery) {
         self.inner = inner
-        self.hangGuard = hangGuard
     }
 
     var resolveCancelled: Bool { cancelled.value }
+
+    /// Returns once an operational resolve has been entered (no deadline).
+    func awaitResolveEntered() async throws {
+        try await entered.wait { $0 }
+    }
 
     func advertise(service: ServiceRecord) async throws {
         try await inner.advertise(service: service)
@@ -585,8 +586,9 @@ private final class SuspendingOperationalDiscovery: ServiceDiscovery, Sendable {
 
     func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
         if record.serviceType == .operational {
+            entered.withLock { $0 = true }
             do {
-                try await Task.sleep(for: hangGuard)
+                try await released.wait { $0 }
             } catch {
                 cancelled.withLock { $0 = true }
                 throw error

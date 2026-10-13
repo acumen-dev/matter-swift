@@ -78,18 +78,25 @@ func startServer(
     return (server, light)
 }
 
+/// A controller on the link's `a` side. Its discovery deadlines (search,
+/// per-record resolve, address refresh) run on `discoveryClock`, by default
+/// one that never moves: in-memory discovery answers at once, so a deadline
+/// could only ever fall because a loaded host was slow to schedule the
+/// answer. MRP and the operation timeouts stay on the real clock.
 func makeController(
     on link: FaultInjectingLink,
     maxRetransmissions: Int,
     discovery: any MatterDiscovery = FaultyLinkDiscovery(),
-    store: (any MatterControllerStore)? = nil
+    store: (any MatterControllerStore)? = nil,
+    discoveryClock: any MRPClock = ManualClock()
 ) throws -> MatterController {
     try MatterController(
         transport: link.a,
         discovery: discovery,
         configuration: .init(
             fabricID: FabricID(rawValue: 1),
-            mrp: MRPConfig(maxRetransmissions: maxRetransmissions)
+            mrp: MRPConfig(maxRetransmissions: maxRetransmissions),
+            discoveryClock: discoveryClock
         ),
         store: store
     )

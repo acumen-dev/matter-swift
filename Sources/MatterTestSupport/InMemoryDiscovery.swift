@@ -84,6 +84,14 @@ public final class InMemoryDiscovery: ServiceDiscovery, Sendable {
         state.withLock { $0.browsers.count }
     }
 
+    /// Returns once at least `count` browse streams are open — at once if
+    /// they already are. Woken by the `browse` that opens one, so it has no
+    /// deadline: the test's `.timeLimit` bounds it. Throws
+    /// `CancellationError` if the calling task is cancelled first.
+    public func waitForActiveBrowse(count: Int = 1) async throws {
+        try await state.wait { $0.browsers.count >= count }
+    }
+
     // MARK: - ServiceDiscovery
 
     public func advertise(service: ServiceRecord) async throws {

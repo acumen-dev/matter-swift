@@ -440,12 +440,10 @@ struct DuplicateHandlingTests {
 
     // MARK: - Waiting for outcomes
 
+    /// Waits for the device to have sent `count` messages. No deadline: the
+    /// suite's `.timeLimit` is the hang guard.
     private func waitForSentCount(_ transport: MockServerUDPTransport, atLeast count: Int) async throws {
-        let deadline = ContinuousClock.now + .seconds(10)
-        while transport.sentCount < count {
-            guard ContinuousClock.now < deadline else { throw DuplicateTestError.timedOut }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        try await transport.awaitSent(atLeast: count)
     }
 
     private func waitForFrame(
@@ -457,26 +455,28 @@ struct DuplicateHandlingTests {
         _ = try await waitForFrameValue(transport, after: start, session: session, where: predicate)
     }
 
-    /// The first frame sent after `start` matching `predicate` (polled, with a hang guard).
+    /// The first frame sent after `start` matching `predicate`. Each sent
+    /// frame is decoded once, as it arrives; no deadline (the suite's
+    /// `.timeLimit` is the hang guard).
     private func waitForFrameValue(
         _ transport: MockServerUDPTransport,
         after start: Int,
         session: SecureSession,
         where predicate: (Frame) -> Bool
     ) async throws -> Frame {
-        let deadline = ContinuousClock.now + .seconds(10)
+        var next = start
         while true {
-            let frames = try Self.decodeFrames(Array(transport.sentMessages[start...]), session: session)
+            try await transport.awaitSent(atLeast: next + 1)
+            let sent = transport.sentMessages
+            let frames = try Self.decodeFrames(Array(sent[next...]), session: session)
+            next = sent.count
             if let frame = frames.first(where: predicate) { return frame }
-            guard ContinuousClock.now < deadline else { throw DuplicateTestError.timedOut }
-            try await Task.sleep(for: .milliseconds(20))
         }
     }
 }
 
 private enum DuplicateTestError: Error {
     case paseFailed
-    case timedOut
 }
 
 /// Counts OnOff changes reported by the bridged light.

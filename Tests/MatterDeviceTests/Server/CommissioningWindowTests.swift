@@ -6,6 +6,7 @@ import Foundation
 @testable import MatterDevice
 import MatterTypes
 import MatterTransport
+import MatterTestSupport
 
 /// The commissioning window can be opened on demand, and the commissionable
 /// advertisement exists only while it is open — a controller browsing for
@@ -32,19 +33,10 @@ struct CommissioningWindowTests {
         await discovery.services(ofType: .commissionable).last { $0.name == instanceName }
     }
 
-    /// Outcome wait: polls until `condition` holds, failing after `timeout`.
-    private func waitUntil(
-        timeout: Duration = .seconds(10),
-        _ condition: () async -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !(await condition()) {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("condition not met within \(timeout)")
-                return
-            }
-            try await Task.sleep(for: .milliseconds(20))
-        }
+    /// Outcome wait: polls until `condition` holds. No deadline: the suite's
+    /// `.timeLimit` is the only hang guard.
+    private func waitUntil(_ condition: () async -> Bool) async throws {
+        try await pollUntil { await condition() }
     }
 
     @Test("A fresh device opens its window and advertises CM=1 with discriminator subtypes")

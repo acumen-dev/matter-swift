@@ -50,17 +50,6 @@ struct ControllerIMClientTests {
         await controller.stop(); await server.stop()
     }
 
-    /// Poll until `condition` holds. The ceiling is a hang guard, not a latency
-    /// budget: passing runs return as soon as the outcome holds.
-    private func waitUntil(_ condition: @Sendable () async -> Bool) async throws -> Bool {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while ContinuousClock.now < deadline {
-            if await condition() { return true }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        return await condition()
-    }
-
     @Test("A subscription delivers the priming report and a report after a toggle")
     func subscribeAndReport() async throws {
         let link = FaultInjectingLink(seed: 12)
@@ -80,9 +69,9 @@ struct ControllerIMClientTests {
                     }
                 }
             }
-            #expect(try await waitUntil { seen.value.first == false }, "priming report states the current value")
+            try await seen.wait { $0.first == false } // priming report states the current value
             _ = try await controller.invokeCommand(nodeID: device.nodeID, endpointID: light.endpointID, clusterID: .onOff, commandID: OnOffCluster.Command.toggle)
-            #expect(try await waitUntil { seen.value.contains(true) }, "the toggle is reported")
+            try await seen.wait { $0.contains(true) } // the toggle is reported
             await subscription.cancel()
             reader.cancel()
         } catch {
@@ -116,12 +105,12 @@ struct ControllerIMClientTests {
                     }
                 }
             }
-            #expect(try await waitUntil { log.value == ["established"] })
+            try await log.wait { $0 == ["established"] }
             link.setDropProbability(1.0, from: .b)    // the device goes silent
-            #expect(try await waitUntil { log.value.contains("lost") })
+            try await log.wait { $0.contains("lost") }
             #expect(first.value?.hasPrefix("no report within") == true)
             link.setDropProbability(0.0, from: .b)    // and comes back
-            #expect(try await waitUntil { log.value.filter { $0 == "established" }.count >= 2 }, "re-subscribed")
+            try await log.wait { $0.filter { $0 == "established" }.count >= 2 } // re-subscribed
             await subscription.cancel()
             reader.cancel()
         } catch {
@@ -146,7 +135,7 @@ struct ControllerIMClientTests {
                 finished.withLock { $0 = true }
             }
             await controller.stop()
-            #expect(try await waitUntil { finished.value }, "events finishes once the controller stops")
+            try await finished.wait { $0 } // events finishes once the controller stops
             reader.cancel()
         } catch {
             await controller.stop(); await server.stop()
@@ -197,11 +186,11 @@ struct ControllerIMClientTests {
                     }
                 }
             }
-            #expect(try await waitUntil { established.value == 1 })
+            try await established.wait { $0 == 1 }
             link.setDropProbability(1.0, from: .b)
-            #expect(try await waitUntil { reasons.value.contains { $0.hasPrefix("re-subscribe failed") } })
+            try await reasons.wait { $0.contains { $0.hasPrefix("re-subscribe failed") } }
             link.setDropProbability(0.0, from: .b)
-            #expect(try await waitUntil { established.value >= 2 }, "re-subscribed")
+            try await established.wait { $0 >= 2 } // re-subscribed
             let after = try await controller.session(for: device.nodeID).localSessionID
             #expect(after != before, "the dead session was replaced by a fresh handshake")
             await subscription.cancel()
@@ -244,7 +233,7 @@ struct ControllerIMClientTests {
                 }
             }
             await controller.stop()
-            #expect(try await waitUntil { finished.value == 5 }, "every subscription's events finishes")
+            try await finished.wait { $0 == 5 } // every subscription's events finishes
             readers.forEach { $0.cancel() }
         } catch {
             await controller.stop(); await server.stop()

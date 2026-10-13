@@ -40,6 +40,7 @@ public final class ManualClock: MRPClock, Sendable {
 
     private struct Step: Sendable {
         let sleepers: [Sleeper]
+        let sleeperIDs: [UInt64]
         let actions: [@Sendable () -> Void]
         let sleeperCountBefore: Int
     }
@@ -50,6 +51,12 @@ public final class ManualClock: MRPClock, Sendable {
 
     private let state: Mutex<State>
     private let timeouts = Mutex(0)
+
+    /// The deadlines of the registered sleepers, by sleeper ID: a mirror of
+    /// `state.sleepers` that ``awaitSleepers(atLeast:)`` and
+    /// ``awaitSleeper(until:)`` wait on. Updated after `state`, so a waiter
+    /// woken by a registration finds the sleeper in place.
+    private let registered = LockedValue<[UInt64: ContinuousClock.Instant]>([:])
 
     /// Bound on the scheduler yields spent waiting for sleepers to re-register.
     /// The default is large enough to outlast an OS preemption of the woken
@@ -104,7 +111,7 @@ public final class ManualClock: MRPClock, Sendable {
                 }
                 switch registration {
                 case .waiting:
-                    break
+                    registered.withLock { $0[id] = deadline }
                 case .resumeNow:
                     continuation.resume()
                 case .cancelled:
@@ -119,8 +126,23 @@ public final class ManualClock: MRPClock, Sendable {
                 state.cancelledBeforeRegistration.insert(id)
                 return nil
             }
+            registered.withLock { _ = $0.removeValue(forKey: id) }
             sleeper?.continuation.resume(throwing: CancellationError())
         }
+    }
+
+    /// Returns once at least `count` sleepers are registered — at once if
+    /// they already are. Woken by the registration itself, so it has no
+    /// bound of its own: the test's `.timeLimit` is the hang guard. Throws
+    /// `CancellationError` if the calling task is cancelled first.
+    public func awaitSleepers(atLeast count: Int) async throws {
+        try await registered.wait { $0.count >= count }
+    }
+
+    /// Returns once a sleeper waits for exactly `deadline` (unbounded, as
+    /// ``awaitSleepers(atLeast:)``).
+    public func awaitSleeper(until deadline: ContinuousClock.Instant) async throws {
+        try await registered.wait { $0.values.contains(deadline) }
     }
 
     /// Run `action` when ``advance(by:)`` reaches `deadline` — immediately if
@@ -157,14 +179,19 @@ public final class ManualClock: MRPClock, Sendable {
                 }
                 let countBefore = state.sleepers.count
                 let dueSleepers = state.sleepers.filter { $0.value.deadline <= earliest }.map(\.key).sorted()
+
                 let dueActions = state.scheduled.filter { $0.value.deadline <= earliest }.map(\.key).sorted()
                 return Step(
                     sleepers: dueSleepers.compactMap { state.sleepers.removeValue(forKey: $0) },
+                    sleeperIDs: dueSleepers,
                     actions: dueActions.compactMap { state.scheduled.removeValue(forKey: $0)?.action },
                     sleeperCountBefore: countBefore
                 )
             }
             guard let step else { break }
+            registered.withLock { registered in
+                for id in step.sleeperIDs { registered.removeValue(forKey: id) }
+            }
             for action in step.actions {
                 action()
             }

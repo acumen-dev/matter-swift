@@ -10,8 +10,17 @@ import NIOCore
 import NIOPosix
 
 // Network tests bind real sockets; serialise to avoid port-sharing races.
-@Suite("MatterLinux Tests", .serialized)
+// Waits for a datagram have no deadline of their own: the time limit is the
+// hang guard.
+@Suite("MatterLinux Tests", .serialized, .timeLimit(.minutes(1)))
 struct MatterLinuxTests {
+
+    /// The first datagram `transport` receives (no deadline: the suite's
+    /// time limit cancels the wait, and nil is returned).
+    private static func firstDatagram(_ transport: LinuxUDPTransport) async -> (Data, MatterAddress)? {
+        for await datagram in transport.receive() { return datagram }
+        return nil
+    }
 
     // MARK: - DNS Name Encoding
 
@@ -178,22 +187,7 @@ struct MatterLinuxTests {
 
         try await sender.send(testPayload, to: target)
 
-        // Collect the first datagram, bounded by a hang guard.
-        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: Data?.self) { group in
-            group.addTask {
-                for await (data, _) in stream { return data }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: hangGuard)
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)?.0
 
         await receiver.close()
         await sender.close()
@@ -213,21 +207,7 @@ struct MatterLinuxTests {
         let testPayload = Data("bracketed".utf8)
         try await sender.send(testPayload, to: MatterAddress(host: "[::1]", port: receiverPort))
 
-        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: Data?.self) { group in
-            group.addTask {
-                for await (data, _) in stream { return data }
-                return nil
-            }
-            group.addTask {
-                try? await Task.sleep(for: hangGuard)
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)?.0
 
         await receiver.close()
         await sender.close()
@@ -255,22 +235,7 @@ struct MatterLinuxTests {
             data: buffer
         )).get()
 
-        let hangGuard: Duration = .seconds(30) // Hang guard only, not a timing assertion.
-        let stream = receiver.receive()
-        let received = await withTaskGroup(of: MatterAddress?.self) { group in
-            group.addTask {
-                for await (_, address) in stream { return address }
-                return nil
-            }
-            group.addTask {
-                // Hang guard only; the datagram is on loopback.
-                try? await Task.sleep(for: hangGuard)
-                return nil
-            }
-            let result = await group.next()!
-            group.cancelAll()
-            return result
-        }
+        let received = await Self.firstDatagram(receiver)?.1
 
         try await sender.close().get()
         try await group.shutdownGracefully()
