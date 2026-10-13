@@ -301,10 +301,11 @@ public actor MatterController {
     /// matches: `D` is a 12-bit value the code's discriminator matches, and
     /// `CM` is non-zero. Vendor and product are checked only when the code
     /// carries them, and, as chip-tool's `SetUpCodePairer` does, only
-    /// against what the record advertises: a missing `VP`, or a `VP` without
-    /// the `+pid` part, leaves that ID unknown and passes; only an
-    /// advertised ID that differs (or does not parse) rejects. A record
-    /// browsed without TXT is resolved and filtered on the resolved TXT. The match is resolved
+    /// against what the record advertises: a missing `VP`, a `VP` without
+    /// the `+pid` part, or an empty part (`VP=`, `65521+`, `+32768`) leaves
+    /// that ID unknown and passes; only an advertised ID that differs (or is
+    /// non-empty and does not parse) rejects. A record browsed without TXT
+    /// is resolved and filtered on the resolved TXT. The match is resolved
     /// for its address and final TXT, from which `mrp` is built; the
     /// address's host is a bare IP literal (an IPv6 host without the
     /// brackets discovery gives it). A record whose resolve fails, does not

@@ -120,6 +120,8 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record(
             "garbled", port: 5544, txt: ["D": "3840", "CM": "1", "VP": "x+32768"]))
         try await discovery.advertise(service: Self.record(
+            "garbled-pid", port: 5546, txt: ["D": "3840", "CM": "1", "VP": "65521+y"]))
+        try await discovery.advertise(service: Self.record(
             "right", port: 5545, txt: ["D": "3840", "CM": "1", "VP": "65521+32768"]))
         let controller = try Self.makeController(discovery)
 
@@ -150,6 +152,30 @@ struct CommissionableDiscoveryTests {
         #expect(device.instanceName == "partial")
         #expect(device.vendorID == vp.map { _ in 0xFFF1 })
         #expect(device.productID == nil)
+    }
+
+    @Test(
+        "an empty VP part is absent, not unparseable, and passes a code carrying VID+PID",
+        arguments: [
+            ("", nil, nil),
+            ("65521+", 0xFFF1, nil),
+            ("+32768", nil, 0x8000),
+        ] as [(String, UInt16?, UInt16?)]
+    )
+    func emptyVendorProductPartPasses(vp: String, vendorID: UInt16?, productID: UInt16?) async throws {
+        let discovery = Self.makeDiscovery()
+        try await discovery.advertise(service: Self.record(
+            "other-vendor", port: 5541, txt: ["D": "3840", "CM": "1", "VP": "65522+32768"]))
+        try await discovery.advertise(service: Self.record(
+            "partial", port: 5542, txt: ["D": "3840", "CM": "1", "VP": vp]))
+        let controller = try Self.makeController(discovery)
+
+        let device = try await controller.findCommissionable(
+            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000), timeout: Self.hangGuard)
+
+        #expect(device.instanceName == "partial")
+        #expect(device.vendorID == vendorID)
+        #expect(device.productID == productID)
     }
 
     @Test("a code without VID/PID does not filter on VP, but the device still reports it")

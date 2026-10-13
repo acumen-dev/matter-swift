@@ -45,9 +45,10 @@ extension CommissionableDevice {
         ///   otherwise match 3840).
         /// - `CM` must parse and be non-zero (not in commissioning mode).
         /// - `VP` is filtered only on the IDs the code carries, and only where
-        ///   advertised: an absent `VP` or absent `+pid` part is unknown and
-        ///   passes (chip-tool's `SetUpCodePairer`); an advertised ID that
-        ///   differs or does not parse rejects.
+        ///   advertised: an absent `VP`, an absent `+pid` part, or an empty
+        ///   part (`VP=`, `65521+`, `+32768`) is unknown and passes
+        ///   (chip-tool's `SetUpCodePairer`); an advertised ID that differs,
+        ///   or a non-empty part that does not parse, rejects.
         init?(txt: [String: String], matching code: SetupCode) {
             guard let dText = txt["D"], let d = UInt16(dText), d <= 0xFFF,
                   code.discriminator.matches(d) else { return nil }
@@ -65,11 +66,13 @@ extension CommissionableDevice {
             self.productID = pid
         }
 
-        /// `VP` is "vid" or "vid+pid", decimal. A part that is absent is nil.
+        /// `VP` is "vid" or "vid+pid", decimal. A part that is absent or
+        /// empty is nil (unknown).
         private static func splitVP(_ text: String?) -> (Substring?, Substring?) {
             guard let text else { return (nil, nil) }
             let parts = text.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
-            return (parts.first, parts.count > 1 ? parts[1] : nil)
+            let present = { (part: Substring?) in part.flatMap { $0.isEmpty ? nil : $0 } }
+            return (present(parts.first), present(parts.count > 1 ? parts[1] : nil))
         }
     }
 
