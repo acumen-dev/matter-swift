@@ -87,10 +87,13 @@ struct AddressRefreshTests {
 
     /// Commission, wait for the operational advert, drop the CASE session and
     /// record `stale` as the node's address; everything sent to it is lost.
+    /// `recordedAs` is the text the stale address is recorded under: another
+    /// spelling of `stale` must behave as `stale` does.
     private static func commissionThenGoStale(
         _ controller: MatterController,
         _ link: FaultInjectingLink,
-        _ discovery: any ServiceDiscovery
+        _ discovery: any ServiceDiscovery,
+        recordedAs: MatterAddress = stale
     ) async throws -> (CommissionedDevice, String) {
         let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
         // The CASE attempt at `stale` must give up quickly; the stored timing
@@ -98,7 +101,7 @@ struct AddressRefreshTests {
         await controller.setMRPParameters(fast, for: device.nodeID)
         let name = try await operationalName(discovery)
         await controller.invalidateSession(for: device.nodeID)
-        await controller.updateOperationalAddress(stale, mrp: nil, for: device.nodeID)
+        await controller.updateOperationalAddress(recordedAs, mrp: nil, for: device.nodeID)
         link.setAddressedInterceptor { _, side, destination in
             side == .a && destination == stale ? .drop : .deliver(after: .zero)
         }
@@ -337,8 +340,11 @@ struct AddressRefreshTests {
 
     // MARK: - (c) same address
 
-    @Test("When the record resolves to the address tried, the original error is thrown and Sigma1 is sent there once")
-    func sameAddressDoesNotRetry() async throws {
+    @Test(
+        "When the record resolves to the address tried, the original error is thrown and Sigma1 is sent there once",
+        arguments: [stale.host, "::ffff:\(stale.host)"]
+    )
+    func sameAddressDoesNotRetry(recordedHost: String) async throws {
         let link = FaultInjectingLink(seed: 63)
         let operational = LockedValue(Self.stale)
         let discovery = Self.makeDiscovery(link, operational: operational)
@@ -346,7 +352,11 @@ struct AddressRefreshTests {
         let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery)
 
         do {
-            let (device, name) = try await Self.commissionThenGoStale(controller, link, discovery)
+            // A stored address in another spelling (as saved before addresses
+            // were canonicalised) is still the address tried.
+            let (device, name) = try await Self.commissionThenGoStale(
+                controller, link, discovery, recordedAs: MatterAddress(host: recordedHost, port: Self.stale.port)
+            )
 
             await #expect(throws: ControllerError.peerUnreachable(device.nodeID)) {
                 _ = try await Self.readOnOff(controller, device, light)

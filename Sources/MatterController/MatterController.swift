@@ -405,7 +405,7 @@ public actor MatterController {
             return nil
         }
         guard let address = resolved.address.withIPLiteralHost else {
-            logger.notice("Skipping commissionable instance \(record.name): it resolved to a host name, not an IP address")
+            logger.notice("Skipping commissionable instance \(record.name): it resolved to a host name or a zoned IPv6 address, not a bare IP literal")
             return nil
         }
         return CommissionableDevice(
@@ -484,8 +484,9 @@ public actor MatterController {
     ///   - timeout: How long to wait for the resolution (default:
     ///     `configuration.discoveryTimeout`).
     /// - Throws: `ControllerError.discoveryFailed` when nothing resolves in
-    ///   time, or the node resolves to a host name rather than an IP
-    ///   address; the discovery's error if resolution fails;
+    ///   time, or the node resolves to a host name or an IPv6 literal with a
+    ///   `%<zone>` rather than a bare IP literal; the discovery's error if
+    ///   resolution fails;
     ///   `CancellationError` if the calling task is cancelled.
     public func discoverDevice(nodeID: NodeID, timeout: Duration? = nil) async throws -> (address: MatterAddress, mrp: MRPParameters?) {
         let resolved = try await resolveOperational(nodeID: nodeID, timeout: timeout)
@@ -499,8 +500,8 @@ public actor MatterController {
 
     /// Resolve `nodeID`'s operational instance, bounded by `timeout`
     /// (default: `configuration.discoveryTimeout`). The host is normalised
-    /// to a bare IP literal; a host name throws `discoveryFailed` (naming
-    /// the node, not the host). The TXT is returned as resolved, so a
+    /// to a bare IP literal; a host name or a zoned IPv6 literal throws
+    /// `discoveryFailed` (naming the node, not the host). The TXT is returned as resolved, so a
     /// caller can tell an empty one from one with defaults.
     private func resolveOperational(nodeID: NodeID, timeout: Duration? = nil) async throws -> ResolvedService {
         let limit = timeout ?? configuration.discoveryTimeout
@@ -525,7 +526,7 @@ public actor MatterController {
             return first
         }
         guard let address = resolved.address.withIPLiteralHost else {
-            throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name, not an IP address")
+            throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
         }
         return ResolvedService(address: address, txtRecords: resolved.txtRecords)
     }
@@ -555,7 +556,7 @@ public actor MatterController {
     ///   literal with a `%<zone>`; the discovery's error if resolution fails.
     public func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
         guard let address = try await discovery.resolve(record).withIPLiteralHost else {
-            throw ControllerError.discoveryFailed("\(record.name) resolved to a host name, not an IP address")
+            throw ControllerError.discoveryFailed("\(record.name) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
         }
         return address
     }
@@ -1391,7 +1392,8 @@ public actor MatterController {
             return nil
         }
         guard !stopped, await registry.device(for: nodeID) != nil else { return nil }
-        guard resolved.address != tried else { return nil }
+        // `resolved` is canonical; `tried` is as stored, which may predate that.
+        guard resolved.address != tried.canonicalised else { return nil }
         // A device removed from here on is a no-op in the registry; a stop
         // from here on skips the save (see updateOperationalAddress).
         await updateOperationalAddress(

@@ -175,6 +175,8 @@ public actor AppleUDPTransport: MatterUDPTransport {
         dest.sin6_family   = sa_family_t(AF_INET6)
         dest.sin6_port     = in_port_t(address.port).bigEndian
         dest.sin6_scope_id = ifIndex
+        // `hostStr` has had its `%<zone>` split off above: Darwin's inet_pton
+        // accepts a zone and silently embeds the scope in sin6_addr.
         guard Darwin.inet_pton(AF_INET6, hostStr, &dest.sin6_addr) == 1 else {
             throw TransportError.invalidAddress(hostStr)
         }
