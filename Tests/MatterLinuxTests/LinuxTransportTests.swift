@@ -6,6 +6,7 @@ import Foundation
 @testable import MatterLinux
 @testable import MDNSLinux
 import MatterTransport
+import MatterTestSupport
 import NIOCore
 import NIOPosix
 
@@ -195,7 +196,10 @@ struct MatterLinuxTests {
         #expect(received == testPayload)
     }
 
-    @Test("LinuxUDPTransport sends to a bracketed IPv6 host (\"[::1]\", the URL-host form discovery returns)")
+    @Test(
+        "LinuxUDPTransport sends to a bracketed IPv6 host (\"[::1]\", the URL-host form discovery returns)",
+        .enabled(if: IPv6Loopback.isAvailable, "this host has no IPv6 loopback")
+    )
     func bracketedIPv6Send() async throws {
         let receiver = LinuxUDPTransport()
         try await receiver.bind(port: 0)

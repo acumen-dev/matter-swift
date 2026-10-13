@@ -9,6 +9,7 @@ import MatterProtocol
 import MatterTransport
 import MatterController
 import MatterDevice
+import MatterTestSupport
 #if os(Linux)
 import MatterLinux
 #else
@@ -20,7 +21,12 @@ import MatterApple
 /// `inet_ntop`'s canonical form (`"::1"`); the controller is handed the same
 /// address in another text, as discovery on Linux used to produce it. Every
 /// reply used to be dropped as a message for a closed exchange.
-@Suite("Commissioning over the IPv6 loopback", .serialized, .timeLimit(.minutes(3)))
+@Suite(
+    "Commissioning over the IPv6 loopback",
+    .serialized,
+    .timeLimit(.minutes(3)),
+    .enabled(if: IPv6Loopback.isAvailable, "this host has no IPv6 loopback")
+)
 struct IPv6LoopbackCommissioningTests {
 
     static func makeTransport() -> any MatterUDPTransport {
@@ -61,16 +67,18 @@ struct IPv6LoopbackCommissioningTests {
         )
         try await server.start()
         let controllerTransport = Self.makeTransport()
-        try await controllerTransport.bind(port: 0)
-        // `patient` with 2 retransmissions: a silent device exhausts after
-        // ≈ 28–36 s, a hang guard, never waited on by a passing run.
-        let controller = try MatterController(
-            transport: controllerTransport,
-            discovery: FaultyLinkDiscovery(),
-            configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: 2))
-        )
+        var started: MatterController?
 
         do {
+            try await controllerTransport.bind(port: 0)
+            // `patient` with 2 retransmissions: a silent device exhausts after
+            // ≈ 28–36 s, a hang guard, never waited on by a passing run.
+            let controller = try MatterController(
+                transport: controllerTransport,
+                discovery: FaultyLinkDiscovery(),
+                configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: 2))
+            )
+            started = controller
             let port = try #require(await Self.boundPort(deviceTransport))
             let device = try await controller.commission(address: MatterAddress(host: host, port: port), setupCode: passcode, mrp: patient)
             #expect(device.operationalAddress == MatterAddress(host: "::1", port: port))
@@ -81,9 +89,9 @@ struct IPv6LoopbackCommissioningTests {
             )
             #expect(onOff.boolValue == false)
         } catch {
-            await controller.stop(); await server.stop(); await controllerTransport.close()
+            await started?.stop(); await server.stop(); await controllerTransport.close()
             throw error
         }
-        await controller.stop(); await server.stop(); await controllerTransport.close()
+        await started?.stop(); await server.stop(); await controllerTransport.close()
     }
 }
