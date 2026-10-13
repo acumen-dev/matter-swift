@@ -39,7 +39,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
-        .package(path: "../mdns-swift-dns-sd"),
+        .package(url: "https://github.com/acumen-dev/mdns-swift.git", branch: "feature/linux-dns-sd"),
     ],
     targets: [
         // MARK: - Core Types
@@ -78,7 +78,7 @@ let package = Package(
             dependencies: [
                 "MatterTypes",
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "MDNSCore", package: "mdns-swift-dns-sd"),
+                .product(name: "MDNSCore", package: "mdns-swift"),
             ]
         ),
 
@@ -132,7 +132,7 @@ let package = Package(
             dependencies: [
                 "MatterTransport",
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "MDNSApple", package: "mdns-swift-dns-sd"),
+                .product(name: "MDNSApple", package: "mdns-swift"),
             ]
         ),
 
@@ -145,7 +145,7 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "MDNSLinux", package: "mdns-swift-dns-sd"),
+                .product(name: "MDNSLinux", package: "mdns-swift"),
             ]
         ),
 
@@ -229,7 +229,7 @@ let package = Package(
                 "MatterTestSupport",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
-                .product(name: "MDNSLinux", package: "mdns-swift-dns-sd"),
+                .product(name: "MDNSLinux", package: "mdns-swift"),
             ]
         ),
         .testTarget(
