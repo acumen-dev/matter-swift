@@ -34,8 +34,9 @@ The controller generates a root CA key pair automatically and manages fabric cre
 | `rootKey` | Generated | Root CA private key (provide for persistence) |
 | `operationTimeout` | 30s | Timeout for individual messages |
 | `commissioningTimeout` | 120s | Timeout for the full commissioning flow |
-| `discoveryTimeout` | 30s | How long to search for a commissionable device when commissioning from a setup code |
+| `discoveryTimeout` | 30s | How long to search for a commissionable device when commissioning from a setup code; also `discoverDevice(nodeID:timeout:)`'s default |
 | `commissionableResolveTimeout` | 5s | How long that search waits for any one advertisement to resolve before skipping it |
+| `addressRefreshTimeout` | 5s | How long a CASE attempt that got no answer waits to re-resolve the device's address (see below) |
 
 ## Commissioning a Device
 
@@ -67,6 +68,10 @@ let device = try await controller.commission(setupCode: "34970112332")
 ```
 
 The device must have its commissioning window open. The controller uses the device's advertised retransmission timing and records it with the device; pass `mrp:` to override it, or `discoveryTimeout:` to change how long it searches (`Configuration.discoveryTimeout`, 30 seconds by default). A code that cannot be parsed throws `ControllerError.invalidSetupCode` before anything is sent; its message never repeats the code. A manual code carries only a short discriminator, so if two nearby devices share it the first one found is commissioned.
+
+### When a device moves
+
+A device's address can change — a new DHCP lease, a restart on another port. When a CASE handshake with a commissioned device gets no answer, the controller re-resolves the device's operational advertisement (`_matter._tcp`) once, bounded by `Configuration.addressRefreshTimeout` (5 seconds by default). If it names a different address, the controller records and persists it, and retries the handshake there. The timing in the operational TXT record replaces the device's stored retransmission timing, including an explicit `mrp:` override; an operational advertisement with an empty TXT keeps what was stored. If nothing resolves in time, or it resolves to the address just tried, the original error (`ControllerError.peerUnreachable`) is thrown. Addresses from discovery are stored as bare IP literals; one that resolves only to a host name is not adopted.
 
 ## Reading Attributes
 
@@ -153,15 +158,20 @@ for await report in subscription.reports {
 
 ## Device Discovery
 
-Before commissioning, you can discover commissionable devices on the network:
+Before commissioning, you can browse for commissionable devices on the network. Browse records carry the instance name and TXT record, but no address; resolve one to reach it:
 
 ```swift
-let discovery = AppleDiscovery()
-let devices = discovery.browse(type: .commissionable)
-
-for await device in devices {
-    print("Found: \(device.name) at \(device.address)")
+for await record in controller.discoverCommissionable() {
+    let address = try await controller.resolve(record)
+    print("Found: \(record.name) at \(address.host):\(address.port), discriminator \(record.txtRecords["D"] ?? "?")")
 }
+```
+
+To find the device a setup code refers to, use `findCommissionable(_:timeout:)`, which matches the code's discriminator (and vendor/product, where both sides carry them) and returns a `CommissionableDevice` with its address and advertised timing:
+
+```swift
+let device = try await controller.findCommissionable(try SetupCode(parsing: "34970112332"))
+print("Found \(device.instanceName) at \(device.address.host), discriminator \(device.discriminator)")
 ```
 
 ## Multi-Fabric (Adding to Existing Devices)

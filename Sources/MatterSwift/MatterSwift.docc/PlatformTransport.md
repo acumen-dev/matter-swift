@@ -28,21 +28,30 @@ public protocol MatterUDPTransport: Sendable {
 
 ### MatterDiscovery
 
-Handles mDNS/DNS-SD service advertisement and browsing:
+Handles mDNS/DNS-SD service advertisement, browsing and resolution. `MatterDiscovery` is an alias for `ServiceDiscovery` from [mdns-swift](https://github.com/acumen-dev/mdns-swift)'s `MDNSCore` (and `MatterServiceRecord` for its `ServiceRecord`):
 
 ```swift
-public protocol MatterDiscovery: Sendable {
-    func advertise(service: MatterServiceRecord) async throws
-    func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord>
-    func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress
+public protocol ServiceDiscovery: Sendable {
+    func advertise(service: ServiceRecord) async throws
+    func browse(serviceType: ServiceType) -> AsyncStream<ServiceRecord>
+    func resolve(_ record: ServiceRecord) async throws -> NetworkAddress
+    func resolveService(_ record: ServiceRecord) async throws -> ResolvedService
     func stopAdvertising() async
+    func stopAdvertising(name: String) async
 }
 ```
 
 - `advertise(service:)` — Register an mDNS service record
-- `browse(type:)` — Discover services of a given type (commissionable or operational)
+- `browse(serviceType:)` — Discover services of a type; `browse(type:)` is a convenience taking a `MatterServiceType` (commissionable or operational)
 - `resolve(_:)` — Resolve a service record to a network address
-- `stopAdvertising()` — Remove all advertised records
+- `resolveService(_:)` — Resolve a service record to its address *and* TXT record. The controller uses it to commission from a setup code and to follow a device that moved. A default implementation returns `resolve(_:)`'s address with the TXT the browse record carried, so a discovery that predates it still works.
+- `stopAdvertising()` / `stopAdvertising(name:)` — Remove all advertised records, or one (the default for the latter stops all)
+
+The resolve contract the controller relies on:
+
+- **Cancellation.** `resolve` and `resolveService` must honour task cancellation, throwing `CancellationError` promptly. A resolve may wait indefinitely for an instance that never answers; the controller bounds every resolve (`commissionableResolveTimeout`, `addressRefreshTimeout`, `discoveryTimeout`) by cancelling it, and a resolve that ignores cancellation holds those bounds open.
+- **TXT.** `resolveService` may return an empty `txtRecords` when the TXT could not be obtained; only failing to resolve the address throws. The controller then keeps what it already has (the browse record's TXT when commissioning; the stored retransmission timing after a move).
+- **Host form.** An IPv6 host may be returned in brackets (`"[fd00::1]"`, the URL-host form); the controller strips them, and the built-in transports accept either form. A host name rather than an IP literal is not used: a commissionable record that resolves to one is skipped, and a moved device's address is not updated to one.
 
 ## Built-In Implementations
 
@@ -64,9 +73,10 @@ Features:
 
 Features:
 - No external mDNS daemon required (no avahi dependency)
-- PTR/SRV/TXT record advertisement and browsing
+- PTR/SRV/TXT record advertisement; responds to incoming PTR queries from other mDNS clients
+- DNS-SD browsing: follows a PTR with SRV and TXT queries, then A/AAAA for the SRV target, with RFC 6762 backoff for unanswered follow-ups
+- Resolution to address, SRV port and TXT (`resolveService`) from a TTL-honouring record cache, cancellable, with a bounded wait
 - DNS wire-format encode/decode with pointer decompression
-- Responds to incoming PTR queries from other mDNS clients
 
 ## Platform Selection
 
@@ -127,12 +137,18 @@ public actor MyDiscovery: MatterDiscovery {
         // Register the service with your platform's mDNS system
     }
 
-    public func browse(type: MatterServiceType) -> AsyncStream<MatterServiceRecord> {
+    public nonisolated func browse(serviceType: ServiceType) -> AsyncStream<MatterServiceRecord> {
         // Browse for mDNS services of the given type
     }
 
     public func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
-        // Resolve a service record to an IP address and port
+        // Resolve a service record to an IP address and port.
+        // Must throw CancellationError promptly when the task is cancelled.
+    }
+
+    public func resolveService(_ record: MatterServiceRecord) async throws -> ResolvedService {
+        // Optional (a default exists): the address plus the instance's TXT record.
+        // Same cancellation contract as resolve(_:).
     }
 
     public func stopAdvertising() async {
