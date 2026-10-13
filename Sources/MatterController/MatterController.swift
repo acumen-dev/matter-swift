@@ -618,7 +618,9 @@ public actor MatterController {
     ///     text for the address matches the device's replies. A host name is
     ///     not resolved: it is passed to the transport as given, which
     ///     rejects every send to it, so commissioning fails at PASE once MRP
-    ///     gives up (as before).
+    ///     gives up (as before). An IPv6 `%<zone>` is kept and stored as
+    ///     given (as before); it names an interface of this host, so the
+    ///     stored address may not survive a restart.
     ///   - setupCode: The device's setup passcode (e.g., 20202021).
     ///   - mrp: The device's advertised MRP parameters (SII/SAI/SAT from its
     ///     commissionable TXT record), if known. Recorded with the device and
