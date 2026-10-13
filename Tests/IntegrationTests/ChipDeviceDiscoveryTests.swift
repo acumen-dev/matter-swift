@@ -19,6 +19,7 @@ import MatterProtocol
 import MatterTransport
 import MatterApple
 @testable import MatterController
+import MatterTestSupport
 
 // MARK: - ChipDeviceDiscoveryTests
 
@@ -43,12 +44,25 @@ struct ChipDeviceDiscoveryTests {
     /// ChipToolIntegrationTests' device first, as the spec allows.
     static let shortDiscriminatorsInUse: Set<UInt16> = [3, 4, 15]
 
+    /// Short discriminators this process's apps have used. An app that has
+    /// just stopped can still be browsed for a moment (measured: the next
+    /// test's manual code found the previous app's record and ran PASE
+    /// against its closed port), so each app gets a short form of its own.
+    static let usedShortDiscriminators = LockedValue<Set<UInt16>>([])
+
     /// A random discriminator in 1...4094 whose short form no other suite's
-    /// device shares; never 3840.
+    /// device shares and no earlier app in this process used; never 3840.
     static func randomDiscriminator() -> UInt16 {
-        var value: UInt16
-        repeat { value = .random(in: 1...4094) } while shortDiscriminatorsInUse.contains(value >> 8)
-        return value
+        usedShortDiscriminators.withLock { used in
+            let available = Set<UInt16>(0...15).subtracting(shortDiscriminatorsInUse)
+            if used.isSuperset(of: available) { used.removeAll() }
+            var value: UInt16
+            repeat {
+                value = .random(in: 1...4094)
+            } while shortDiscriminatorsInUse.contains(value >> 8) || used.contains(value >> 8)
+            used.insert(value >> 8)
+            return value
+        }
     }
 
     struct HangGuardExpired: Error, CustomStringConvertible {
