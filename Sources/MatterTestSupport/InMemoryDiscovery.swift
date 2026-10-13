@@ -24,11 +24,26 @@ public final class InMemoryDiscovery: ServiceDiscovery, Sendable {
         let continuation: AsyncStream<ServiceRecord>.Continuation
     }
 
+    /// A DNS-SD instance is identified by its name *and* service type.
+    private struct Key: Hashable, Sendable {
+        let name: String
+        let serviceType: ServiceType
+
+        init(_ record: ServiceRecord) {
+            self.init(name: record.name, serviceType: record.serviceType)
+        }
+
+        init(name: String, serviceType: ServiceType) {
+            self.name = name
+            self.serviceType = serviceType
+        }
+    }
+
     private struct State: Sendable {
         /// In advertisement order, so browse yields deterministically.
         var records: [ServiceRecord] = []
         var browsers: [UUID: Browser] = [:]
-        var resolveCounts: [String: Int] = [:]
+        var resolveCounts: [Key: Int] = [:]
         var browseTXTHidden = false
     }
 
@@ -41,9 +56,21 @@ public final class InMemoryDiscovery: ServiceDiscovery, Sendable {
 
     // MARK: - Test Hooks
 
-    /// How many times `resolveService` (or `resolve`) was called for `name`.
-    public func resolveCount(name: String) -> Int {
-        state.withLock { $0.resolveCounts[name, default: 0] }
+    /// How many times `resolveService` (or `resolve`) was called for the
+    /// instance `name` of `serviceType`.
+    public func resolveCount(name: String, serviceType: ServiceType = .commissionable) -> Int {
+        state.withLock { $0.resolveCounts[Key(name: name, serviceType: serviceType), default: 0] }
+    }
+
+    /// End every open browse stream, as a browser that stops would.
+    public func finishBrowsing() {
+        let browsers = state.withLock { state in
+            defer { state.browsers.removeAll() }
+            return Array(state.browsers.values)
+        }
+        for browser in browsers {
+            browser.continuation.finish()
+        }
     }
 
     /// Simulate a browser that yields records without their TXT, so the
@@ -61,7 +88,7 @@ public final class InMemoryDiscovery: ServiceDiscovery, Sendable {
 
     public func advertise(service: ServiceRecord) async throws {
         state.withLock { state in
-            if let index = state.records.firstIndex(where: { $0.name == service.name }) {
+            if let index = state.records.firstIndex(where: { Key($0) == Key(service) }) {
                 state.records[index] = service
             } else {
                 state.records.append(service)
@@ -94,8 +121,8 @@ public final class InMemoryDiscovery: ServiceDiscovery, Sendable {
 
     public func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
         let stored = state.withLock { state in
-            state.resolveCounts[record.name, default: 0] += 1
-            return state.records.first { $0.name == record.name }
+            state.resolveCounts[Key(record), default: 0] += 1
+            return state.records.first { Key($0) == Key(record) }
         }
         guard let stored, let resolved = address(stored) else {
             throw ResolveError.notFound(record.name)
@@ -107,6 +134,7 @@ public final class InMemoryDiscovery: ServiceDiscovery, Sendable {
         state.withLock { $0.records.removeAll() }
     }
 
+    /// Removes every advertised instance called `name`, of any service type.
     public func stopAdvertising(name: String) async {
         state.withLock { $0.records.removeAll { $0.name == name } }
     }

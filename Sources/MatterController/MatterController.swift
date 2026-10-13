@@ -271,38 +271,51 @@ public actor MatterController {
     /// Find the commissionable device a setup code refers to.
     ///
     /// Browses `_matterc._udp` and takes the **first** record whose TXT
-    /// matches: `D` is a 12-bit value the code's discriminator matches, `CM`
-    /// is non-zero, and — only when the code carries them — `VP` names the
-    /// code's vendor (and product). A record browsed without TXT is resolved
-    /// and filtered on the resolved TXT. The match is resolved for its
-    /// address and final TXT, from which `mrp` is built; a record whose
-    /// resolve fails is skipped.
+    /// matches: `D` is a 12-bit value the code's discriminator matches, and
+    /// `CM` is non-zero. Vendor and product are checked only when the code
+    /// carries them, and, as chip-tool's `SetUpCodePairer` does, only
+    /// against what the record advertises: a missing `VP`, or a `VP` without
+    /// the `+pid` part, leaves that ID unknown and passes; only an
+    /// advertised ID that differs (or does not parse) rejects. A record
+    /// browsed without TXT is resolved and filtered on the resolved TXT. The
+    /// match is resolved for its address and final TXT, from which `mrp` is
+    /// built. A record whose resolve fails is logged (instance name only)
+    /// and skipped.
     ///
     /// A short (manual-code) discriminator has 16 values, so two devices can
     /// both match; the first one wins. Callers must **not** try PASE against
     /// several candidates: a wrong passcode counts against the other device's
     /// commissioning window.
     ///
+    /// The deadline cancels the search, including a resolve in flight.
+    ///
     /// - Parameters:
     ///   - code: The parsed onboarding payload.
     ///   - timeout: How long to search (default: `configuration.discoveryTimeout`).
     /// - Throws: `ControllerError.commissionableNotFound` when nothing matches
-    ///   in time; `CancellationError` if the calling task is cancelled.
+    ///   in time; `ControllerError.discoveryFailed` if the browse stream ends
+    ///   before a match (nothing more can arrive); `CancellationError` if the
+    ///   calling task is cancelled.
     public func findCommissionable(_ code: SetupCode, timeout: Duration? = nil) async throws -> CommissionableDevice {
         let limit = timeout ?? configuration.discoveryTimeout
         let discovery = self.discovery
+        let logger = self.logger
         let notFound = ControllerError.commissionableNotFound(Self.describe(code.discriminator))
 
         return try await withThrowingTaskGroup(of: CommissionableDevice.self) { group in
             group.addTask {
                 for await record in discovery.browse(type: .commissionable) {
-                    if let device = await Self.commissionable(record, matching: code, discovery: discovery) {
+                    // A cancelled stream still delivers what it buffered: stop here.
+                    try Task.checkCancellation()
+                    if let device = try await Self.commissionable(
+                        record, matching: code, discovery: discovery, logger: logger
+                    ) {
                         return device
                     }
                 }
-                // The stream ended: cancelled by the caller, or a finite browse ran out.
+                // The stream ended: cancelled, or the browser finished.
                 try Task.checkCancellation()
-                throw notFound
+                throw ControllerError.discoveryFailed("browse ended before a match")
             }
             group.addTask {
                 try await Task.sleep(for: limit)
@@ -318,19 +331,20 @@ public actor MatterController {
     private static func commissionable(
         _ record: MatterServiceRecord,
         matching code: SetupCode,
-        discovery: any MatterDiscovery
-    ) async -> CommissionableDevice? {
+        discovery: any MatterDiscovery,
+        logger: Logger
+    ) async throws -> CommissionableDevice? {
         var resolved: ResolvedService?
         var txt = record.txtRecords
         if txt.isEmpty {
-            guard let service = try? await discovery.resolveService(record) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, logger: logger) else { return nil }
             resolved = service
             txt = service.txtRecords
         }
         guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
 
         if resolved == nil {
-            guard let service = try? await discovery.resolveService(record) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, logger: logger) else { return nil }
             resolved = service
         }
         guard let resolved else { return nil }
@@ -345,6 +359,23 @@ public actor MatterController {
             advertisement: advertisement,
             txtRecords: finalTXT
         )
+    }
+
+    /// Resolve `record`; nil (logged) when resolution fails. Cancellation propagates.
+    private static func resolve(
+        _ record: MatterServiceRecord,
+        discovery: any MatterDiscovery,
+        logger: Logger
+    ) async throws -> ResolvedService? {
+        do {
+            return try await discovery.resolveService(record)
+        } catch let cancellation as CancellationError {
+            throw cancellation
+        } catch {
+            try Task.checkCancellation()
+            logger.notice("Skipping commissionable instance \(record.name): resolve failed: \(error)")
+            return nil
+        }
     }
 
     /// Names the discriminator sought, for `commissionableNotFound`.

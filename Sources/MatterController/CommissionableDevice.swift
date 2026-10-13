@@ -44,15 +44,20 @@ extension CommissionableDevice {
         ///   is consulted (`matches` masks with 0xFFF, so 0x1F00 would
         ///   otherwise match 3840).
         /// - `CM` must parse and be non-zero (not in commissioning mode).
-        /// - `VP` is filtered only on the IDs the code carries.
+        /// - `VP` is filtered only on the IDs the code carries, and only where
+        ///   advertised: an absent `VP` or absent `+pid` part is unknown and
+        ///   passes (chip-tool's `SetUpCodePairer`); an advertised ID that
+        ///   differs or does not parse rejects.
         init?(txt: [String: String], matching code: SetupCode) {
             guard let dText = txt["D"], let d = UInt16(dText), d <= 0xFFF,
                   code.discriminator.matches(d) else { return nil }
             guard let cmText = txt["CM"], let cm = UInt8(cmText), cm != 0 else { return nil }
 
-            let (vid, pid) = Self.parseVP(txt["VP"])
-            if let wanted = code.vendorID, vid != wanted { return nil }
-            if let wanted = code.productID, pid != wanted { return nil }
+            let (vidText, pidText) = Self.splitVP(txt["VP"])
+            let vid = vidText.flatMap { UInt16($0) }
+            let pid = pidText.flatMap { UInt16($0) }
+            if let wanted = code.vendorID, vidText != nil, vid != wanted { return nil }
+            if let wanted = code.productID, pidText != nil, pid != wanted { return nil }
 
             self.discriminator = d
             self.commissioningMode = cm
@@ -60,13 +65,11 @@ extension CommissionableDevice {
             self.productID = pid
         }
 
-        /// `VP` is "vid" or "vid+pid", decimal. An unparseable part is nil.
-        private static func parseVP(_ text: String?) -> (UInt16?, UInt16?) {
+        /// `VP` is "vid" or "vid+pid", decimal. A part that is absent is nil.
+        private static func splitVP(_ text: String?) -> (Substring?, Substring?) {
             guard let text else { return (nil, nil) }
             let parts = text.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
-            let vid = parts.first.flatMap { UInt16($0) }
-            let pid = parts.count > 1 ? UInt16(parts[1]) : nil
-            return (vid, pid)
+            return (parts.first, parts.count > 1 ? parts[1] : nil)
         }
     }
 

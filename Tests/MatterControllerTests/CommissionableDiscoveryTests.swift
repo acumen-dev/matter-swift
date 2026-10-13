@@ -103,12 +103,12 @@ struct CommissionableDiscoveryTests {
         let device = try await controller.findCommissionable(try Self.code(.long(4095)), timeout: Self.hangGuard)
         #expect(device.instanceName == "max")
 
-        await #expect(throws: ControllerError.self) {
+        await #expect(throws: ControllerError.commissionableNotFound("no commissionable device with discriminator 3840")) {
             try await controller.findCommissionable(try Self.code(.long(3840)), timeout: .milliseconds(200))
         }
     }
 
-    @Test("VID/PID mismatch is skipped; a matching VP is taken")
+    @Test("an advertised VID or PID that differs (or does not parse) is skipped; a matching VP is taken")
     func vendorProductFilter() async throws {
         let discovery = Self.makeDiscovery()
         try await discovery.advertise(service: Self.record(
@@ -116,9 +116,9 @@ struct CommissionableDiscoveryTests {
         try await discovery.advertise(service: Self.record(
             "other-product", port: 5542, txt: ["D": "3840", "CM": "1", "VP": "65521+32769"]))
         try await discovery.advertise(service: Self.record(
-            "vendor-only", port: 5543, txt: ["D": "3840", "CM": "1", "VP": "65521"]))
+            "other-vendor-no-pid", port: 5543, txt: ["D": "3840", "CM": "1", "VP": "65522"]))
         try await discovery.advertise(service: Self.record(
-            "no-vp", port: 5544, txt: ["D": "3840", "CM": "1"]))
+            "garbled", port: 5544, txt: ["D": "3840", "CM": "1", "VP": "x+32768"]))
         try await discovery.advertise(service: Self.record(
             "right", port: 5545, txt: ["D": "3840", "CM": "1", "VP": "65521+32768"]))
         let controller = try Self.makeController(discovery)
@@ -129,6 +129,27 @@ struct CommissionableDiscoveryTests {
         #expect(device.instanceName == "right")
         #expect(device.vendorID == 0xFFF1)
         #expect(device.productID == 0x8000)
+    }
+
+    @Test(
+        "an absent VP, or a VP without its PID part, is unknown and passes a code carrying VID+PID",
+        arguments: [nil, "65521"] as [String?]
+    )
+    func absentVendorProductPasses(vp: String?) async throws {
+        let discovery = Self.makeDiscovery()
+        try await discovery.advertise(service: Self.record(
+            "other-vendor", port: 5541, txt: ["D": "3840", "CM": "1", "VP": "65522+32768"]))
+        var txt = ["D": "3840", "CM": "1"]
+        txt["VP"] = vp
+        try await discovery.advertise(service: Self.record("partial", port: 5542, txt: txt))
+        let controller = try Self.makeController(discovery)
+
+        let device = try await controller.findCommissionable(
+            try Self.code(.long(3840), vendorID: 0xFFF1, productID: 0x8000), timeout: Self.hangGuard)
+
+        #expect(device.instanceName == "partial")
+        #expect(device.vendorID == vp.map { _ in 0xFFF1 })
+        #expect(device.productID == nil)
     }
 
     @Test("a code without VID/PID does not filter on VP, but the device still reports it")
@@ -199,6 +220,51 @@ struct CommissionableDiscoveryTests {
         }
     }
 
+    @Test("a browse that ends before a match throws discoveryFailed, not commissionableNotFound")
+    func browseEnds() async throws {
+        let discovery = Self.makeDiscovery()
+        let controller = try Self.makeController(discovery)
+        let code = try Self.code(.long(3840))
+
+        let search = Task { try await controller.findCommissionable(code, timeout: Self.hangGuard) }
+        try await Self.awaitBrowse(discovery)
+        discovery.finishBrowsing()
+
+        await #expect(throws: ControllerError.discoveryFailed("browse ended before a match")) {
+            try await search.value
+        }
+    }
+
+    @Test("the deadline cancels an in-flight resolve, and buffered records are not processed after it")
+    func deadlineCancelsResolve() async throws {
+        let inner = Self.makeDiscovery()
+        try await inner.advertise(service: Self.record("slow", port: 5541, txt: ["D": "3840", "CM": "1"]))
+        try await inner.advertise(service: Self.record("after", port: 5542, txt: ["D": "3840", "CM": "1"]))
+        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "slow", hangGuard: Self.hangGuard)
+        let controller = try MatterController(
+            transport: MockUDPTransport(),
+            discovery: discovery,
+            configuration: .init(fabricID: FabricID(rawValue: 1))
+        )
+
+        // If the deadline did not cancel the resolve, it would complete after
+        // the hang guard and "slow" would be returned instead.
+        await #expect(throws: ControllerError.commissionableNotFound("no commissionable device with discriminator 3840")) {
+            try await controller.findCommissionable(try Self.code(.long(3840)), timeout: .milliseconds(200))
+        }
+        #expect(discovery.resolveCancelled)
+        #expect(inner.resolveCount(name: "after") == 0)
+    }
+
+    /// Wait (bounded by the hang guard) until a browse stream is open.
+    private static func awaitBrowse(_ discovery: InMemoryDiscovery) async throws {
+        let deadline = ContinuousClock.now + Self.hangGuard
+        while discovery.activeBrowseCount == 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        try #require(discovery.activeBrowseCount == 1)
+    }
+
     @Test("a record advertised after the browse starts is found")
     func lateAdvertisement() async throws {
         let discovery = Self.makeDiscovery()
@@ -209,15 +275,63 @@ struct CommissionableDiscoveryTests {
         // Advertise only once the browse is registered, so the live-yield path
         // (not the current-records path) is what finds it. Bounded by the
         // same hang guard as the search.
-        let deadline = ContinuousClock.now + Self.hangGuard
-        while discovery.activeBrowseCount == 0, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        try #require(discovery.activeBrowseCount == 1)
+        try await Self.awaitBrowse(discovery)
         try await discovery.advertise(service: Self.record("late", port: 5541, txt: ["D": "3840", "CM": "1"]))
 
         let device = try await search.value
         #expect(device.instanceName == "late")
         #expect(discovery.activeBrowseCount == 0)
+    }
+}
+
+// MARK: - Suspending Resolve
+
+/// Delegates to an `InMemoryDiscovery`, except that resolving the instance
+/// `suspending` waits until cancelled. If it is never cancelled, it resolves
+/// normally after `hangGuard`, so a missed cancellation shows as a result.
+private final class SuspendingResolveDiscovery: ServiceDiscovery, Sendable {
+    private let inner: InMemoryDiscovery
+    private let suspending: String
+    private let hangGuard: Duration
+    private let cancelled = LockedValue(false)
+
+    init(inner: InMemoryDiscovery, suspending: String, hangGuard: Duration) {
+        self.inner = inner
+        self.suspending = suspending
+        self.hangGuard = hangGuard
+    }
+
+    var resolveCancelled: Bool { cancelled.value }
+
+    func advertise(service: ServiceRecord) async throws {
+        try await inner.advertise(service: service)
+    }
+
+    func browse(serviceType: ServiceType) -> AsyncStream<ServiceRecord> {
+        inner.browse(serviceType: serviceType)
+    }
+
+    func resolve(_ record: ServiceRecord) async throws -> NetworkAddress {
+        try await resolveService(record).address
+    }
+
+    func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
+        if record.name == suspending {
+            do {
+                try await Task.sleep(for: hangGuard)
+            } catch {
+                cancelled.withLock { $0 = true }
+                throw error
+            }
+        }
+        return try await inner.resolveService(record)
+    }
+
+    func stopAdvertising() async {
+        await inner.stopAdvertising()
+    }
+
+    func stopAdvertising(name: String) async {
+        await inner.stopAdvertising(name: name)
     }
 }
