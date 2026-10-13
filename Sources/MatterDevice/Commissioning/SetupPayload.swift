@@ -26,7 +26,7 @@ public enum SetupPayloadError: Error, Sendable {
 ///     discriminator: 3840,
 ///     passcode: 20202021
 /// )
-/// print(payload.qrCodeString)       // MT:Y.GHY00 00KA0648G00
+/// print(payload.qrCodeString)       // MT:Y.K90AFN00KA0648G00
 /// print(payload.manualPairingCode)  // 34970112332
 /// ```
 public struct SetupPayload: Sendable {
@@ -148,7 +148,7 @@ public struct SetupPayload: Sendable {
 
     // MARK: - QR Code
 
-    /// The QR code payload string, e.g. `"MT:Y.GHY00 00KA0648G00"`.
+    /// The QR code payload string, e.g. `"MT:Y.K90AFN00KA0648G00"`.
     public var qrCodeString: String {
         "MT:" + Base38.encode(packedBits)
     }

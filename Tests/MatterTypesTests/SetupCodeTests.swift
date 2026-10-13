@@ -36,6 +36,7 @@ struct SetupCodeTests {
         #expect(code.discriminator == .short(15))
         #expect(code.vendorID == nil)
         #expect(code.productID == nil)
+        #expect(code.commissioningFlow == 0)
     }
 
     @Test("separators are ignored")
@@ -83,6 +84,7 @@ struct SetupCodeTests {
         let code = try SetupCode(parsing: text)
         #expect(code.vendorID == 0xFFF1)
         #expect(code.productID == 0x8000)
+        #expect(code.commissioningFlow == 2)
         #expect(code.passcode == 20202021)
         #expect(code.discriminator == .short(15))
     }
@@ -192,5 +194,89 @@ struct SetupCodeTests {
         #expect(!SetupCode.Discriminator.short(15).matches(0xEFF))
         #expect(SetupCode.Discriminator.long(3840).matches(3840))
         #expect(!SetupCode.Discriminator.long(3840).matches(3841))
+    }
+
+    // MARK: - Guards and hostile input
+
+    private func withCheck(_ digits: String) -> String { digits + String(Verhoeff.checkDigit(for: digits)) }
+
+    @Test("manual chunks that cannot encode a passcode are rejected")
+    func chunkRanges() {
+        // chunk2 = 99999 > 65535
+        #expect(throws: SetupCodeError.invalidPasscode) { try SetupCode(parsing: withCheck("0999990001")) }
+        // chunk3 = 9999 > 8191
+        #expect(throws: SetupCodeError.invalidPasscode) { try SetupCode(parsing: withCheck("0000019999")) }
+    }
+
+    @Test("21-digit code with vendor or product above 65535 is rejected")
+    func vidPidOverflow() {
+        let head = "4" + "00001" + "0001" // valid passcode (1 | 1 << 14)
+        #expect(throws: SetupCodeError.invalidLength(21)) { try SetupCode(parsing: withCheck(head + "99999" + "00001")) }
+        #expect(throws: SetupCodeError.invalidLength(21)) { try SetupCode(parsing: withCheck(head + "00001" + "99999")) }
+    }
+
+    @Test("verhoeff ignores non-ASCII numerals and rejects empty input")
+    func verhoeffASCII() {
+        #expect(Verhoeff.checkDigit(for: "34970\u{2469}") == Verhoeff.checkDigit(for: "34970"))
+        #expect(!Verhoeff.validate("34970112331\u{216B}"))
+        #expect(Verhoeff.validate("34970112332\u{216B}"))
+        #expect(!Verhoeff.validate(""))
+    }
+
+    @Test("base38 rejects tails of 1, 3 and 6 characters")
+    func base38Tails() {
+        for text in ["0", "000", "000000"] {
+            #expect {
+                try Base38.decode(text)
+            } throws: { error in
+                if case SetupCodeError.malformedQRCode = error { return true }
+                return false
+            }
+        }
+    }
+
+    @Test("QR with non-zero trailing bytes still parses")
+    func qrNonZeroTrailing() throws {
+        var bytes = qrBytes(length: 11)
+        bytes.append(contentsOf: [0xFF, 0xAA, 0x55])
+        let code = try SetupCode(parsing: "MT:" + Base38.encode(bytes))
+        #expect(code.passcode == 20202021)
+    }
+
+    private struct SeededGenerator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    @Test("hostile input never traps")
+    func hostileInput() {
+        var rng = SeededGenerator(state: 42)
+        let pool = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-.*: \n\tabcxyz")
+            + ["\u{216B}", "\u{2469}", "\u{0663}", "\u{FF11}", "\u{1F600}", "é", "\0"]
+        func random(_ length: Int, from chars: [Character]) -> String {
+            String((0..<length).map { _ in chars[Int.random(in: 0..<chars.count, using: &rng)] })
+        }
+        let digitChars = Array("0123456789")
+        for _ in 0..<3000 {
+            let length = Int.random(in: 0...40, using: &rng)
+            let inputs = [
+                random(length, from: pool),
+                "MT:" + random(length, from: pool),
+                random([11, 21].randomElement(using: &rng)!, from: digitChars),
+                random(Int.random(in: 9...23, using: &rng), from: digitChars + ["-", " "]),
+            ]
+            for input in inputs {
+                _ = try? SetupCode(parsing: input)
+                _ = try? Base38.decode(input)
+                _ = Verhoeff.checkDigit(for: input)
+                _ = Verhoeff.validate(input)
+            }
+        }
     }
 }

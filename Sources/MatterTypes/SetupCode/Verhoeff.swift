@@ -35,11 +35,16 @@ public enum Verhoeff {
     // Inverse table for D5.
     private static let inv = [0, 4, 3, 2, 1, 5, 6, 7, 8, 9]
 
-    /// The check digit to append to `digits` (decimal characters only; others are ignored).
+    /// ASCII digits 0-9 of `text`; everything else (including non-ASCII numerals) is ignored.
+    private static func asciiDigits(_ text: String) -> [Int] {
+        text.utf8.compactMap { (0x30...0x39).contains($0) ? Int($0 - 0x30) : nil }
+    }
+
+    /// The check digit to append to `digits` (ASCII digits only; other characters are ignored).
     public static func checkDigit(for digits: String) -> Int {
         // Positions start at 1, reserving position 0 for the appended check digit.
         var c = 0
-        for (i, digit) in digits.compactMap(\.wholeNumberValue).reversed().enumerated() {
+        for (i, digit) in asciiDigits(digits).reversed().enumerated() {
             c = d[c][p[(i + 1) % 8][digit]]
         }
         return inv[c]
@@ -47,8 +52,10 @@ public enum Verhoeff {
 
     /// Whether the last digit of `digitsWithCheck` is the correct check digit for the rest.
     public static func validate(_ digitsWithCheck: String) -> Bool {
+        let all = asciiDigits(digitsWithCheck)
+        guard !all.isEmpty else { return false }
         var c = 0
-        for (i, digit) in digitsWithCheck.compactMap(\.wholeNumberValue).reversed().enumerated() {
+        for (i, digit) in all.reversed().enumerated() {
             c = d[c][p[i % 8][digit]]
         }
         return c == 0

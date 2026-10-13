@@ -98,12 +98,26 @@ struct SetupCodeConformanceTests {
                     #expect(qr.discriminator == .long(d))
                     #expect(qr.vendorID == vid)
                     #expect(qr.productID == pid)
+                    #expect(qr.rendezvousInformation == 4)
+                    #expect(qr.commissioningFlow == 0)
 
                     let manualOut = try run(chipTool, ["payload", "generate-manualcode"] + common)
                     let manualText = try #require(value(after: "Manual Code:", in: manualOut), "no code in: \(manualOut)")
                     let manual = try SetupCode(parsing: manualText)
                     #expect(manual.passcode == p)
                     #expect(manual.discriminator == .short(UInt8(d >> 8)))
+                    #expect(manual.commissioningFlow == 0)
+
+                    // --commissioning-mode 1 yields the 21-digit form, which carries VID/PID.
+                    let longOut = try run(chipTool, ["payload", "generate-manualcode", "--commissioning-mode", "1"] + common)
+                    let longText = try #require(value(after: "Manual Code:", in: longOut), "no code in: \(longOut)")
+                    let long = try SetupCode(parsing: longText)
+                    #expect(longText.count == 21)
+                    #expect(long.passcode == p)
+                    #expect(long.discriminator == .short(UInt8(d >> 8)))
+                    #expect(long.vendorID == vid)
+                    #expect(long.productID == pid)
+                    #expect(long.commissioningFlow == 2)
                 }
             }
         }

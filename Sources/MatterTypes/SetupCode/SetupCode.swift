@@ -40,7 +40,7 @@ public struct SetupCode: Sendable, Hashable {
     /// From a QR code, or a 21-digit manual code.
     public var vendorID: UInt16?
     public var productID: UInt16?
-    /// From a QR code, or a 21-digit manual code (a 21-digit code carries no flow field, so this is nil there).
+    /// From a QR code. Manual codes imply it, as chip-tool reports: 0 (standard) for 11 digits, 2 (custom) for 21.
     public var commissioningFlow: UInt8?
     /// QR codes only.
     public var rendezvousInformation: UInt8?
@@ -62,6 +62,11 @@ public struct SetupCode: Sendable, Hashable {
     // MARK: - Parsing
 
     /// Accepts a manual code (11 or 21 digits; spaces and '-' ignored) or a QR payload ("MT:…").
+    ///
+    /// Error mapping for out-of-range fields: a manual-code chunk that cannot encode a passcode
+    /// (chunk2 > 65535, chunk3 > 8191) is `.invalidPasscode`; a 21-digit code whose vendor or
+    /// product ID exceeds 65535 is `.invalidLength` (the layout is malformed). `.malformedQRCode`
+    /// is reserved for QR payloads.
     public init(parsing text: String) throws(SetupCodeError) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw .empty }
@@ -108,10 +113,10 @@ public struct SetupCode: Sendable, Hashable {
         let passcode = UInt32(chunk2 & 0x3FFF) | (UInt32(chunk3) << 14)
         guard isValidPasscode(passcode) else { throw .invalidPasscode }
 
-        var code = SetupCode(passcode: passcode, discriminator: .short(short))
+        var code = SetupCode(passcode: passcode, discriminator: .short(short), commissioningFlow: hasVidPid ? 2 : 0)
         if hasVidPid {
             let vid = number(10..<15), pid = number(15..<20)
-            guard vid <= 0xFFFF, pid <= 0xFFFF else { throw .malformedQRCode("vendor or product ID out of range") }
+            guard vid <= 0xFFFF, pid <= 0xFFFF else { throw .invalidLength(digits.count) }
             code.vendorID = UInt16(vid)
             code.productID = UInt16(pid)
         }
