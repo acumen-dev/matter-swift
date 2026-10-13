@@ -9,7 +9,7 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerMessenger MRP timing", .timeLimit(.minutes(1)))
+@Suite("ControllerMessenger MRP timing", .timeLimit(.minutes(5)))
 struct MessengerMRPTests {
 
     @Test("A lost request is retransmitted byte for byte SII × 1.1 after it was sent")

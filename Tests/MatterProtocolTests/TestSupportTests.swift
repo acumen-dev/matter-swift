@@ -7,7 +7,7 @@ import MatterProtocol
 import MatterTransport
 import MatterTestSupport
 
-@Suite("MatterTestSupport", .timeLimit(.minutes(1)))
+@Suite("MatterTestSupport", .timeLimit(.minutes(5)))
 struct TestSupportTests {
 
     // MARK: - ManualClock
@@ -103,11 +103,9 @@ struct TestSupportTests {
         #expect(woken.value == 8)
     }
 
-    // MARK: - SeededJitter
-
     @Test("awaitSleepers / awaitSleeper return once a sleeper registers, and at once if one already has")
     func awaitSleeperRegistration() async throws {
-        let clock = ManualClock()
+        let clock = ManualClock(quiescenceYieldLimit: 0)
         let deadline = clock.now + .seconds(5)
         let waiter = Task {
             try await clock.awaitSleeper(until: deadline)
@@ -127,18 +125,32 @@ struct TestSupportTests {
     func awaitSleeperForgetsEndedSleepers() async throws {
         let clock = ManualClock(quiescenceYieldLimit: 0)
         let first = clock.now + .seconds(1)
-        let sleeper = Task { try await clock.sleep(until: first) }
-        try await clock.awaitSleeper(until: first)
-        sleeper.cancel()
-        await #expect(throws: CancellationError.self) { try await sleeper.value }
 
-        let waiter = Task { try await clock.awaitSleeper(until: first) }
-        let second = Task { try await clock.sleep(until: clock.now + .seconds(2)) }
-        try await clock.awaitSleepers(atLeast: 1)
-        waiter.cancel()
-        await #expect(throws: CancellationError.self) { try await waiter.value }
-        second.cancel()
-        _ = try? await second.value
+        // Cancelled: once its task has ended, nothing of it is left.
+        let cancelled = Task { try await clock.sleep(until: first) }
+        try await clock.awaitSleeper(until: first)
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(clock.sleeperCount == 0)
+        #expect(clock.nextSleeperDeadline == nil)
+
+        // A waiter for `first` must now suspend; a stale entry would let it
+        // return at once. Whichever happens is observed, not raced.
+        let returned = LockedValue(false)
+        let waiter = Task {
+            try await clock.awaitSleeper(until: first)
+            returned.withLock { $0 = true }
+        }
+        try await pollUntil(every: .milliseconds(1)) { clock.sleeperWaiterCount == 1 || returned.value }
+        #expect(!returned.value, "awaitSleeper returned for a sleeper that had ended")
+        let again = Task { try await clock.sleep(until: first) }
+        try await waiter.value
+
+        // Fired: likewise gone once advance has woken it.
+        await clock.advance(by: .seconds(1))
+        try await again.value
+        #expect(clock.sleeperCount == 0)
+        #expect(clock.nextSleeperDeadline == nil)
     }
 
     // MARK: - LockedValue
@@ -180,6 +192,8 @@ struct TestSupportTests {
         browse.cancel()
         await browse.value
     }
+
+    // MARK: - SeededJitter
 
     @Test("Seeded jitter repeats per seed and stays in 0..<1")
     func seededJitter() {

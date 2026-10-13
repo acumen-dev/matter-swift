@@ -19,7 +19,8 @@ public enum IPv6Loopback {
     public static let isAvailable: Bool = probe()
 
     private static func probe() -> Bool {
-        #if canImport(Glibc) || canImport(Musl)
+        #if canImport(Glibc)
+        // glibc imports SOCK_DGRAM as an enum case; Darwin and Musl as an Int32.
         let datagram = Int32(SOCK_DGRAM.rawValue)
         #else
         let datagram = SOCK_DGRAM

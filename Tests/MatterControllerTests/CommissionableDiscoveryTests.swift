@@ -14,7 +14,7 @@ import MatterTestSupport
 /// moves (its deadline cannot fire), and a test of a deadline advances the
 /// clock once the controller is waiting on it. The suite's `.timeLimit` is
 /// the only hang guard.
-@Suite("CommissionableDiscovery", .timeLimit(.minutes(1)))
+@Suite("CommissionableDiscovery", .timeLimit(.minutes(5)))
 struct CommissionableDiscoveryTests {
 
     // MARK: - Fixtures

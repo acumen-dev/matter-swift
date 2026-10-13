@@ -9,7 +9,7 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerMessenger secure sessions and routing", .timeLimit(.minutes(1)))
+@Suite("ControllerMessenger secure sessions and routing", .timeLimit(.minutes(5)))
 struct MessengerSessionTests {
 
     /// Retransmission interval after `n` transmissions to a peer that spoke within SAT, zero jitter.

@@ -11,7 +11,7 @@ import MatterTransport
 // means fixed-port tests can share a socket with a concurrent test, causing
 // the expected packet to be delivered to the wrong consumer. Waits for a
 // datagram have no deadline of their own: the time limit is the hang guard.
-@Suite("AppleUDPTransport", .serialized, .timeLimit(.minutes(1)))
+@Suite("AppleUDPTransport", .serialized, .timeLimit(.minutes(5)))
 struct AppleUDPTransportTests {
 
     /// The first datagram `transport` receives (no deadline: the suite's

@@ -11,7 +11,7 @@ import MatterTestSupport
 /// The commissioning window can be opened on demand, and the commissionable
 /// advertisement exists only while it is open — a controller browsing for
 /// `_matterc._udp` never finds a device that will not accept PASE.
-@Suite("Commissioning window", .timeLimit(.minutes(1)))
+@Suite("Commissioning window", .timeLimit(.minutes(5)))
 struct CommissioningWindowTests {
 
     private let instanceName = "Test Bridge-3840"

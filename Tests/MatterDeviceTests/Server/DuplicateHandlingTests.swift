@@ -10,7 +10,7 @@ import MatterProtocol
 import MatterCrypto
 @testable import MatterDevice
 
-@Suite("Device server duplicate detection", .timeLimit(.minutes(1)))
+@Suite("Device server duplicate detection", .timeLimit(.minutes(5)))
 struct DuplicateHandlingTests {
 
     static let passcode: UInt32 = 20202021

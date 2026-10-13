@@ -155,10 +155,14 @@ public struct CommissioningController: Sendable {
 
     // MARK: - Step 4: ArmFailSafe
 
+    /// The fail-safe commissioning arms, in seconds: the device reverts
+    /// what was staged if commissioning has not completed by then.
+    public static let defaultFailSafeExpirySeconds: UInt16 = 60
+
     /// Build an ArmFailSafe invoke request (sent over the PASE session).
     public func buildArmFailSafe(
         context: CommissioningContext,
-        failSafeExpirySeconds: UInt16 = 60
+        failSafeExpirySeconds: UInt16 = CommissioningController.defaultFailSafeExpirySeconds
     ) throws -> (message: Data, context: CommissioningContext) {
         let request = GeneralCommissioningCluster.ArmFailSafeRequest(
             expiryLengthSeconds: failSafeExpirySeconds

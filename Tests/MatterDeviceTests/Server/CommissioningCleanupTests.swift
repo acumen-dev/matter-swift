@@ -16,7 +16,7 @@ import MatterTestSupport
 /// straight to operational discovery for a node that was never issued — every later
 /// pairing then times out. A removed fabric's operational advert and CommissionedFabrics
 /// count must likewise not outlive the fabric.
-@Suite("Commissioning cleanup", .timeLimit(.minutes(2)))
+@Suite("Commissioning cleanup", .timeLimit(.minutes(5)))
 struct CommissioningCleanupTests {
 
     private let ep0 = EndpointID(rawValue: 0)

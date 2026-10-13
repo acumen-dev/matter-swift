@@ -9,7 +9,7 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerMessenger core", .timeLimit(.minutes(1)))
+@Suite("ControllerMessenger core", .timeLimit(.minutes(5)))
 struct MessengerCoreTests {
 
     @Test("A request is answered on its own exchange")

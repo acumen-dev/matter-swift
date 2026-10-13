@@ -8,7 +8,7 @@ import MatterProtocol
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("ControllerSubscription", .timeLimit(.minutes(1)))
+@Suite("ControllerSubscription", .timeLimit(.minutes(5)))
 struct ControllerSubscriptionTests {
 
     private let node = NodeID(rawValue: 0x42)

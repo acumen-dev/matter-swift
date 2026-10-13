@@ -41,6 +41,13 @@ public final class LockedValue<Value: Sendable>: Sendable {
         storage.withLock { $0.value }
     }
 
+    /// How many ``wait(until:)`` calls are suspended, waiting for an update.
+    /// For tests of a waiting primitive: it shows a waiter has looked at the
+    /// value and found its predicate false.
+    public var waiterCount: Int {
+        storage.withLock { $0.waiters.count }
+    }
+
     @discardableResult
     public func withLock<Result: Sendable>(_ body: (inout Value) -> Result) -> Result {
         let (result, satisfied) = storage.withLock { storage -> (Result, [CheckedContinuation<Void, any Error>]) in

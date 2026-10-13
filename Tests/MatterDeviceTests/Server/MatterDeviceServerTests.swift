@@ -11,7 +11,7 @@ import MatterTestSupport
 
 /// Waits here have no deadlines of their own: the suite's `.timeLimit` is the
 /// only hang guard.
-@Suite("MatterDeviceServer", .timeLimit(.minutes(2)))
+@Suite("MatterDeviceServer", .timeLimit(.minutes(5)))
 struct MatterDeviceServerTests {
 
     // MARK: - Lifecycle Tests

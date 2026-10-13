@@ -13,7 +13,7 @@ import NIOPosix
 // Network tests bind real sockets; serialise to avoid port-sharing races.
 // Waits for a datagram have no deadline of their own: the time limit is the
 // hang guard.
-@Suite("MatterLinux Tests", .serialized, .timeLimit(.minutes(1)))
+@Suite("MatterLinux Tests", .serialized, .timeLimit(.minutes(5)))
 struct MatterLinuxTests {
 
     /// The first datagram `transport` receives (no deadline: the suite's

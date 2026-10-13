@@ -71,8 +71,11 @@ struct CommissioningFailureTests {
         await server.stop()
     }
 
-    @Test("An ArmFailSafe whose response is lost still gets a best-effort disarm")
-    func lostArmResponseIsDisarmed() async throws {
+    @Test(
+        "An ArmFailSafe whose response is lost still gets a best-effort disarm",
+        arguments: [false, true]
+    )
+    func lostArmResponseIsDisarmed(strayControllerFrame: Bool) async throws {
         let link = FaultInjectingLink(seed: 22)
         let bridge = MatterBridge()
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
@@ -80,7 +83,15 @@ struct CommissioningFailureTests {
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
         let state = bridge.commissioningState
-        Self.dropDeviceReplies(on: link) { state.isFailSafeArmed }
+        // The stray frame stands in for what a loaded run produced: a
+        // fresh-counter standalone ack (of a device retransmission) reaching
+        // the device just after the ArmFailSafe response was dropped. It must
+        // not reopen the window and let a retransmitted response through.
+        Self.dropDeviceReplies(on: link, while: { state.isFailSafeArmed }) {
+            guard strayControllerFrame else { return }
+            let stray = Self.strayStandaloneAck()
+            Task { try? await link.a.send(stray, to: link.b.address) }
+        }
 
         let start = Date()
         do {
@@ -109,7 +120,7 @@ struct CommissioningFailureTests {
             store: store
         )
         let state = bridge.commissioningState
-        Self.dropDeviceReplies(on: link) { !state.fabrics.isEmpty }
+        Self.dropDeviceReplies(on: link, while: { !state.fabrics.isEmpty })
 
         let expectedNodeID = await controller.nextNodeID
         do {
@@ -177,32 +188,51 @@ struct CommissioningFailureTests {
         )
     }
 
-    /// Drop everything the device sends from the first moment `trigger` holds
-    /// until the controller sends something it has not sent before (its next
-    /// request; retransmissions repeat their message counter). Outcome-driven,
-    /// no timing.
-    private static func dropDeviceReplies(on link: FaultInjectingLink, trigger: @escaping @Sendable () -> Bool) {
-        struct State { var dropping = false; var finished = false; var seen: Set<UInt32> = [] }
-        let state = LockedValue(State())
-        link.setInterceptor { data, side in
-            guard let counter = try? MessageHeader.decode(from: data).header.messageCounter else { return .deliver(after: .zero) }
-            return state.withLock { st in
-                switch side {
-                case .a:
-                    if st.dropping, !st.finished, !st.seen.contains(counter) { st.finished = true }
-                    st.seen.insert(counter)
-                    return .deliver(after: .zero)
-                case .b:
-                    if !st.dropping, !st.finished, trigger() { st.dropping = true }
-                    return st.dropping && !st.finished ? .drop : .deliver(after: .zero)
-                }
+    /// Drop everything the device sends while `condition` (device state:
+    /// armed, committed) holds; `onFirstDrop` runs once, at the first drop.
+    ///
+    /// The window is the device's own state, not the controller's traffic.
+    /// It used to end at the first controller datagram with an unseen
+    /// counter, meant to be the controller's next request. But the
+    /// controller also sends fresh-counter standalone acks (of a device
+    /// retransmission, on any session), and under load one could arrive
+    /// just after the response was dropped, end the window, and let the
+    /// retransmitted response through: commissioning then succeeded.
+    private static func dropDeviceReplies(
+        on link: FaultInjectingLink,
+        while condition: @escaping @Sendable () -> Bool,
+        onFirstDrop: (@Sendable () -> Void)? = nil
+    ) {
+        let dropped = LockedValue(false)
+        link.setInterceptor { _, side in
+            guard side == .b, condition() else { return .deliver(after: .zero) }
+            let first = dropped.withLock { dropped in
+                defer { dropped = true }
+                return !dropped
             }
+            if first { onFirstDrop?() }
+            return .drop
         }
     }
 
-    /// The fail-safe the controller arms: `CommissioningController`'s
-    /// ArmFailSafe default, in seconds.
-    static let failSafeExpiry: TimeInterval = 60
+    /// An unsecured standalone ack with a counter the controller never uses,
+    /// for an exchange the device does not have: the device ignores it.
+    static func strayStandaloneAck() -> Data {
+        MatterMessage.encodeUnsecured(
+            messageHeader: MessageHeader(sessionID: 0, messageCounter: 0x5EED_0001),
+            exchangeHeader: ExchangeHeader(
+                flags: ExchangeFlags(initiator: false, reliableDelivery: false),
+                protocolOpcode: SecureChannelOpcode.standaloneAck.rawValue,
+                exchangeID: 0x7777,
+                protocolID: MatterProtocolID.secureChannel.rawValue,
+                acknowledgedMessageCounter: 1
+            ),
+            payload: Data()
+        )
+    }
+
+    /// The fail-safe the controller arms.
+    static let failSafeExpiry = TimeInterval(CommissioningController.defaultFailSafeExpirySeconds)
 
     /// Waits until the device's fail-safe is disarmed, then returns whether
     /// that was seen before a fail-safe armed after `start` could have
@@ -210,8 +240,8 @@ struct CommissioningFailureTests {
     /// device's expiry.
     ///
     /// The bound is the protocol's, not a margin: no deadline ends the wait
-    /// (the suite's `.timeLimit` is the hang guard), and the expiry falls 60 s
-    /// after an arm that came after `start`.
+    /// (the suite's `.timeLimit` is the hang guard), and the expiry falls
+    /// `failSafeExpiry` after an arm that came after `start`.
     static func disarmedBeforeExpiry(_ state: CommissioningState, armedAfter start: Date) async throws -> Bool {
         try await pollUntil { !state.isFailSafeArmed }
         return Date() < start.addingTimeInterval(failSafeExpiry)
