@@ -119,7 +119,6 @@ struct ChipDeviceDiscoveryTests {
             var newPort = freeUDPPort()
             while newPort == app.port { newPort = freeUDPPort() }
             try #require(newPort != 0, "a free port for the restarted app")
-            try #require(newPort != 0, "a free port for the restarted app")
             let restarted = try await ChipAppRunner.start(
                 discriminator: app.discriminator, passcode: Self.passcode, port: newPort, kvsPath: app.kvsPath
             )

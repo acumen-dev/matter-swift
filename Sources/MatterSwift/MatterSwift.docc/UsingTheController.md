@@ -44,10 +44,12 @@ To commission a device at a known address, you need the address and the numeric 
 
 ```swift
 let device = try await controller.commission(
-    address: MatterAddress(host: "192.168.1.100", port: 5540),
+    address: MatterAddress(host: "192.0.2.100", port: 5540),
     setupCode: 20202021
 )
 ```
+
+The host is an IP literal. Any text for an address works — an IPv6 host with or without brackets, uncompressed or uppercase — and the device is recorded under the canonical form (`"fd00::1"`). Addresses from discovery are always canonical, and never carry an IPv6 `%zone`: a zone names an interface of this host, which a stored address cannot rely on.
 
 The commissioning flow handles:
 1. PASE session establishment (SPAKE2+ with the setup code)
@@ -161,7 +163,7 @@ for await report in subscription.reports {
 Before commissioning, you can browse for commissionable devices on the network. Browse records carry the instance name and TXT record, but no address; resolve one to reach it:
 
 ```swift
-for await record in controller.discoverCommissionable() {
+for await record in await controller.discoverCommissionable() {
     let address = try await controller.resolve(record)
     print("Found: \(record.name) at \(address.host):\(address.port), discriminator \(record.txtRecords["D"] ?? "?")")
 }
