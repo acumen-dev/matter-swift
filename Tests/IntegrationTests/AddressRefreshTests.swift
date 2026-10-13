@@ -33,10 +33,12 @@ struct AddressRefreshTests {
     /// before completing anyway (so a missed deadline shows as a result).
     static let suspendGuard = Duration.seconds(30)
 
-    /// The deadline tests' `discoveryTimeout`: well past `suspendGuard`, so
-    /// a resolve that used it instead of the bound under test would complete
-    /// and succeed, failing the primary assertions deterministically.
-    static let longDiscoveryTimeout = Duration.seconds(60)
+    /// The deadline tests' `discoveryTimeout`: past `suspendGuard`, so a
+    /// resolve bounded by it instead of the bound under test would run on to
+    /// complete — failing the primary assertions deterministically (with
+    /// the device's address in `refreshDeadline`; with `notFound` in
+    /// `discoverDeviceDeadline`, where nothing is advertised).
+    static let longDiscoveryTimeout = suspendGuard * 2
 
     struct HangGuard: Error {}
 

@@ -112,12 +112,13 @@ struct ChipDeviceDiscoveryTests {
             }
             #expect(await controller.device(for: device.nodeID)?.mrpParameters == Self.overrideMRP)
             _ = try await readOnOff(device.nodeID, with: controller)
-            #expect(await controller.device(for: device.nodeID)?.operationalAddress?.port == app.port)
+            try #require(await controller.device(for: device.nodeID)?.operationalAddress?.port == app.port)
 
             // Same KVS, new port: the fabric survives; `_matter._tcp` names the new port.
             await app.stop()
             var newPort = freeUDPPort()
             while newPort == app.port { newPort = freeUDPPort() }
+            try #require(newPort != 0, "a free port for the restarted app")
             try #require(newPort != 0, "a free port for the restarted app")
             let restarted = try await ChipAppRunner.start(
                 discriminator: app.discriminator, passcode: Self.passcode, port: newPort, kvsPath: app.kvsPath

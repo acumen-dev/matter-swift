@@ -23,8 +23,10 @@ struct CommissionFromCodeTests {
         InMemoryDiscovery { _ in link.b.address }
     }
 
-    /// The device's own commissionable record, as it advertised it. A hang
-    /// guard bounds the wait; the record is already registered, so it is not a timing margin.
+    /// The device's own commissionable record, as it advertised it. The
+    /// server advertises from an unawaited task, so the record may not be
+    /// registered yet; the browse is live and yields it when it is. The
+    /// guard only bounds a hang — it is not a timing margin.
     private static func advertisedRecord(_ discovery: InMemoryDiscovery) async throws -> MatterServiceRecord {
         try await withThrowingTaskGroup(of: MatterServiceRecord.self) { group in
             group.addTask {

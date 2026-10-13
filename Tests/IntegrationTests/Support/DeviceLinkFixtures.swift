@@ -29,10 +29,11 @@ let fast = MRPParameters(
 /// handshake. The device acks Pake1 only once its Pake2 is computed, and a
 /// debug build's SPAKE2+ takes seconds (measured: 1.6 s idle, about 3 s
 /// under a full parallel `swift test`), so `fast`'s 1.1–4.3 s exhaustion
-/// budget was a wall-clock margin. Here the budget is a hang guard: with 2
-/// retransmissions a silent peer exhausts after ≈ 20–25 s (longer with
-/// more), and a passing run, which loses nothing on the link, never waits
-/// on it. Phases that need a
+/// budget was a wall-clock margin. Here the budget is a hang guard: a
+/// silent peer exhausts after ≈ 28.4–35.5 s with 2 retransmissions, or
+/// ≈ 87–109 s with 4 (`MRPConfig.retransmissionInterval`, summed over every
+/// transmission), and a passing run, which loses nothing on the link, never
+/// waits on it. Phases that need a
 /// silent device to give up quickly switch to `fast` with
 /// `setMRPParameters(_:for:)` once commissioned.
 let patient = MRPParameters(
@@ -42,7 +43,7 @@ let patient = MRPParameters(
 )
 
 /// Retransmissions that make `fast`'s exhaustion budget a hang guard over the
-/// handshake (≈ 16–20 s: the sum of nine backed-off 220 ms intervals), for
+/// handshake (≈ 24.8–31.0 s: the sum of nine backed-off 220 ms intervals), for
 /// suites that need `fast` during commissioning itself because they drop
 /// the device's replies there. 10 (the lossy suites' value) also qualifies.
 let handshakeRetransmissions = 8

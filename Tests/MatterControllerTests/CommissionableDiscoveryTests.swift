@@ -321,12 +321,14 @@ struct CommissionableDiscoveryTests {
             configuration: .init(fabricID: FabricID(rawValue: 1))
         )
 
-        // If the deadline did not cancel the resolve, it would complete after
-        // the hang guard and "slow" would be returned instead.
+        // The search throws at the deadline either way; a resolve that
+        // ignored the cancellation would hold it open until the hang guard,
+        // then finish uncancelled. A resolve not yet entered when the
+        // deadline fell (a starved runner) has nothing to cancel.
         await #expect(throws: ControllerError.commissionableNotFound("no commissionable device with discriminator 3840")) {
             try await controller.findCommissionable(try Self.code(.long(3840)), timeout: .milliseconds(200))
         }
-        #expect(discovery.resolveCancelled)
+        #expect(discovery.resolveCancelled == discovery.resolveEntered)
         #expect(inner.resolveCount(name: "after") == 0)
     }
 
@@ -354,6 +356,46 @@ struct CommissionableDiscoveryTests {
         #expect(device.instanceName == "match")
         #expect(device.address == MatterAddress(host: "::1", port: 5542))
         #expect(discovery.resolveCancelled, "the stuck resolve was cancelled at its bound")
+    }
+
+    @Test("a matching record whose resolve fails is skipped, and the search continues to the next match")
+    func failedResolveIsSkipped() async throws {
+        // The address closure maps nothing for "broken": its resolve throws.
+        let discovery = InMemoryDiscovery { record in
+            record.name == "broken" ? nil : MatterAddress(host: "::1", port: record.port)
+        }
+        try await discovery.advertise(service: Self.record("broken", port: 5541, txt: ["D": "3840", "CM": "1"]))
+        try await discovery.advertise(service: Self.record("match", port: 5542, txt: ["D": "3840", "CM": "1"]))
+        let controller = try Self.makeController(discovery)
+
+        let device = try await controller.findCommissionable(try Self.code(.long(3840)), timeout: Self.hangGuard)
+
+        #expect(device.instanceName == "match")
+        #expect(device.address == MatterAddress(host: "::1", port: 5542))
+        #expect(discovery.resolveCount(name: "broken") == 1)
+    }
+
+    @Test("cancelling the caller during a resolve ends the search with CancellationError")
+    func callerCancelDuringResolve() async throws {
+        let inner = Self.makeDiscovery()
+        try await inner.advertise(service: Self.record("slow", port: 5541, txt: ["D": "3840", "CM": "1"]))
+        let discovery = SuspendingResolveDiscovery(inner: inner, suspending: "slow", hangGuard: Self.hangGuard)
+        let controller = try MatterController(
+            transport: MockUDPTransport(),
+            discovery: discovery,
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                commissionableResolveTimeout: Self.hangGuard * 2
+            )
+        )
+        let code = try Self.code(.long(3840))
+
+        let search = Task { try await controller.findCommissionable(code, timeout: Self.hangGuard * 2) }
+        try await discovery.awaitResolveEntered(within: Self.hangGuard)
+        search.cancel()
+
+        await #expect(throws: CancellationError.self) { try await search.value }
+        #expect(discovery.resolveCancelled)
     }
 
     /// Wait (bounded by the hang guard) until a browse stream is open.
@@ -394,14 +436,41 @@ private final class SuspendingResolveDiscovery: ServiceDiscovery, Sendable {
     private let suspending: String
     private let hangGuard: Duration
     private let cancelled = LockedValue(false)
+    private let entered = LockedValue(false)
+    private let enteredSignal: AsyncStream<Void>
+    private let enteredSink: AsyncStream<Void>.Continuation
 
     init(inner: InMemoryDiscovery, suspending: String, hangGuard: Duration) {
         self.inner = inner
         self.suspending = suspending
         self.hangGuard = hangGuard
+        (enteredSignal, enteredSink) = AsyncStream.makeStream(of: Void.self)
     }
 
+    /// Whether the suspending resolve was entered at all.
+    var resolveEntered: Bool { entered.value }
+
     var resolveCancelled: Bool { cancelled.value }
+
+    struct NotEntered: Error {}
+
+    /// Returns once the suspending resolve has been entered; throws
+    /// `NotEntered` if that has not happened within `bound` (a hang guard).
+    func awaitResolveEntered(within bound: Duration) async throws {
+        let signal = enteredSignal
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await _ in signal { return }
+                throw CancellationError()
+            }
+            group.addTask {
+                try await Task.sleep(for: bound)
+                throw NotEntered()
+            }
+            defer { group.cancelAll() }
+            try await group.next()
+        }
+    }
 
     func advertise(service: ServiceRecord) async throws {
         try await inner.advertise(service: service)
@@ -417,6 +486,8 @@ private final class SuspendingResolveDiscovery: ServiceDiscovery, Sendable {
 
     func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
         if record.name == suspending {
+            entered.withLock { $0 = true }
+            enteredSink.yield()
             do {
                 try await Task.sleep(for: hangGuard)
             } catch {

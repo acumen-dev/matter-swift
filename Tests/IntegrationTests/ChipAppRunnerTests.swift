@@ -86,7 +86,9 @@ struct ChipAppRunnerTests {
         guard ChipAppRunner.findBinary() != nil else { return }   // skip when not built
         let kvs = FileManager.default.temporaryDirectory.appendingPathComponent("chip-kvs-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: kvs) }
-        let app = try await ChipAppRunner.start(port: freeUDPPort(), kvsPath: kvs)
+        let port = freeUDPPort()
+        try #require(port != 0, "a free port for the app")
+        let app = try await ChipAppRunner.start(port: port, kvsPath: kvs)
         #expect(app.log.contains("Server Listening") || app.log.contains("Server initialization complete"))
         #expect(app.manualPairingCode?.count == 11, "manual pairing code parsed from the log")
         #expect(app.qrCode?.hasPrefix("MT:") == true, "QR payload parsed from the log")
@@ -116,7 +118,8 @@ struct ChipAppRunnerTests {
         let held = UInt16(bigEndian: out.sin_port)
         #expect(!isFreeForChipApp(held), "a port held for TCP is not free for the app")
         let port = freeUDPPort()
-        #expect(port != 0 && isFreeForChipApp(port))
+        try #require(port != 0, "a free port for the app")
+        #expect(isFreeForChipApp(port))
     }
 
     @Test("Onboarding codes are parsed from the app's colourised log lines")
@@ -138,6 +141,7 @@ struct ChipAppRunnerTests {
         let kvs = FileManager.default.temporaryDirectory.appendingPathComponent("chip-kvs-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: kvs) }
         let port = freeUDPPort()
+        try #require(port != 0, "a free port for the app")
         let task = Task { try await ChipAppRunner.start(port: port, kvsPath: kvs) }
         task.cancel()
         do {

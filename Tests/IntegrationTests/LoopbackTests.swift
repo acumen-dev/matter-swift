@@ -286,7 +286,8 @@ struct LoopbackTests {
             //           → CommissioningComplete over CASE (that session stays cached)
             let device = try await controller.commission(
                 address: serverAddress,
-                setupCode: Self.passcode
+                setupCode: Self.passcode,
+                mrp: patient
             )
 
             #expect(device.nodeID.rawValue > 0, "Device should have a valid node ID")
