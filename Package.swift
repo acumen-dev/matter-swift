@@ -249,7 +249,9 @@ let package = Package(
             name: "ReferenceTests",
             dependencies: [
                 "MatterCrypto",
+                "MatterDevice",
                 "MatterTypes",
+                "MatterTestSupport",
             ],
             path: "Tests/ReferenceTests"
         ),

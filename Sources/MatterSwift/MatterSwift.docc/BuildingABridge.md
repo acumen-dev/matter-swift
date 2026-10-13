@@ -176,15 +176,15 @@ After starting, the server:
 To commission your bridge, you need a setup code derived from the discriminator and passcode. MatterSwift can generate the QR code payload and manual pairing code:
 
 ```swift
-let setupPayload = SetupPayload(
+let setupPayload = try SetupPayload(
+    vendorID: 0xFFF1,
+    productID: 0x8000,
     discriminator: 3840,
-    passcode: 20202021,
-    vendorId: 0xFFF1,
-    productId: 0x8000
+    passcode: 20202021
 )
 
 print("Manual code: \(setupPayload.manualPairingCode)")
-print("QR payload:  \(setupPayload.qrCodePayload)")
+print("QR payload:  \(setupPayload.qrCodeString)")
 ```
 
 ## Dynamic Endpoints

@@ -3,6 +3,7 @@
 
 import Testing
 @testable import MatterDevice
+import MatterTypes
 
 @Suite("SetupPayload Tests")
 struct SetupPayloadTests {
@@ -147,5 +148,20 @@ struct SetupPayloadTests {
         #expect(payload.rendezvousInformation.contains(.onNetwork))
         #expect(payload.discriminator == 512)
         #expect(payload.passcode == 98765432)
+    }
+
+    @Test("QR code parses back through SetupCode")
+    func qrRoundTripThroughSetupCode() throws {
+        let payload = try SetupPayload(
+            vendorID: 0xFFF1, productID: 0x8000, commissioningFlow: .standard,
+            rendezvousInformation: .onNetwork, discriminator: 3840, passcode: 20202021
+        )
+        let code = try SetupCode(parsing: payload.qrCodeString)
+        #expect(code.discriminator == .long(3840))
+        #expect(code.passcode == 20202021)
+        #expect(code.vendorID == 0xFFF1)
+        #expect(code.productID == 0x8000)
+        #expect(code.commissioningFlow == 0)
+        #expect(code.rendezvousInformation == 4)
     }
 }
