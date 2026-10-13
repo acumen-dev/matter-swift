@@ -206,9 +206,12 @@ struct CommissionableDiscoveryTests {
 
     // MARK: - Address Forms
 
-    @Test("an IPv6 host resolved in URL form (\"[fd00::1]\") is returned unbracketed")
-    func bracketedIPv6HostIsUnbracketed() async throws {
-        let discovery = InMemoryDiscovery { record in MatterAddress(host: "[fd00::1]", port: record.port) }
+    @Test(
+        "an IPv6 host resolved in URL form is returned unbracketed, in canonical form",
+        arguments: ["[fd00::1]", "[fd00:0:0:0:0:0:0:1]", "[FD00::0001]"]
+    )
+    func bracketedIPv6HostIsUnbracketed(resolvedHost: String) async throws {
+        let discovery = InMemoryDiscovery { record in MatterAddress(host: resolvedHost, port: record.port) }
         try await discovery.advertise(service: Self.record("device", port: 5541, txt: ["D": "3840", "CM": "1"]))
         let controller = try Self.makeController(discovery)
 
@@ -233,10 +236,10 @@ struct CommissionableDiscoveryTests {
         #expect(discovery.resolveCount(name: "named") == 1)
     }
 
-    @Test("resolve(_:) returns an IPv6 host unbracketed, and rejects a host name")
+    @Test("resolve(_:) returns an IPv6 host unbracketed and canonical, and rejects a host name")
     func resolveNormalisesHost() async throws {
         let discovery = InMemoryDiscovery { record in
-            MatterAddress(host: record.name == "named" ? "named.local" : "[fd00::1]", port: record.port)
+            MatterAddress(host: record.name == "named" ? "named.local" : "[fd00:0:0:0:0:0:0:1]", port: record.port)
         }
         try await discovery.advertise(service: Self.record("bracketed", port: 5541, txt: [:]))
         try await discovery.advertise(service: Self.record("named", port: 5542, txt: [:]))

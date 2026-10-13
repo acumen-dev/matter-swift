@@ -181,8 +181,11 @@ struct AddressRefreshTests {
 
     // MARK: - (a'') address forms
 
-    @Test("A refresh that resolves a bracketed IPv6 host persists it unbracketed")
-    func bracketedIPv6IsPersistedUnbracketed() async throws {
+    @Test(
+        "A refresh that resolves a bracketed IPv6 host persists it unbracketed, in canonical form",
+        arguments: ["[fd00::5]", "[fd00:0:0:0:0:0:0:5]"]
+    )
+    func bracketedIPv6IsPersistedUnbracketed(resolvedHost: String) async throws {
         let link = FaultInjectingLink(seed: 69)
         let operational = LockedValue(link.b.address)
         let discovery = Self.makeDiscovery(link, operational: operational)
@@ -197,7 +200,7 @@ struct AddressRefreshTests {
             // the new address, and an empty TXT keeps `fast`, so the retry
             // gives up quickly.
             let moved = MatterAddress(host: "fd00::5", port: 5540)
-            operational.withLock { $0 = MatterAddress(host: "[fd00::5]", port: 5540) }
+            operational.withLock { $0 = MatterAddress(host: resolvedHost, port: 5540) }
             let advertised = try await Self.operationalRecord(discovery)
             try await discovery.advertise(service: ServiceRecord(
                 name: advertised.name, serviceType: .operational, host: advertised.host,

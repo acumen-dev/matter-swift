@@ -140,6 +140,31 @@ struct MessengerSessionTests {
         await rig.messenger.stop()
     }
 
+    @Test("A session registered with non-canonical IP text keeps the canonical form; the same address is not a move")
+    func registeredPeerAddressIsCanonical() async throws {
+        let clock = ManualClock()
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: clock)
+        let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
+        let canonical = MatterAddress(host: "fd00::5", port: 5540)
+        try await messenger.registerSession(controllerSession, peerAddress: MatterAddress(host: "[FD00:0:0:0:0:0:0:5]", port: 5540))
+        #expect(await messenger.peerAddress(forSession: 10) == canonical)
+
+        var peer = TestPeer(link: link)
+        let exchange = try await messenger.openExchange(sessionID: 10)
+        #expect(exchange.peerAddress == canonical)
+        async let reply = exchange.request(protocolID: .interactionModel, opcode: InteractionModelOpcode.readRequest.rawValue, payload: Data(), timeout: .seconds(5))
+        let request = try await peer.nextSecured(session: peerSession)
+        #expect(link.sent(from: .a, to: canonical).count == 1)
+        try await peer.send(
+            ScriptedPeer.securedReply(to: request, session: peerSession, protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue),
+            from: canonical
+        )
+        #expect(try await reply.peerAddress == canonical)
+        #expect(await messenger.peerAddress(forSession: 10) == canonical)
+        await messenger.stop()
+    }
+
     // MARK: - Unsolicited routing
 
     @Test("ReportData is routed by subscription ID; the StatusResponse piggybacks the ack; chunks follow on the exchange")

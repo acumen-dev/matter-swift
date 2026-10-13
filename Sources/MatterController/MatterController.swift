@@ -307,11 +307,12 @@ public actor MatterController {
     /// non-empty and does not parse) rejects. A record browsed without TXT
     /// is resolved and filtered on the resolved TXT. The match is resolved
     /// for its address and final TXT, from which `mrp` is built; the
-    /// address's host is a bare IP literal (an IPv6 host without the
-    /// brackets discovery gives it). A record whose resolve fails, does not
+    /// address's host is a bare IP literal in canonical form (an IPv6 host
+    /// without the brackets discovery gives it, compressed as `inet_ntop`
+    /// writes it: `"fd00::1"`). A record whose resolve fails, does not
     /// complete within `configuration.commissionableResolveTimeout`, or
-    /// yields a host name rather than an IP address is logged (instance
-    /// name only) and skipped.
+    /// yields a host name or a zoned IPv6 literal rather than an IP address
+    /// is logged (instance name only) and skipped.
     ///
     /// A short (manual-code) discriminator has 16 values, so two devices can
     /// both match; the first one wins. Callers must **not** try PASE against
@@ -456,8 +457,8 @@ public actor MatterController {
     /// resolved TXT; it is nil when the resolution returns no TXT (allowed by
     /// the discovery contract), so a caller can keep the timing it has
     /// rather than take the defaults. The address's host is a bare IP
-    /// literal (an IPv6 host is returned without the brackets discovery
-    /// gives it).
+    /// literal in canonical form (an IPv6 host is returned without the
+    /// brackets discovery gives it, compressed: `"fd00::1"`).
     ///
     /// - Parameters:
     ///   - nodeID: The target device's operational node ID.
@@ -523,13 +524,14 @@ public actor MatterController {
 
     /// Resolve a discovered service record to a network address.
     ///
-    /// The host is a bare IP literal: an IPv6 host that discovery returned
-    /// in brackets (`"[fd00::1]"`) is returned without them.
+    /// The host is a bare IP literal in canonical form: an IPv6 host that
+    /// discovery returned in brackets (`"[fd00::1]"`, or uncompressed
+    /// `"[fd00:0:0:0:0:0:0:1]"`) is returned as `"fd00::1"`.
     ///
     /// - Throws: `ControllerError.discoveryFailed` when the record resolves
     ///   to a host name rather than an IP address (discovery does this for
-    ///   an interface-scoped address on Apple platforms); the discovery's
-    ///   error if resolution fails.
+    ///   an interface-scoped address on Apple platforms), or to an IPv6
+    ///   literal with a `%<zone>`; the discovery's error if resolution fails.
     public func resolve(_ record: MatterServiceRecord) async throws -> MatterAddress {
         guard let address = try await discovery.resolve(record).withIPLiteralHost else {
             throw ControllerError.discoveryFailed("\(record.name) resolved to a host name, not an IP address")
@@ -610,7 +612,13 @@ public actor MatterController {
     /// a lossy link the device may stay armed until its fail-safe expires.
     ///
     /// - Parameters:
-    ///   - address: The device's network address.
+    ///   - address: The device's network address. An IP-literal host is
+    ///     used and stored in canonical form (brackets removed, IPv6
+    ///     compressed: `"[FD00:0:0:0:0:0:0:1]"` becomes `"fd00::1"`), so any
+    ///     text for the address matches the device's replies. A host name is
+    ///     not resolved: it is passed to the transport as given, which
+    ///     rejects every send to it, so commissioning fails at PASE once MRP
+    ///     gives up (as before).
     ///   - setupCode: The device's setup passcode (e.g., 20202021).
     ///   - mrp: The device's advertised MRP parameters (SII/SAI/SAT from its
     ///     commissionable TXT record), if known. Recorded with the device and
@@ -624,6 +632,7 @@ public actor MatterController {
         mrp: MRPParameters? = nil
     ) async throws -> CommissionedDevice {
         let timeout = configuration.operationTimeout
+        let address = address.canonicalised
 
         logger.info("Beginning commissioning to \(address.host):\(address.port)")
 

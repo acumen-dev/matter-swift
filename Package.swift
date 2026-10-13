@@ -238,6 +238,8 @@ let package = Package(
                 "MatterController",
                 .target(name: "MatterApple",
                         condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
+                .target(name: "MatterLinux",
+                        condition: .when(platforms: [.linux])),
                 "MatterCrypto",
                 "MatterProtocol",
                 "MatterTransport",
