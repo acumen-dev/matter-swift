@@ -64,12 +64,30 @@ public final class FaultInjectingLink: Sendable {
     /// Decide each datagram's fate instead of the drop probability (after
     /// `dropNext`). Runs outside the link's lock but must not block.
     public func setInterceptor(_ interceptor: (@Sendable (Data, Side) -> Delivery)?) {
+        guard let interceptor else {
+            core.setInterceptor(nil)
+            return
+        }
+        core.setInterceptor { data, side, _ in interceptor(data, side) }
+    }
+
+    /// As ``setInterceptor(_:)``, also given each datagram's destination
+    /// address (the link delivers it to the other endpoint whatever that is,
+    /// so a test drops by destination to model an address nobody answers on).
+    public func setAddressedInterceptor(_ interceptor: (@Sendable (Data, Side, MatterAddress) -> Delivery)?) {
         core.setInterceptor(interceptor)
     }
 
     /// Every datagram sent from `side`, delivered or not, in send order.
     public func sent(from side: Side) -> [Data] {
         core.read(side) { $0.log }
+    }
+
+    /// Every datagram sent from `side` to `destination`, delivered or not, in send order.
+    public func sent(from side: Side, to destination: MatterAddress) -> [Data] {
+        core.read(side) { direction in
+            zip(direction.log, direction.destinations).filter { $0.1 == destination }.map(\.0)
+        }
     }
 
     /// Datagrams yielded to `side`'s receive stream so far.
@@ -93,13 +111,13 @@ public final class FaultInjectingEndpoint: MatterUDPTransport, Sendable {
     }
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
-        core.transmit(data, from: side, sender: self.address)
+        core.transmit(data, from: side, sender: self.address, to: address)
     }
 
     /// Send with a different apparent source address (a second peer, or a
     /// peer whose port changed).
     public func send(_ data: Data, to address: MatterAddress, from source: MatterAddress) async throws {
-        core.transmit(data, from: side, sender: source)
+        core.transmit(data, from: side, sender: source, to: address)
     }
 
     public func receive() -> AsyncStream<(Data, MatterAddress)> {
@@ -118,13 +136,15 @@ public final class FaultInjectingEndpoint: MatterUDPTransport, Sendable {
 final class LinkCore: Sendable {
     typealias Side = FaultInjectingLink.Side
     typealias Delivery = FaultInjectingLink.Delivery
-    typealias Interceptor = @Sendable (Data, Side) -> Delivery
+    typealias Interceptor = @Sendable (Data, Side, MatterAddress) -> Delivery
 
     struct Direction: Sendable {
         var dropProbability = 0.0
         var rng: SplitMix64
         var dropNext = 0
         var log: [Data] = []
+        /// Destination of each datagram in `log`.
+        var destinations: [MatterAddress] = []
         var delivered = 0
     }
 
@@ -185,11 +205,12 @@ final class LinkCore: Sendable {
     }
 
     /// Apply the faults for one datagram sent from `side`.
-    func transmit(_ data: Data, from side: Side, sender: MatterAddress) {
+    func transmit(_ data: Data, from side: Side, sender: MatterAddress, to destination: MatterAddress) {
         let decision: Decision = state.withLock { state in
             var direction = state[side]
             defer { state[side] = direction }
             direction.log.append(data)
+            direction.destinations.append(destination)
             if direction.dropNext > 0 {
                 direction.dropNext -= 1
                 return .dropped
@@ -206,7 +227,7 @@ final class LinkCore: Sendable {
         case .dropped:
             return
         case .intercept(let interceptor):
-            delivery = interceptor(data, side)
+            delivery = interceptor(data, side, destination)
         case .decided(let decided):
             delivery = decided
         }

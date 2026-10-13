@@ -27,10 +27,13 @@ let fast = MRPParameters(
 
 /// `discovery` is where the device advertises; share one `InMemoryDiscovery`
 /// with the controller so it can find the device. The default advertises nowhere.
+/// `transport` replaces the device's endpoint (default `link.b`), e.g. to
+/// wrap it.
 func startServer(
     on link: FaultInjectingLink,
     toggles: LockedValue<Int>,
-    discovery: any MatterDiscovery = FaultyLinkDiscovery()
+    discovery: any MatterDiscovery = FaultyLinkDiscovery(),
+    transport: (any MatterUDPTransport)? = nil
 ) async throws -> (MatterDeviceServer, BridgedEndpoint) {
     let bridge = MatterBridge()
     let light = bridge.addDimmableLight(name: "Faulty Light", onOffChanged: { _ in
@@ -38,7 +41,7 @@ func startServer(
     })
     let server = MatterDeviceServer(
         bridge: bridge,
-        transport: link.b,
+        transport: transport ?? link.b,
         discovery: discovery,
         config: .init(
             discriminator: 3840,

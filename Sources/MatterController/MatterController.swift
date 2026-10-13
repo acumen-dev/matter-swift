@@ -395,28 +395,59 @@ public actor MatterController {
         discovery.browse(type: .operational)
     }
 
-    /// Discover a specific operational device by node ID on this controller's fabric.
+    /// Resolves a commissioned node's current operational address and TXT via _matter._tcp.
     ///
-    /// Constructs the expected operational instance name from the controller's
-    /// compressed fabric ID and the target node ID, then resolves it via mDNS.
+    /// Resolves the node's operational instance name on this controller's
+    /// fabric (compressed fabric ID and node ID). `mrp` is built from the
+    /// resolved TXT; a resolution that returns no TXT (allowed by the
+    /// discovery contract) yields the defaults.
     ///
-    /// - Parameter nodeID: The target device's operational node ID.
-    /// - Returns: The resolved network address of the device.
-    public func discoverDevice(nodeID: NodeID) async throws -> MatterAddress {
-        let cfid = fabricManager.compressedFabricID()
-        let opName = OperationalInstanceName(
-            compressedFabricID: cfid,
+    /// - Parameters:
+    ///   - nodeID: The target device's operational node ID.
+    ///   - timeout: How long to wait for the resolution (default:
+    ///     `configuration.discoveryTimeout`).
+    /// - Throws: `ControllerError.discoveryFailed` when nothing resolves in
+    ///   time; the discovery's error if resolution fails; `CancellationError`
+    ///   if the calling task is cancelled.
+    public func discoverDevice(nodeID: NodeID, timeout: Duration? = nil) async throws -> (address: MatterAddress, mrp: MRPParameters) {
+        let resolved = try await resolveOperational(nodeID: nodeID, timeout: timeout)
+        return (resolved.address, MRPParameters(txtRecords: resolved.txtRecords))
+    }
+
+    /// Resolve `nodeID`'s operational instance, bounded by `timeout`
+    /// (default: `configuration.discoveryTimeout`). The TXT is returned as
+    /// resolved, so a caller can tell an empty one from one with defaults.
+    private func resolveOperational(nodeID: NodeID, timeout: Duration? = nil) async throws -> ResolvedService {
+        let limit = timeout ?? configuration.discoveryTimeout
+        let name = OperationalInstanceName(
+            compressedFabricID: fabricManager.compressedFabricID(),
             nodeID: nodeID.rawValue
-        )
+        ).instanceName
+        let record = MatterServiceRecord(name: name, serviceType: .operational, host: "", port: 0)
+        let discovery = self.discovery
+        let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
-        let record = MatterServiceRecord(
-            name: opName.instanceName,
-            serviceType: .operational,
-            host: "",
-            port: 0
-        )
+        return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+            group.addTask { try await discovery.resolveService(record) }
+            group.addTask {
+                try await Task.sleep(for: limit)
+                throw expired
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw expired }
+            return first
+        }
+    }
 
-        return try await discovery.resolve(record)
+    /// Record a node's new operational address and persist it. `mrp`
+    /// replaces its MRP parameters; `nil` leaves them as they are. A cached
+    /// session is untouched: it keeps the address it was registered with.
+    func updateOperationalAddress(_ address: MatterAddress, mrp: MRPParameters?, for nodeID: NodeID) async {
+        await registry.updateAddress(for: nodeID, address: address)
+        if let mrp {
+            await registry.updateMRPParameters(for: nodeID, parameters: mrp)
+        }
+        await saveState()
     }
 
     /// Resolve a discovered service record to a network address.
@@ -1137,6 +1168,15 @@ public actor MatterController {
 
     /// Establish a new CASE session to a device via Sigma1/2/3 on one
     /// unsecured exchange, and register it before caching it.
+    ///
+    /// If nothing answers the handshake (`peerUnreachable` or `timeout`),
+    /// the node's operational address is re-resolved once (see
+    /// ``refreshedAddress(nodeID:tried:)``). At a different address the
+    /// handshake is retried once there, under the same reserved session ID,
+    /// and the session is registered with that address. Otherwise the
+    /// original error is thrown unchanged: retrying an unchanged address
+    /// would only double a dead peer's failure latency. A handshake the
+    /// device answered, even with a refusal, never triggers a re-resolve.
     private func establishCASESession(nodeID: NodeID) async throws -> SecureSession {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
@@ -1155,13 +1195,27 @@ public actor MatterController {
 
         logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
 
+        var usedAddress = address
         let session: SecureSession
         do {
             session = try await caseHandshake(
                 nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID
             )
         } catch {
-            throw Self.operationalError(error, nodeID: nodeID)
+            let original = Self.operationalError(error, nodeID: nodeID)
+            guard Self.nothingAnswered(original, nodeID: nodeID),
+                  let refreshed = await refreshedAddress(nodeID: nodeID, tried: address) else {
+                throw original
+            }
+            logger.info("Node \(nodeID.rawValue) did not answer CASE; retrying at its re-resolved address")
+            usedAddress = refreshed.address
+            do {
+                session = try await caseHandshake(
+                    nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID
+                )
+            } catch {
+                throw Self.operationalError(error, nodeID: nodeID)
+            }
         }
 
         // Register before caching so the first request's reply is routable.
@@ -1172,7 +1226,7 @@ public actor MatterController {
             throw ControllerError.deviceNotFound
         }
         do {
-            try await messenger.registerSession(session, peerAddress: address, mrp: current.mrpParameters)
+            try await messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
         } catch {
             throw Self.operationalError(error, nodeID: nodeID)
         }
@@ -1181,6 +1235,41 @@ public actor MatterController {
         logger.debug("CASE session established to node \(nodeID.rawValue)")
 
         return session
+    }
+
+    /// Re-resolve `nodeID`'s operational address after a handshake at
+    /// `tried` got no answer. When it differs, the new address is recorded
+    /// and persisted, with the MRP parameters from the operational TXT; an
+    /// empty TXT (allowed by the discovery contract) keeps the stored
+    /// parameters rather than overwriting them with defaults. Returns the
+    /// new address and the parameters to retry with, or nil when resolution
+    /// fails (logged) or names the address already tried.
+    private func refreshedAddress(
+        nodeID: NodeID,
+        tried: MatterAddress
+    ) async -> (address: MatterAddress, mrp: MRPParameters?)? {
+        let resolved: ResolvedService
+        do {
+            resolved = try await resolveOperational(nodeID: nodeID)
+        } catch {
+            logger.notice("Node \(nodeID.rawValue): operational re-resolve failed: \(error)")
+            return nil
+        }
+        guard resolved.address != tried else { return nil }
+        let mrp = resolved.txtRecords.isEmpty ? nil : MRPParameters(txtRecords: resolved.txtRecords)
+        await updateOperationalAddress(resolved.address, mrp: mrp, for: nodeID)
+        // The registry's value: an empty TXT kept what was stored.
+        return (resolved.address, await registry.device(for: nodeID)?.mrpParameters)
+    }
+
+    /// Whether `error` (already mapped by ``operationalError(_:nodeID:)``)
+    /// means nothing answered, rather than a device that answered badly.
+    private static func nothingAnswered(_ error: any Error, nodeID: NodeID) -> Bool {
+        switch error as? ControllerError {
+        case .peerUnreachable(let node)?: return node == nodeID
+        case .timeout?: return true
+        default: return false
+        }
     }
 
     /// Sigma1/2/3 with `nodeID` at `address` on one unsecured exchange,
