@@ -95,7 +95,10 @@ struct AddressRefreshTests {
         _ link: FaultInjectingLink,
         _ discovery: any ServiceDiscovery
     ) async throws -> (CommissionedDevice, String) {
-        let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+        let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+        // The CASE attempt at `stale` must give up quickly; the stored timing
+        // is then `fast`, which the refresh does or does not replace.
+        await controller.setMRPParameters(fast, for: device.nodeID)
         let name = try await operationalName(discovery)
         await controller.invalidateSession(for: device.nodeID)
         await controller.updateOperationalAddress(stale, mrp: nil, for: device.nodeID)
@@ -304,7 +307,7 @@ struct AddressRefreshTests {
         let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let name = try await Self.operationalName(discovery)
             await controller.invalidateSession(for: device.nodeID)
 
@@ -369,7 +372,9 @@ struct AddressRefreshTests {
         let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery)
 
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The dead-address phase must give up quickly.
+            await controller.setMRPParameters(fast, for: device.nodeID)
             let name = try await Self.operationalName(discovery)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(

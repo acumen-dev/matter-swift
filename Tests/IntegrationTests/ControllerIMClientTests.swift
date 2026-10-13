@@ -23,7 +23,7 @@ struct ControllerIMClientTests {
         let (server, _) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
 
             // The device answers with an InvokeResponse carrying the command
             // status NeedsTimedInteraction (0xC6 = 198), not a top-level
@@ -67,7 +67,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
             let seen = LockedValue<[Bool]>([])
@@ -98,7 +98,9 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 2)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The drop phase needs a silent device to give up quickly.
+            await controller.setMRPParameters(fast, for: device.nodeID)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 2))
             let log = LockedValue<[String]>([])
@@ -135,7 +137,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 30))
             let finished = LockedValue(false)
@@ -159,7 +161,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             await controller.stop()
             await #expect(throws: MessagingError.stopped) {
@@ -178,7 +180,9 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 2)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
+            // The drop phase needs a silent device to give up quickly.
+            await controller.setMRPParameters(fast, for: device.nodeID)
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             let subscription = try await controller.subscribe(nodeID: device.nodeID, SubscriptionRequest(attributePaths: [path], minInterval: 0, maxInterval: 2))
             let before = try await controller.session(for: device.nodeID).localSessionID
@@ -215,7 +219,7 @@ struct ControllerIMClientTests {
         let (server, light) = try await startServer(on: link, toggles: LockedValue(0))
         let controller = try makeController(on: link, maxRetransmissions: 4)
         do {
-            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
+            let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: patient)
             let nodeID = device.nodeID
             let path = AttributePath(endpointID: light.endpointID, clusterID: .onOff, attributeID: OnOffCluster.Attribute.onOff)
             // One already tracked, so concurrent calls have an entry to prune-check.

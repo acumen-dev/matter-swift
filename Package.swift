@@ -218,6 +218,7 @@ let package = Package(
                 .target(name: "MatterApple",
                         condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
                 "MatterTransport",
+                "MatterTestSupport",
             ]
         ),
         .testTarget(

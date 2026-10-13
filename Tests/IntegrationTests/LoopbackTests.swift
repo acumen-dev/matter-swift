@@ -14,6 +14,7 @@ import MatterTransport
 import MatterApple
 import MatterController
 import MatterDevice
+import MatterTestSupport
 
 @Suite("Loopback Integration", .serialized)
 struct LoopbackTests {
@@ -21,7 +22,7 @@ struct LoopbackTests {
     // MARK: - Shared Config
 
     static let passcode: UInt32 = 20202021
-    static let discriminator: UInt16 = 3840
+    static let discriminator = RealMDNSDiscriminators.chipDefault
     static let salt = Data(repeating: 0xAB, count: 32)
     static let iterations = 1000
 

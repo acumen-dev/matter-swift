@@ -78,7 +78,7 @@ struct CommissioningFailureTests {
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
         let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
-        let controller = try makeController(on: link, maxRetransmissions: 3)
+        let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
         let state = bridge.commissioningState
         Self.dropDeviceReplies(on: link) { state.isFailSafeArmed }
 
@@ -104,7 +104,7 @@ struct CommissioningFailureTests {
         let controller = try MatterController(
             transport: link.a,
             discovery: FaultyLinkDiscovery(),
-            configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: 3)),
+            configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: handshakeRetransmissions)),
             store: store
         )
         let state = bridge.commissioningState
@@ -131,7 +131,7 @@ struct CommissioningFailureTests {
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
         let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
-        let controller = try makeController(on: link, maxRetransmissions: 3)
+        let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
         let state = bridge.commissioningState
         // Once the device has staged its ACLs (AddNOC onwards), drop every
         // unsecured datagram it sends: Sigma2, or a StatusReport refusing

@@ -86,10 +86,16 @@ public actor MatterController {
         /// before skipping it and moving on to the next (default: 5s).
         /// Records are taken one at a time, in browse order, so without it a
         /// resolve that never completes (an instance being withdrawn can
-        /// leave one parked) would cost the whole search its deadline. The
-        /// default clears a healthy but slow resolve on Apple: up to 2 s for
-        /// the IPv4-preferring address attempt plus up to 2 s for a TXT
-        /// lookup when the browse carried none.
+        /// leave one parked) would cost the whole search its deadline.
+        ///
+        /// The bound works by cancelling the resolve, so it relies on the
+        /// discovery's `resolveService` honouring task cancellation, as the
+        /// `ServiceDiscovery` contract requires. The default is sized for a
+        /// healthy but slow resolve: on Apple, an IPv4-preferring address
+        /// attempt (up to 2 s), the unconstrained attempt that follows one
+        /// that timed out, and a TXT lookup (up to 2 s) when the browse
+        /// carried none. A resolve slower than the bound is skipped like a
+        /// failed one; raise it for networks where that is expected.
         public var commissionableResolveTimeout: Duration
 
         public init(

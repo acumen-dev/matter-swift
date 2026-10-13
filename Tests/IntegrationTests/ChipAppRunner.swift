@@ -9,6 +9,7 @@
 
 #if canImport(Network)
 import Foundation
+import MatterTestSupport
 
 // MARK: - ChipAppRunner
 
@@ -102,7 +103,7 @@ final class ChipAppRunner: @unchecked Sendable {
 
     /// Start with a fresh (or given) KVS file. Returns once the app logs that it is ready.
     static func start(
-        discriminator: UInt16 = 3840,
+        discriminator: UInt16 = RealMDNSDiscriminators.chipDefault,
         passcode: UInt32 = 20202021,
         port: UInt16,
         kvsPath: URL,

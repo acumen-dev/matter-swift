@@ -36,13 +36,11 @@ struct ChipDeviceDiscoveryTests {
     static let discoveryTimeout: Duration = .seconds(30)
 
     /// Short discriminators (the top four bits, all a manual code carries)
-    /// of the commissionable devices other suites advertise over real mDNS,
-    /// with the same passcode, possibly while these tests run: 840
-    /// (ChipToolIntegrationTests) → 3, 1234 (AppleDiscoveryTests) → 4, and
-    /// 3840 (the CHIP default; device-server and loopback tests) → 15.
-    /// Measured: a manual code whose short discriminator was 3 found
-    /// ChipToolIntegrationTests' device first, as the spec allows.
-    static let shortDiscriminatorsInUse: Set<UInt16> = [3, 4, 15]
+    /// of the commissionable devices other suites advertise over real mDNS
+    /// with the same passcode, possibly while these tests run. Measured: a
+    /// manual code whose short discriminator was 3 found
+    /// ChipToolIntegrationTests' device (840) first, as the spec allows.
+    static let shortDiscriminatorsInUse = RealMDNSDiscriminators.shortForms
 
     /// Short discriminators this process's apps have used. An app that has
     /// just stopped can still be browsed for a moment (measured: the next
@@ -51,7 +49,8 @@ struct ChipDeviceDiscoveryTests {
     static let usedShortDiscriminators = LockedValue<Set<UInt16>>([])
 
     /// A random discriminator in 1...4094 whose short form no other suite's
-    /// device shares and no earlier app in this process used; never 3840.
+    /// device shares and no earlier app in this process used; never the CHIP
+    /// default (3840).
     static func randomDiscriminator() -> UInt16 {
         usedShortDiscriminators.withLock { used in
             let available = Set<UInt16>(0...15).subtracting(shortDiscriminatorsInUse)
@@ -119,6 +118,7 @@ struct ChipDeviceDiscoveryTests {
             await app.stop()
             var newPort = freeUDPPort()
             while newPort == app.port { newPort = freeUDPPort() }
+            try #require(newPort != 0, "a free port for the restarted app")
             let restarted = try await ChipAppRunner.start(
                 discriminator: app.discriminator, passcode: Self.passcode, port: newPort, kvsPath: app.kvsPath
             )
@@ -170,9 +170,12 @@ struct ChipDeviceDiscoveryTests {
             try await controller.findCommissionable(parsed)
         }
         // The address came from discovery; the port is the app's.
-        #expect(found.address.port == app.port, "the discovered port is the app's")
-        try #require(Self.isNumericHost(found.address.host), "the resolved host is an IP literal, not a name")
-        #expect(found.discriminator == app.discriminator)
+        // Required, not expected: anything else is another device or an
+        // address this transport cannot reach, and must stop before PASE.
+        try #require(found.address.port == app.port, "the discovered port is the app's")
+        try #require(found.discriminator == app.discriminator, "the discovered device is the app")
+        // LoopbackTransport is IPv4-only (AF_INET).
+        try #require(Self.isIPv4Literal(found.address.host), "the resolved host is an IPv4 literal")
         #expect(found.commissioningMode == 1, "basic commissioning window")
         // Measured: v1.4.0.0's commissionable TXT carries no SII/SAI/SAT,
         // so its MRP timing is the defaults; recorded as advertised.
@@ -187,13 +190,10 @@ struct ChipDeviceDiscoveryTests {
         #expect(app.log.contains("Commissioning completed successfully"), "the device committed the fabric")
     }
 
-    /// Whether `host` is an IPv4 or IPv6 literal (brackets allowed).
-    static func isNumericHost(_ host: String) -> Bool {
-        var literal = host
-        if literal.hasPrefix("["), literal.hasSuffix("]") { literal = String(literal.dropFirst().dropLast()) }
+    /// Whether `host` is an IPv4 dotted-quad literal.
+    static func isIPv4Literal(_ host: String) -> Bool {
         var v4 = in_addr()
-        var v6 = in6_addr()
-        return inet_pton(AF_INET, literal, &v4) == 1 || inet_pton(AF_INET6, literal, &v6) == 1
+        return inet_pton(AF_INET, host, &v4) == 1
     }
 
     /// Start the app (random discriminator, fresh KVS, free port) and a
@@ -206,8 +206,10 @@ struct ChipDeviceDiscoveryTests {
         let kvs = FileManager.default.temporaryDirectory.appendingPathComponent("chip-kvs-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: kvs) }
 
+        let port = freeUDPPort()
+        try #require(port != 0, "a free port for the app")
         let app = try await ChipAppRunner.start(
-            discriminator: Self.randomDiscriminator(), passcode: Self.passcode, port: freeUDPPort(), kvsPath: kvs
+            discriminator: Self.randomDiscriminator(), passcode: Self.passcode, port: port, kvsPath: kvs
         )
         // Discovery finds the app at a LAN address of this host, not loopback.
         let transport = LoopbackTransport(bindAddress: INADDR_ANY)

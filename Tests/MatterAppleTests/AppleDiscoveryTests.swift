@@ -7,6 +7,7 @@ import Foundation
 import Network
 import MatterApple
 import MatterTransport
+import MatterTestSupport
 
 @Suite("AppleDiscovery", .serialized)
 struct AppleDiscoveryTests {
@@ -23,7 +24,7 @@ struct AppleDiscoveryTests {
             serviceType: .commissionable,
             host: "",
             port: 5560,
-            txtRecords: ["D": "3840", "VP": "65521+32769", "CM": "1"]
+            txtRecords: ["D": "\(RealMDNSDiscriminators.chipDefault)", "VP": "65521+32769", "CM": "1"]
         )
 
         try await discovery.advertise(service: service)
@@ -41,7 +42,7 @@ struct AppleDiscoveryTests {
             serviceType: .commissionable,
             host: "",
             port: 5562,
-            txtRecords: ["D": "1234", "CM": "1"]
+            txtRecords: ["D": "\(RealMDNSDiscriminators.browseTest)", "CM": "1"]
         )
 
         try await advertiser.advertise(service: service)
@@ -86,7 +87,7 @@ struct AppleDiscoveryTests {
             serviceType: .commissionable,
             host: "",
             port: 5570,
-            txtRecords: ["D": "3840", "CM": "1"]
+            txtRecords: ["D": "\(RealMDNSDiscriminators.chipDefault)", "CM": "1"]
         )
 
         let operational = MatterServiceRecord(

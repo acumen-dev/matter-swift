@@ -19,6 +19,7 @@ import MatterTypes
 import MatterTransport
 import MatterApple
 import MatterDevice
+import MatterTestSupport
 
 @Suite("chip-tool Integration", .serialized)
 struct ChipToolIntegrationTests {
@@ -36,7 +37,7 @@ struct ChipToolIntegrationTests {
     /// chip-tool discovers the port via mDNS SRV records, so any port works.
     /// Discriminator 840 avoids conflict with other commissionable devices.
     static let serverConfig = MatterDeviceServer.Config(
-        discriminator: 840,
+        discriminator: RealMDNSDiscriminators.chipToolBridge,
         passcode: 20202021,
         port: 5542,
         vendorId: 0xFFF1,
