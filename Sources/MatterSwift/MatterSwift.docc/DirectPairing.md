@@ -13,7 +13,7 @@ Every Matter device has a setup code used for commissioning, available in two fo
 - **QR code**: Contains the full setup payload (discriminator, passcode, vendor/product IDs, discovery capabilities)
 - **Manual pairing code**: An 11-digit or 21-digit numeric code printed on the device
 
-The passcode from either format is what you pass to `controller.commission(setupCode:)`.
+Pass either format, as the string, to `controller.commission(setupCode:)`, which finds the device by its discriminator. To commission at a known address instead, use `controller.commission(address:setupCode:mrp:)`, which takes the numeric passcode from the code.
 
 For testing, the default test passcode is `20202021` with discriminator `3840`.
 
