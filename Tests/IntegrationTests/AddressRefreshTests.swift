@@ -29,6 +29,10 @@ struct AddressRefreshTests {
     /// On top of every protocol-derived bound; never a latency budget.
     static let hangGuard = Duration.seconds(10)
 
+    /// How long a suspended operational resolve waits for its cancellation
+    /// before completing anyway (so a missed deadline shows as a result).
+    static let suspendGuard = Duration.seconds(30)
+
     struct HangGuard: Error {}
 
     /// Commissionable records resolve to the device; operational ones to `operational`.
@@ -43,10 +47,14 @@ struct AddressRefreshTests {
 
     /// The device's operational instance name, once it has advertised it
     /// (the server advertises from a task after the fabric commits).
-    private static func operationalName(_ discovery: InMemoryDiscovery) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
+    private static func operationalName(_ discovery: any ServiceDiscovery) async throws -> String {
+        try await operationalRecord(discovery).name
+    }
+
+    private static func operationalRecord(_ discovery: any ServiceDiscovery) async throws -> ServiceRecord {
+        try await withThrowingTaskGroup(of: ServiceRecord.self) { group in
             group.addTask {
-                for await record in discovery.browse(serviceType: .operational) { return record.name }
+                for await record in discovery.browse(serviceType: .operational) { return record }
                 throw CancellationError()
             }
             group.addTask {
@@ -80,7 +88,7 @@ struct AddressRefreshTests {
     private static func commissionThenGoStale(
         _ controller: MatterController,
         _ link: FaultInjectingLink,
-        _ discovery: InMemoryDiscovery
+        _ discovery: any ServiceDiscovery
     ) async throws -> (CommissionedDevice, String) {
         let device = try await controller.commission(address: link.b.address, setupCode: passcode, mrp: fast)
         let name = try await operationalName(discovery)
@@ -118,6 +126,95 @@ struct AddressRefreshTests {
             #expect(stored.operationalPort == link.b.address.port)
             #expect(DeviceRegistry.mrpParameters(from: stored) == Self.advertisedMRP)
             #expect(discovery.resolveCount(name: name, serviceType: .operational) == 1)
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await controller.stop(); await server.stop()
+    }
+
+    // MARK: - (a') moved, no TXT
+
+    @Test("A re-resolve with an empty TXT moves the node but keeps its stored MRP timing")
+    func emptyTXTKeepsTiming() async throws {
+        let link = FaultInjectingLink(seed: 66)
+        let operational = LockedValue(link.b.address)
+        let discovery = Self.makeDiscovery(link, operational: operational)
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0), discovery: discovery)
+        let store = InMemoryControllerStore()
+        let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery, store: store)
+
+        do {
+            let (device, _) = try await Self.commissionThenGoStale(controller, link, discovery)
+            // Same name and type: replaces the device's record, now without TXT.
+            let advertised = try await Self.operationalRecord(discovery)
+            try await discovery.advertise(service: ServiceRecord(
+                name: advertised.name, serviceType: .operational, host: advertised.host,
+                port: advertised.port, txtRecords: [:], subtypes: advertised.subtypes))
+            try #require(try await Self.operationalRecord(discovery).txtRecords.isEmpty)
+
+            let value = try await Self.readOnOff(controller, device, light)
+            #expect(value.boolValue == false)
+
+            let current = await controller.device(for: device.nodeID)
+            #expect(current?.operationalAddress == link.b.address)
+            #expect(current?.mrpParameters == fast)
+            let stored = try #require(await store.load()?.devices.first { $0.nodeID == device.nodeID.rawValue })
+            #expect(stored.operationalHost == link.b.address.host)
+            #expect(DeviceRegistry.mrpParameters(from: stored) == fast)
+        } catch {
+            await controller.stop(); await server.stop()
+            throw error
+        }
+        await controller.stop(); await server.stop()
+    }
+
+    // MARK: - Resolve deadlines
+
+    @Test("discoverDevice gives up at its timeout when the resolve never completes")
+    func discoverDeviceDeadline() async throws {
+        let link = FaultInjectingLink(seed: 67)
+        let discovery = SuspendingOperationalDiscovery(
+            inner: InMemoryDiscovery { _ in link.b.address }, hangGuard: Self.suspendGuard
+        )
+        let controller = try makeController(on: link, maxRetransmissions: Self.retransmissions, discovery: discovery)
+        await #expect {
+            _ = try await controller.discoverDevice(nodeID: NodeID(rawValue: 2), timeout: .milliseconds(200))
+        } throws: { error in
+            if case ControllerError.discoveryFailed = error { return true }
+            return false
+        }
+        #expect(discovery.resolveCancelled)
+        await controller.stop()
+    }
+
+    @Test("A refresh whose resolve never completes gives up at addressRefreshTimeout with the original error")
+    func refreshDeadline() async throws {
+        let link = FaultInjectingLink(seed: 68)
+        let operational = LockedValue(link.b.address)
+        let discovery = SuspendingOperationalDiscovery(
+            inner: Self.makeDiscovery(link, operational: operational), hangGuard: Self.suspendGuard
+        )
+        let (server, light) = try await startServer(on: link, toggles: LockedValue(0), discovery: discovery)
+        let controller = try MatterController(
+            transport: link.a,
+            discovery: discovery,
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1),
+                mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
+                addressRefreshTimeout: .milliseconds(200)
+            )
+        )
+
+        do {
+            let (device, _) = try await Self.commissionThenGoStale(controller, link, discovery)
+            // Had the deadline been missed, the resolve would complete after
+            // the suspend guard, and the retry at the device's address succeed.
+            await #expect(throws: ControllerError.peerUnreachable(device.nodeID)) {
+                _ = try await Self.readOnOff(controller, device, light)
+            }
+            #expect(discovery.resolveCancelled)
+            #expect(await controller.device(for: device.nodeID)?.operationalAddress == Self.stale)
         } catch {
             await controller.stop(); await server.stop()
             throw error
@@ -365,5 +462,53 @@ private final class MovableEndpoint: MatterUDPTransport, Sendable {
 
     func close() async {
         await base.close()
+    }
+}
+
+/// Delegates to `inner`, except that resolving an operational instance
+/// waits until cancelled. If it is never cancelled, it resolves normally
+/// after `hangGuard`, so a missed deadline shows as a result.
+private final class SuspendingOperationalDiscovery: ServiceDiscovery, Sendable {
+    private let inner: InMemoryDiscovery
+    private let hangGuard: Duration
+    private let cancelled = LockedValue(false)
+
+    init(inner: InMemoryDiscovery, hangGuard: Duration) {
+        self.inner = inner
+        self.hangGuard = hangGuard
+    }
+
+    var resolveCancelled: Bool { cancelled.value }
+
+    func advertise(service: ServiceRecord) async throws {
+        try await inner.advertise(service: service)
+    }
+
+    func browse(serviceType: ServiceType) -> AsyncStream<ServiceRecord> {
+        inner.browse(serviceType: serviceType)
+    }
+
+    func resolve(_ record: ServiceRecord) async throws -> NetworkAddress {
+        try await resolveService(record).address
+    }
+
+    func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
+        if record.serviceType == .operational {
+            do {
+                try await Task.sleep(for: hangGuard)
+            } catch {
+                cancelled.withLock { $0 = true }
+                throw error
+            }
+        }
+        return try await inner.resolveService(record)
+    }
+
+    func stopAdvertising() async {
+        await inner.stopAdvertising()
+    }
+
+    func stopAdvertising(name: String) async {
+        await inner.stopAdvertising(name: name)
     }
 }

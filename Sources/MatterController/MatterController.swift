@@ -75,6 +75,13 @@ public actor MatterController {
         /// How long `findCommissionable` searches before giving up (default: 30s).
         public var discoveryTimeout: Duration
 
+        /// How long a CASE attempt that got no answer waits to re-resolve the
+        /// node's operational address before giving up with its original
+        /// error (default: 5s). Kept short: an unadvertised name may never
+        /// resolve, and every CASE attempt to a powered-off device (each
+        /// subscription re-subscribe, for one) would otherwise pay it in full.
+        public var addressRefreshTimeout: Duration
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -83,7 +90,8 @@ public actor MatterController {
             operationTimeout: Duration = .seconds(30),
             commissioningTimeout: Duration = .seconds(120),
             mrp: MRPConfig = .default,
-            discoveryTimeout: Duration = .seconds(30)
+            discoveryTimeout: Duration = .seconds(30),
+            addressRefreshTimeout: Duration = .seconds(5)
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -93,6 +101,7 @@ public actor MatterController {
             self.commissioningTimeout = commissioningTimeout
             self.mrp = mrp
             self.discoveryTimeout = discoveryTimeout
+            self.addressRefreshTimeout = addressRefreshTimeout
         }
     }
 
@@ -399,8 +408,9 @@ public actor MatterController {
     ///
     /// Resolves the node's operational instance name on this controller's
     /// fabric (compressed fabric ID and node ID). `mrp` is built from the
-    /// resolved TXT; a resolution that returns no TXT (allowed by the
-    /// discovery contract) yields the defaults.
+    /// resolved TXT; it is nil when the resolution returns no TXT (allowed by
+    /// the discovery contract), so a caller can keep the timing it has
+    /// rather than take the defaults.
     ///
     /// - Parameters:
     ///   - nodeID: The target device's operational node ID.
@@ -409,9 +419,14 @@ public actor MatterController {
     /// - Throws: `ControllerError.discoveryFailed` when nothing resolves in
     ///   time; the discovery's error if resolution fails; `CancellationError`
     ///   if the calling task is cancelled.
-    public func discoverDevice(nodeID: NodeID, timeout: Duration? = nil) async throws -> (address: MatterAddress, mrp: MRPParameters) {
+    public func discoverDevice(nodeID: NodeID, timeout: Duration? = nil) async throws -> (address: MatterAddress, mrp: MRPParameters?) {
         let resolved = try await resolveOperational(nodeID: nodeID, timeout: timeout)
-        return (resolved.address, MRPParameters(txtRecords: resolved.txtRecords))
+        return (resolved.address, Self.mrpParameters(fromOperationalTXT: resolved.txtRecords))
+    }
+
+    /// MRP parameters from an operational TXT; nil when it is empty.
+    private static func mrpParameters(fromOperationalTXT txt: [String: String]) -> MRPParameters? {
+        txt.isEmpty ? nil : MRPParameters(txtRecords: txt)
     }
 
     /// Resolve `nodeID`'s operational instance, bounded by `timeout`
@@ -442,11 +457,13 @@ public actor MatterController {
     /// Record a node's new operational address and persist it. `mrp`
     /// replaces its MRP parameters; `nil` leaves them as they are. A cached
     /// session is untouched: it keeps the address it was registered with.
+    /// Nothing is saved once the controller has stopped.
     func updateOperationalAddress(_ address: MatterAddress, mrp: MRPParameters?, for nodeID: NodeID) async {
         await registry.updateAddress(for: nodeID, address: address)
         if let mrp {
             await registry.updateMRPParameters(for: nodeID, parameters: mrp)
         }
+        guard !stopped else { return }
         await saveState()
     }
 
@@ -462,13 +479,18 @@ public actor MatterController {
     ///
     /// The device's advertised MRP timing (SII/SAI/SAT) is used for
     /// commissioning and persisted with the device, unless `mrp` overrides it.
+    /// An override lasts until the node's address is refreshed: when a CASE
+    /// attempt gets no answer and re-resolving finds the node at a new
+    /// address, the timing from its operational TXT replaces the stored one
+    /// (an empty operational TXT keeps it).
     /// The same rules as ``findCommissionable(_:timeout:)`` apply: a short
     /// discriminator may match more than one device, and the first wins.
     ///
     /// - Parameters:
     ///   - setupCode: The manual pairing code or `MT:` QR payload.
     ///   - discoveryTimeout: How long to search (default: `configuration.discoveryTimeout`).
-    ///   - mrp: Overrides the advertised MRP parameters.
+    ///   - mrp: Overrides the advertised MRP parameters (until an address
+    ///     refresh; see above).
     /// - Throws: `ControllerError.invalidSetupCode` (naming the problem, never
     ///   the code); the errors of `findCommissionable` and of
     ///   ``commission(address:setupCode:mrp:)``.
@@ -848,6 +870,11 @@ public actor MatterController {
     /// Set (or clear) a device's advertised MRP parameters (SII/SAI/SAT).
     /// Persisted with the device and applied to new exchanges at once,
     /// including on its cached session.
+    ///
+    /// Explicit parameters last until the node's address is refreshed: when
+    /// a CASE attempt gets no answer and re-resolving finds the node at a new
+    /// address, the timing from its operational TXT replaces them (an empty
+    /// operational TXT keeps them). The last registry write wins.
     public func setMRPParameters(_ parameters: MRPParameters?, for nodeID: NodeID) async {
         await registry.updateMRPParameters(for: nodeID, parameters: parameters)
         await saveState()
@@ -1169,14 +1196,16 @@ public actor MatterController {
     /// Establish a new CASE session to a device via Sigma1/2/3 on one
     /// unsecured exchange, and register it before caching it.
     ///
-    /// If nothing answers the handshake (`peerUnreachable` or `timeout`),
-    /// the node's operational address is re-resolved once (see
+    /// If the handshake fails with `peerUnreachable` or `timeout` (taken to
+    /// mean nothing answered; a `timeout` can also follow a Sigma2), the
+    /// node's operational address is re-resolved once, within
+    /// `configuration.addressRefreshTimeout` (see
     /// ``refreshedAddress(nodeID:tried:)``). At a different address the
     /// handshake is retried once there, under the same reserved session ID,
     /// and the session is registered with that address. Otherwise the
     /// original error is thrown unchanged: retrying an unchanged address
-    /// would only double a dead peer's failure latency. A handshake the
-    /// device answered, even with a refusal, never triggers a re-resolve.
+    /// would only double a dead peer's failure latency. Any other failure,
+    /// such as a refusal (`caseSessionFailed`), never triggers a re-resolve.
     private func establishCASESession(nodeID: NodeID) async throws -> SecureSession {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
@@ -1204,7 +1233,7 @@ public actor MatterController {
         } catch {
             let original = Self.operationalError(error, nodeID: nodeID)
             guard Self.nothingAnswered(original, nodeID: nodeID),
-                  let refreshed = await refreshedAddress(nodeID: nodeID, tried: address) else {
+                  let refreshed = try await refreshedAddress(nodeID: nodeID, tried: address) else {
                 throw original
             }
             logger.info("Node \(nodeID.rawValue) did not answer CASE; retrying at its re-resolved address")
@@ -1243,21 +1272,31 @@ public actor MatterController {
     /// empty TXT (allowed by the discovery contract) keeps the stored
     /// parameters rather than overwriting them with defaults. Returns the
     /// new address and the parameters to retry with, or nil when resolution
-    /// fails (logged) or names the address already tried.
+    /// fails (logged) or names the address already tried, or when the
+    /// device was removed or the controller stopped meanwhile. Resolution is
+    /// bounded by `configuration.addressRefreshTimeout`; cancellation
+    /// propagates.
     private func refreshedAddress(
         nodeID: NodeID,
         tried: MatterAddress
-    ) async -> (address: MatterAddress, mrp: MRPParameters?)? {
+    ) async throws -> (address: MatterAddress, mrp: MRPParameters?)? {
         let resolved: ResolvedService
         do {
-            resolved = try await resolveOperational(nodeID: nodeID)
+            resolved = try await resolveOperational(nodeID: nodeID, timeout: configuration.addressRefreshTimeout)
+        } catch let cancellation as CancellationError {
+            throw cancellation
         } catch {
+            try Task.checkCancellation()
             logger.notice("Node \(nodeID.rawValue): operational re-resolve failed: \(error)")
             return nil
         }
+        guard !stopped, await registry.device(for: nodeID) != nil else { return nil }
         guard resolved.address != tried else { return nil }
-        let mrp = resolved.txtRecords.isEmpty ? nil : MRPParameters(txtRecords: resolved.txtRecords)
-        await updateOperationalAddress(resolved.address, mrp: mrp, for: nodeID)
+        // A device removed from here on is a no-op in the registry; a stop
+        // from here on skips the save (see updateOperationalAddress).
+        await updateOperationalAddress(
+            resolved.address, mrp: Self.mrpParameters(fromOperationalTXT: resolved.txtRecords), for: nodeID
+        )
         // The registry's value: an empty TXT kept what was stored.
         return (resolved.address, await registry.device(for: nodeID)?.mrpParameters)
     }
