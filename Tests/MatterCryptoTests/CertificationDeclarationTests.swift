@@ -58,7 +58,7 @@ struct CertificationDeclarationTests {
         #expect(cd.formatVersion == 1)
         let key001 = try Self.productionKeys()[0]
         #expect(cd.signerKeyIdentifier == key001.keyIdentifier)
-        #expect(cd.verifySignature(cmsDER: der, keys: try Self.productionKeys()) == .valid)
+        #expect(cd.verifySignature(keys: try Self.productionKeys()) == .valid)
     }
 
     @Test("DAC origin fields parse when both are present")
@@ -91,7 +91,7 @@ struct CertificationDeclarationTests {
         let signed = try CertificationDeclarationSigner.signWithTestKey(content: content)
         let cd = try CertificationDeclaration(cmsDER: signed)
         #expect(cd == (try CertificationDeclaration(cmsDER: AttestationFixtures.testCD)))
-        #expect(cd.verifySignature(cmsDER: signed, keys: [try Self.testKey()]) == .valid)
+        #expect(cd.verifySignature(keys: [try Self.testKey()]) == .valid)
     }
 
     @Test("bytes that are not a Matter CMS envelope are malformed", arguments: [
@@ -132,16 +132,16 @@ struct CertificationDeclarationTests {
     func testCDVerifies() throws {
         let der = try AttestationFixtures.testCD
         let cd = try CertificationDeclaration(cmsDER: der)
-        #expect(cd.verifySignature(cmsDER: der, keys: [try Self.testKey()]) == .valid)
-        #expect(cd.verifySignature(cmsDER: der, keys: try Self.productionKeys() + [try Self.testKey()]) == .valid)
+        #expect(cd.verifySignature(keys: [try Self.testKey()]) == .valid)
+        #expect(cd.verifySignature(keys: try Self.productionKeys() + [try Self.testKey()]) == .valid)
     }
 
     @Test("with no matching key the result is unknownSigningKey")
     func unknownKey() throws {
         let der = try AttestationFixtures.testCD
         let cd = try CertificationDeclaration(cmsDER: der)
-        #expect(cd.verifySignature(cmsDER: der, keys: []) == .unknownSigningKey)
-        #expect(cd.verifySignature(cmsDER: der, keys: try Self.productionKeys()) == .unknownSigningKey)
+        #expect(cd.verifySignature(keys: []) == .unknownSigningKey)
+        #expect(cd.verifySignature(keys: try Self.productionKeys()) == .unknownSigningKey)
     }
 
     @Test("a flipped signature byte gives invalidSignature")
@@ -149,7 +149,7 @@ struct CertificationDeclarationTests {
         var der = try AttestationFixtures.testCD
         der[der.index(before: der.endIndex)] ^= 0x01  // last byte of the ECDSA s value
         let cd = try CertificationDeclaration(cmsDER: der)
-        #expect(cd.verifySignature(cmsDER: der, keys: [try Self.testKey()]) == .invalidSignature)
+        #expect(cd.verifySignature(keys: [try Self.testKey()]) == .invalidSignature)
     }
 
     @Test("a changed payload byte gives invalidSignature")
@@ -159,7 +159,7 @@ struct CertificationDeclarationTests {
         der[range.lowerBound] = UInt8(ascii: "X")
         let cd = try CertificationDeclaration(cmsDER: der)
         #expect(cd.certificateID == "XIG20141ZB330001-24")
-        #expect(cd.verifySignature(cmsDER: der, keys: [try Self.testKey()]) == .invalidSignature)
+        #expect(cd.verifySignature(keys: [try Self.testKey()]) == .invalidSignature)
     }
 
     @Test("a key with the signer's identifier but another public key gives invalidSignature")
@@ -169,8 +169,8 @@ struct CertificationDeclarationTests {
         let impostor = try CertificationDeclarationSigner.sign(
             content: CertificationDeclarationSigner.content(vendorID: 0xFFF1, productIDs: [0x8000]),
             key: P256.Signing.PrivateKey(), keyIdentifier: CertificationDeclarationSigner.testCDKeyIdentifier)
-        #expect(try CertificationDeclaration(cmsDER: impostor).verifySignature(cmsDER: impostor, keys: [try Self.testKey()]) == .invalidSignature)
-        #expect(cd.verifySignature(cmsDER: der, keys: [try Self.testKey()]) == .valid)
+        #expect(try CertificationDeclaration(cmsDER: impostor).verifySignature(keys: [try Self.testKey()]) == .invalidSignature)
+        #expect(cd.verifySignature(keys: [try Self.testKey()]) == .valid)
     }
 }
 
@@ -209,12 +209,12 @@ struct CDVector: Sendable, CustomTestStringConvertible {
 /// shape failures are `kCertificationDeclarationNoKeyId` (:470) or `…InvalidSignature` (:483)
 /// upstream and `.malformed` here; TLV failures are `…InvalidFormat` (:495) upstream.
 let cdVectorTable: [CDVector] = [
-    .init(name: "struct_cd_authorized_paa_list_count0", expected: .failed(.cdVidPidNotListed), upstream: "kCertificationDeclarationInvalidPAA :567 (no matching reason)"),
-    .init(name: "struct_cd_authorized_paa_list_count10_invalid", expected: .failed(.cdVidPidNotListed), upstream: "kCertificationDeclarationInvalidPAA :567 (no matching reason)"),
+    .init(name: "struct_cd_authorized_paa_list_count0", expected: .failed(.cdPAANotAuthorized), upstream: "kCertificationDeclarationInvalidPAA :567"),
+    .init(name: "struct_cd_authorized_paa_list_count10_invalid", expected: .failed(.cdPAANotAuthorized), upstream: "kCertificationDeclarationInvalidPAA :567"),
     .init(name: "struct_cd_authorized_paa_list_count10_valid", expected: .verified, upstream: "success"),
     .init(name: "struct_cd_authorized_paa_list_count1_valid", expected: .verified, upstream: "success"),
     .init(name: "struct_cd_authorized_paa_list_count2_valid", expected: .verified, upstream: "success"),
-    .init(name: "struct_cd_authorized_paa_list_count3_invalid", expected: .failed(.cdVidPidNotListed), upstream: "kCertificationDeclarationInvalidPAA :567 (no matching reason)"),
+    .init(name: "struct_cd_authorized_paa_list_count3_invalid", expected: .failed(.cdPAANotAuthorized), upstream: "kCertificationDeclarationInvalidPAA :567"),
     .init(name: "struct_cd_authorized_paa_list_missing", expected: .verified, upstream: "success"),
     .init(name: "struct_cd_cert_id_len_wrong", expected: .failed(.malformed), upstream: "kCertificationDeclarationInvalidFormat :495"),
     .init(name: "struct_cd_cert_id_mismatch", expected: .verifiedNeedsDCL, upstream: "success (only the length is checked locally)"),
@@ -447,16 +447,16 @@ struct CertificationDeclarationVerifierStageTests {
         #expect(Self.isVerified(result), "\(result)")
     }
 
-    @Test("authorized_paa_list: listing the PAA verifies; not listing it, or empty, gives cdVidPidNotListed (:567)")
+    @Test("authorized_paa_list: listing the PAA verifies; not listing it, or empty, gives cdPAANotAuthorized (:567)")
     func authorizedPAAList() async throws {
         let listed = try Self.signed(vendorID: 0xFFF1, productIDs: [0x8000], authorizedPAAs: [Data(repeating: 0x11, count: 20), Self.testPAASKI])
         #expect(Self.isVerified(try await Self.verifyDev(cd: listed)))
         let unlisted = try Self.signed(vendorID: 0xFFF1, productIDs: [0x8000], authorizedPAAs: [Data(repeating: 0x11, count: 20)])
         let failure = try await Self.verifyDev(cd: unlisted)
-        #expect(Self.reason(failure) == .cdVidPidNotListed)
+        #expect(Self.reason(failure) == .cdPAANotAuthorized)
         if case .failed(let detail) = failure { #expect(detail.detail.contains("authorized_paa_list")) }
         let empty = try Self.signed(vendorID: 0xFFF1, productIDs: [0x8000], authorizedPAAs: [])
-        #expect(Self.reason(try await Self.verifyDev(cd: empty)) == .cdVidPidNotListed)
+        #expect(Self.reason(try await Self.verifyDev(cd: empty)) == .cdPAANotAuthorized)
     }
 
     // MARK: - Commissioner DUT vectors

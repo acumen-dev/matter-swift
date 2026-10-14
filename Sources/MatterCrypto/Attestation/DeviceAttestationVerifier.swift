@@ -112,7 +112,8 @@ public struct DeviceAttestationVerifier: Sendable {
     /// The CD's signature, then connectedhomeip v1.4.0.0
     /// `DefaultDACVerifier::ValidateCertificateDeclarationPayload` rule for rule (line numbers
     /// in src/credentials/attestation_verifier/DefaultDeviceAttestationVerifier.cpp). Upstream's
-    /// vendor-ID, product-ID and authorized-PAA failures all give `.cdVidPidNotListed`. `nil`
+    /// vendor-ID and product-ID failures give `.cdVidPidNotListed`, its authorized-PAA failure
+    /// `.cdPAANotAuthorized`. `nil`
     /// when the CD passes.
     ///
     /// Upstream also refuses the test CD signing key unless test keys are enabled (:477-480);
@@ -127,7 +128,7 @@ public struct DeviceAttestationVerifier: Sendable {
         } catch {
             return (.malformed, "the Certification Declaration is malformed: \(error)")
         }
-        switch cd.verifySignature(cmsDER: cmsDER, keys: trustStore.cdSigningKeys) {
+        switch cd.verifySignature(keys: trustStore.cdSigningKeys) {
         case .valid:
             break
         case .unknownSigningKey:
@@ -182,7 +183,7 @@ public struct DeviceAttestationVerifier: Sendable {
         if let authorizedPAAs = cd.authorizedPAAs {
             let paaSKI = MatterAttestationPolicy.subjectKeyID(of: paa).map { Data($0) }
             guard let paaSKI, authorizedPAAs.contains(paaSKI) else {
-                return (.cdVidPidNotListed, "the CD authorized_paa_list does not include the PAA's subject key identifier")
+                return (.cdPAANotAuthorized, "the CD authorized_paa_list does not include the PAA's subject key identifier")
             }
         }
         return nil

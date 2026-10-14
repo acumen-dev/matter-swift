@@ -20,10 +20,11 @@ public enum AttestationFailureReason: String, Sendable, Codable, CaseIterable {
     case cdSignatureInvalid
     /// The Certification Declaration is signed by a key the trust store does not hold.
     case cdUnknownSigningKey
-    /// The Certification Declaration does not authorise this device: it does not list the
-    /// Basic Information VID/PID, the DAC and PAI VID/PID (or its DAC origin names others), or
-    /// its authorized PAA list omits the PAA.
+    /// The Certification Declaration does not list the device's VID/PID.
     case cdVidPidNotListed
+    /// The Certification Declaration has an authorized PAA list that omits the PAA the chain
+    /// ends at (connectedhomeip `kCertificationDeclarationInvalidPAA`).
+    case cdPAANotAuthorized
     /// The attestation elements are not signed by the DAC key.
     case attestationSignatureInvalid
     /// The attestation elements do not echo the nonce the commissioner sent.

@@ -63,8 +63,11 @@ public enum CertificationDeclarationError: Error, Sendable, Equatable, CustomStr
 /// context tags 0 to 8 in order, each an unsigned integer of its field's width (tag 4 a UTF-8
 /// string of exactly 19 bytes), then optionally tags 9 and 10 together, then optionally tag 11
 /// (an array of 20-byte key identifiers); anything after that is skipped. Unlike upstream, a
-/// product ID above 0xFFFF is malformed rather than unmatched, and the TLV reader accepts a
-/// container that ends at the end of the data without an end-of-container marker.
+/// product ID above 0xFFFF is malformed rather than unmatched. The TLV reader is looser than
+/// upstream's `TLVReader` in three ways: tags of array elements are not checked (upstream
+/// requires anonymous tags), a container that ends at the end of the data without an
+/// end-of-container marker is accepted, and a stray end-of-container byte (0x18) after the
+/// top-level structure is accepted rather than rejected as trailing data.
 public struct CertificationDeclaration: Sendable, Equatable {
 
     public let formatVersion: UInt8
@@ -86,6 +89,11 @@ public struct CertificationDeclaration: Sendable, Equatable {
     /// The SubjectKeyIdentifier naming the signer's certificate.
     public let signerKeyIdentifier: Data
 
+    /// The signed eContent octets the fields above were decoded from.
+    private let signedContent: Data
+    /// The SignerInfo signature over ``signedContent``.
+    private let signature: P256.Signing.ECDSASignature
+
     /// Parses the CMS SignedData envelope and the TLV payload; does not verify.
     public init(cmsDER: Data) throws {
         let envelope = try Envelope(cmsDER)
@@ -103,20 +111,36 @@ public struct CertificationDeclaration: Sendable, Equatable {
         self.dacOriginProductID = content.dacOriginProductID
         self.authorizedPAAs = content.authorizedPAAs
         self.signerKeyIdentifier = envelope.signerKeyIdentifier
+        self.signedContent = envelope.content
+        self.signature = envelope.signature
     }
 
-    /// Verifies the CMS signature with the trusted key matching `signerKeyIdentifier`.
-    ///
-    /// `cmsDER` must be the bytes this value was parsed from; bytes that no longer parse, or
-    /// that name another signer, give `.invalidSignature`.
-    public func verifySignature(cmsDER: Data, keys: [CDSigningKey]) -> CDVerification {
+    /// Verifies the CMS signature with the trusted key matching `signerKeyIdentifier`, over
+    /// exactly the content this value was parsed from.
+    public func verifySignature(keys: [CDSigningKey]) -> CDVerification {
         let candidates = keys.filter { $0.keyIdentifier == signerKeyIdentifier }
         guard !candidates.isEmpty else { return .unknownSigningKey }
-        guard let envelope = try? Envelope(cmsDER),
-              envelope.signerKeyIdentifier == signerKeyIdentifier
-        else { return .invalidSignature }
-        let verified = candidates.contains { $0.publicKey.isValidSignature(envelope.signature, for: envelope.content) }
+        let verified = candidates.contains { $0.publicKey.isValidSignature(signature, for: signedContent) }
         return verified ? .valid : .invalidSignature
+    }
+
+    /// Equal when the declared fields, the signer and the signed content are equal. The
+    /// signature is not compared: ECDSA signatures over the same content differ.
+    public static func == (lhs: CertificationDeclaration, rhs: CertificationDeclaration) -> Bool {
+        lhs.formatVersion == rhs.formatVersion
+            && lhs.vendorID == rhs.vendorID
+            && lhs.productIDs == rhs.productIDs
+            && lhs.deviceTypeID == rhs.deviceTypeID
+            && lhs.certificateID == rhs.certificateID
+            && lhs.securityLevel == rhs.securityLevel
+            && lhs.securityInformation == rhs.securityInformation
+            && lhs.versionNumber == rhs.versionNumber
+            && lhs.certificationType == rhs.certificationType
+            && lhs.dacOriginVendorID == rhs.dacOriginVendorID
+            && lhs.dacOriginProductID == rhs.dacOriginProductID
+            && lhs.authorizedPAAs == rhs.authorizedPAAs
+            && lhs.signerKeyIdentifier == rhs.signerKeyIdentifier
+            && lhs.signedContent == rhs.signedContent
     }
 }
 
