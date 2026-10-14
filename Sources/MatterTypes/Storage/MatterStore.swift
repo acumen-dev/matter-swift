@@ -43,16 +43,19 @@ public protocol MatterFabricStore: Sendable {
 /// - `load()` returns `nil` when nothing has been saved, and **throws** when state exists
 ///   but cannot be read, including state with a `schemaVersion` newer than this library
 ///   understands. It never returns partial state.
-/// - `save(_:)` replaces the stored state entirely (no merge) and returns only once the
-///   state is durable; a failed save throws and leaves the previous state intact.
+/// - `save(_:)` replaces the stored state entirely (no merge) and returns after the
+///   state has been handed to durable storage as far as the implementation can tell. A failed
+///   save throws and leaves the previous state intact. ``JSONFileControllerStore`` fsyncs the
+///   file before the rename but does not fsync the directory and, on Darwin, `fsync` is not
+///   `F_FULLFSYNC`, so power loss immediately after a save can still lose it.
 /// - The state holds secrets, named so an implementation can protect them: the root CA key
 ///   (`StoredControllerIdentity.rootKeyRaw`), the controller's operational key
 ///   (`operationalKeyRaw`) and the IPK epoch key (`ipkEpochKey`). A store must keep them
 ///   readable by the owning user only (``JSONFileControllerStore`` writes `0600`) and must
 ///   not log them.
 ///
-/// ``MatterControllerStoreConformance`` in `MatterTestSupport` runs this contract against
-/// any implementation.
+/// `MatterControllerStoreConformance` (product `MatterStoreConformance`, test targets only)
+/// runs this contract against any implementation.
 public protocol MatterControllerStore: Sendable {
 
     /// Load the persisted controller state, or `nil` if no state has been saved.

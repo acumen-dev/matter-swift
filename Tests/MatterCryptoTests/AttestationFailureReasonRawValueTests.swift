@@ -29,7 +29,8 @@ struct AttestationFailureReasonRawValueTests {
             #expect(reason.rawValue == raw)
             #expect(AttestationFailureReason(rawValue: raw) == reason)
         }
-        // A new case must be added to `pinned`.
+        // A new case must be added to `pinned`, AND adding a case requires bumping
+        // StoredControllerState.currentSchemaVersion so older libraries refuse the new state.
         #expect(Self.pinned.count == AttestationFailureReason.allCases.count)
         #expect(Set(Self.pinned.map(\.0)) == Set(AttestationFailureReason.allCases))
     }

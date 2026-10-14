@@ -180,13 +180,18 @@ public struct StoredControllerState: Codable, Sendable, Equatable {
     ///
     /// Version 1 is the layout before device attestation records; it has no
     /// `schemaVersion` key. Version 2 adds `StoredCommissionedDevice.attestation`.
-    /// Bump it whenever a change would make an older library drop data it
-    /// does not understand.
+    /// Bump it whenever a change would make an older library drop or misread data:
+    /// a new field, and also a new case of any enumeration whose raw value is stored here
+    /// (for example `AttestationFailureReason`, stored as an override's `reason`).
+    ///
+    /// Releases up to and including 1.0.0-beta.5 have no version check: they load a
+    /// version 2 file and silently drop `schemaVersion` and the attestation records on
+    /// their next save. Do not run an older library against state a newer one wrote.
     public static let currentSchemaVersion = 2
 
-    /// The schema version of this state. A blob with no `schemaVersion` key
-    /// is version 1.
-    public var schemaVersion: Int
+    /// The schema version this state was decoded with (a blob with no `schemaVersion` key is
+    /// version 1). Encoding always writes ``currentSchemaVersion``.
+    public private(set) var schemaVersion: Int
 
     /// Controller's fabric identity and root CA key.
     public var identity: StoredControllerIdentity
@@ -198,12 +203,11 @@ public struct StoredControllerState: Codable, Sendable, Equatable {
     public var nextNodeID: UInt64
 
     public init(
-        schemaVersion: Int = StoredControllerState.currentSchemaVersion,
         identity: StoredControllerIdentity,
         devices: [StoredCommissionedDevice] = [],
         nextNodeID: UInt64
     ) {
-        self.schemaVersion = schemaVersion
+        self.schemaVersion = Self.currentSchemaVersion
         self.identity = identity
         self.devices = devices
         self.nextNodeID = nextNodeID
@@ -211,6 +215,14 @@ public struct StoredControllerState: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, identity, devices, nextNodeID
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try container.encode(identity, forKey: .identity)
+        try container.encode(devices, forKey: .devices)
+        try container.encode(nextNodeID, forKey: .nextNodeID)
     }
 
     /// Decodes a state, treating a missing `schemaVersion` as 1.

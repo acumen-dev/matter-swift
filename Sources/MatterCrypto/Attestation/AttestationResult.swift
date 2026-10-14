@@ -10,6 +10,10 @@ import Crypto
 ///
 /// The `rawValue` is a persistence format (a stored attestation override records it), so each
 /// is spelled out and equals the case name. Renaming a case must not change its raw value.
+///
+/// Adding a case requires bumping `StoredControllerState.currentSchemaVersion` (MatterTypes):
+/// an older library that loaded a stored override naming the new case would fail on it, and
+/// the bump is what makes that library refuse the state up front with a clear error.
 public enum AttestationFailureReason: String, Sendable, Codable, CaseIterable {
     /// No path from the PAI to any PAA in the trust store.
     case untrustedRoot = "untrustedRoot"

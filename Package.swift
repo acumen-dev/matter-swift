@@ -21,6 +21,8 @@ let package = Package(
         .library(name: "MatterProtocol", targets: ["MatterProtocol"]),
         // Device/bridge role: endpoint management, attribute storage
         .library(name: "MatterDevice", targets: ["MatterDevice"]),
+        // Conformance suite for MatterControllerStore implementations. Link ONLY from test targets.
+        .library(name: "MatterStoreConformance", targets: ["MatterStoreConformance"]),
         // Controller role: commissioning, device management
         .library(name: "MatterController", targets: ["MatterController"]),
         // Platform-agnostic transport protocol abstractions
@@ -167,6 +169,12 @@ let package = Package(
             ]
         ),
 
+        // Store conformance suite: link it only from test targets (it imports Testing).
+        .target(
+            name: "MatterStoreConformance",
+            dependencies: ["MatterTypes"]
+        ),
+
         // MARK: - Convenience Re-export
 
         .target(
@@ -219,7 +227,7 @@ let package = Package(
             name: "MatterControllerTests",
             dependencies: [
                 "MatterController", "MatterModel", "MatterCrypto", "MatterTransport",
-                "MatterProtocol", "MatterTypes", "MatterTestSupport",
+                "MatterProtocol", "MatterTypes", "MatterTestSupport", "MatterStoreConformance",
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),

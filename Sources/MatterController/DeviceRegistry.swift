@@ -29,14 +29,15 @@ public enum DeviceAttestationRecord: Sendable, Codable, Equatable {
 
     /// - Throws: ``ControllerError/corruptStoredState(_:)`` if an override's reason is not an
     ///   `AttestationFailureReason`. It is never mapped to another reason.
-    init(stored: StoredAttestationRecord) throws {
+    init(stored: StoredAttestationRecord, nodeID: UInt64) throws {
         switch stored {
         case .verified(let paaSubject, let vendorID, let productID):
             self = .verified(paaSubject: paaSubject, vendorID: vendorID, productID: productID)
         case .overridden(let fingerprint, let reason, let approvedAt):
             guard let parsed = AttestationFailureReason(rawValue: reason) else {
                 throw ControllerError.corruptStoredState(
-                    "stored attestation override has unknown reason \"\(reason)\"")
+                    "stored attestation override for node \(nodeID) has unknown reason \"\(reason)\"; "
+                    + "the state was written by a newer library or is corrupt")
             }
             self = .overridden(dacFingerprint: fingerprint, reason: parsed, approvedAt: approvedAt)
         }
@@ -158,7 +159,7 @@ public actor DeviceRegistry {
                 label: sd.label,
                 commissionedAt: sd.commissionedAt,
                 mrpParameters: Self.mrpParameters(from: sd),
-                attestation: try sd.attestation.map { try DeviceAttestationRecord(stored: $0) }
+                attestation: try sd.attestation.map { try DeviceAttestationRecord(stored: $0, nodeID: sd.nodeID) }
             )
             devices[device.nodeID] = device
         }

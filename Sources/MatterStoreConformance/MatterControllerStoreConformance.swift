@@ -7,6 +7,9 @@ import MatterTypes
 
 /// Runs the ``MatterControllerStore`` contract against any implementation.
 ///
+/// This target imports Testing: link `MatterStoreConformance` only from test targets, never from
+/// a library or executable that ships.
+///
 /// `make` returns a fresh, empty store each time it is called. Failures are reported through
 /// `Issue.record`, so a caller just awaits `run(make:)` inside a `@Test`.
 public enum MatterControllerStoreConformance {

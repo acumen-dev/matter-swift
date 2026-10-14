@@ -3,17 +3,14 @@
 
 import Testing
 import Foundation
+import Crypto
 import MatterTypes
 import MatterCrypto
 import MatterTestSupport
+import MatterStoreConformance
 import MatterTransport
 @testable import MatterController
 
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 
 @Suite("Controller store conformance", .timeLimit(.minutes(5)))
 struct ControllerStoreConformanceTests {
@@ -45,11 +42,12 @@ struct ControllerStoreConformanceTests {
 
     @Test("JSONFileControllerStore conforms")
     func jsonFile() async throws {
-        let dirs = try (0..<4).map { _ in try Self.tempDirectory() }
-        defer { dirs.forEach { try? FileManager.default.removeItem(at: $0) } }
-        let next = LockedValue(0)
+        let made = LockedValue<[URL]>([])
+        defer { made.withLock { $0 }.forEach { try? FileManager.default.removeItem(at: $0) } }
         try await MatterControllerStoreConformance.run {
-            JSONFileControllerStore(directory: dirs[next.withLock { value in defer { value += 1 }; return value }])
+            let dir = try Self.tempDirectory()
+            made.withLock { $0.append(dir) }
+            return JSONFileControllerStore(directory: dir)
         }
     }
 
@@ -93,6 +91,46 @@ struct ControllerStoreConformanceTests {
             .replacingOccurrences(of: "\"schemaVersion\" : 2", with: "\"schemaVersion\" : 3")
         try Data(text.utf8).write(to: file)
         await #expect(throws: DecodingError.self) { try await store.load() }
+    }
+
+    // MARK: - v1 end to end
+
+    @Test("a v1 file loads through loadOrCreate and a save rewrites it as v2 with the identity intact")
+    func v1EndToEnd() async throws {
+        let dir = try Self.tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let fm = try FabricManager(
+            rootKey: P256.Signing.PrivateKey(), fabricID: FabricID(rawValue: 7),
+            controllerNodeID: NodeID(rawValue: 1), vendorID: .test)
+        _ = await fm.allocateNodeID()
+        _ = await fm.allocateNodeID()
+        var original = StoredControllerState(
+            identity: fm.toStoredIdentity(),
+            devices: MatterControllerStoreConformance.sampleState(seed: 9, deviceCount: 3).devices
+                .map { var d = $0; d.attestation = nil; return d },
+            nextNodeID: await fm.nextNodeID)
+        original.devices[0].label = "kept"
+
+        var object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        object["schemaVersion"] = nil
+        let file = dir.appendingPathComponent("controller.json")
+        try JSONSerialization.data(withJSONObject: object).write(to: file)
+
+        let store = JSONFileControllerStore(directory: dir)
+        let controller = try await MatterController.loadOrCreate(
+            transport: MockUDPTransport(), discovery: MockDiscovery(),
+            configuration: .init(fabricID: FabricID(rawValue: 7)), store: store)
+        // Trigger a save: remove a device, then compare with the original minus that device.
+        await controller.removeDevice(nodeID: NodeID(rawValue: original.devices[2].nodeID))
+
+        let rewritten = try #require(try await store.load())
+        #expect(rewritten.schemaVersion == 2)
+        #expect(rewritten.identity == original.identity)
+        #expect(rewritten.nextNodeID == original.nextNodeID)
+        #expect(rewritten.devices.sorted { $0.nodeID < $1.nodeID } == Array(original.devices.prefix(2)))
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(text.contains("\"schemaVersion\" : 2"))
     }
 
     // MARK: - loadOrCreate
@@ -139,7 +177,7 @@ struct ControllerStoreConformanceTests {
                 ipkEpochKey: ipk)
             let reloaded = try await Self.makeController(store: InMemoryControllerStore(state: stored))
             #expect(await reloaded.ipkEpochKey == ipk)
-                    }
+        }
     }
 
     // MARK: - Registry mapping
@@ -163,7 +201,8 @@ struct ControllerStoreConformanceTests {
         devices[1].attestation = .overridden(
             dacFingerprint: Data(repeating: 1, count: 32), reason: "someFutureReason",
             approvedAt: Date(timeIntervalSince1970: 1_700_000_500))
-        #expect(throws: ControllerError.corruptStoredState("stored attestation override has unknown reason \"someFutureReason\"")) {
+        #expect(throws: ControllerError.corruptStoredState(
+            "stored attestation override for node 3 has unknown reason \"someFutureReason\"; the state was written by a newer library or is corrupt")) {
             try DeviceRegistry(storedDevices: devices)
         }
     }

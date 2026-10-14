@@ -267,7 +267,13 @@ public actor MatterController {
     /// Load a controller from persisted state or create a fresh one.
     ///
     /// Tries to load from the store. If stored state exists, reconstructs the
-    /// controller from it. Otherwise creates a fresh controller with new certificates.
+    /// controller from it. Otherwise creates a fresh controller with new certificates
+    /// and **saves the new identity to the store before returning**; if that save fails,
+    /// `loadOrCreate` throws rather than return a controller whose identity exists nowhere.
+    ///
+    /// Callers must serialize concurrent `loadOrCreate` calls on one store: two racing calls
+    /// on an empty store would each create and save a different identity, and the last
+    /// save wins.
     ///
     /// ```swift
     /// let controller = try await MatterController.loadOrCreate(

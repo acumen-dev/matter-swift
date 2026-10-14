@@ -44,11 +44,11 @@ struct StoredStateCompatibilityTests {
     func currentVersionRoundTrips() throws {
         #expect(StoredControllerState.currentSchemaVersion == 2)
         let decoded = try JSONDecoder().decode(StoredControllerState.self, from: Data(Self.pre3cBlob.utf8))
-        var state = decoded
-        state.schemaVersion = StoredControllerState.currentSchemaVersion
-        let again = try JSONDecoder().decode(StoredControllerState.self, from: JSONEncoder().encode(state))
-        #expect(again == state)
+        // A v1 state re-encodes as the current version.
+        let again = try JSONDecoder().decode(StoredControllerState.self, from: JSONEncoder().encode(decoded))
         #expect(again.schemaVersion == 2)
+        #expect(again.identity == decoded.identity)
+        #expect(again.devices == decoded.devices)
     }
 
     @Test("a newer schemaVersion throws rather than loading")
