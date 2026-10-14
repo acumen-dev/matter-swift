@@ -152,10 +152,11 @@ let package = Package(
             ]
         ),
 
-        // MARK: - Test Support (not a product)
+        // MARK: - Test Support
 
         // Deterministic clock, fault-injecting in-memory link and frame helpers
         // for messaging tests. Pure Swift: runs on Linux and Apple platforms.
+        // Not a product.
         .target(
             name: "MatterTestSupport",
             dependencies: [
@@ -169,7 +170,8 @@ let package = Package(
             ]
         ),
 
-        // Store conformance suite: link it only from test targets (it imports Testing).
+        // Store conformance suite: a library product, but link it only from
+        // test targets (it imports Testing).
         .target(
             name: "MatterStoreConformance",
             dependencies: ["MatterTypes"]
