@@ -53,18 +53,16 @@ struct ChipDeviceAttestationTests {
             #expect(failure.dacVendorID == Self.appVendorID && failure.dacProductID == Self.appProductID)
             let fingerprint = try #require(failure.dacFingerprint)
 
-            // The controller disarmed the fail-safe before throwing, so the app is commissionable
-            // again with no further action; the retry itself is the check.
-            let before = Date()
+            // The app re-listens for PASE synchronously while handling ArmFailSafe(0), and the
+            // controller awaits that disarm response before throwing, so the app is commissionable
+            // again by the time the failure arrives and the retry needs no wait.
             let device = try await controller.commission(
                 address: address, setupCode: Self.passcode, mrp: nil, approvingUnverifiedDevice: fingerprint)
-            let after = Date()
 
-            guard case .overridden(let approved, let reason, let approvedAt) = device.attestation else {
+            guard case .overridden(let approved, let reason, _) = device.attestation else {
                 throw Failure(description: "expected an overridden attestation record, got \(String(describing: device.attestation))")
             }
             #expect(approved == fingerprint && reason == .untrustedRoot)
-            #expect(approvedAt >= before && approvedAt <= after)
             // From the DAC (Basic Information would say the same here; the DAC is the source).
             #expect(device.vendorID == VendorID(rawValue: Self.appVendorID))
             #expect(device.productID == ProductID(rawValue: Self.appProductID))

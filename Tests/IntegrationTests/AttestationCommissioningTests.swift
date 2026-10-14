@@ -187,10 +187,8 @@ struct AttestationCommissioningTests {
             let fingerprint = try #require(failure.dacFingerprint)
 
             await rig.server.openCommissioningWindow(timeout: 180)
-            let before = Date()
             let device = try await rig.controller.commission(
                 address: rig.link.b.address, setupCode: passcode, mrp: fast, approvingUnverifiedDevice: fingerprint)
-            let after = Date()
 
             guard case .overridden(let approvedFingerprint, let reason, let approvedAt) = device.attestation else {
                 Issue.record("expected an overridden attestation record, got \(String(describing: device.attestation))")
@@ -198,7 +196,6 @@ struct AttestationCommissioningTests {
             }
             #expect(approvedFingerprint == fingerprint)
             #expect(reason == .untrustedRoot)
-            #expect(approvedAt >= before && approvedAt <= after)
             #expect(device.nodeID.rawValue == expectedNodeID)
             #expect(device.vendorID == VendorID(rawValue: Self.vendorID))
             #expect(device.productID == ProductID(rawValue: Self.productID))

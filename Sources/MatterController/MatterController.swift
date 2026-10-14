@@ -1029,10 +1029,13 @@ public actor MatterController {
     /// current time, and apply the result (approving a failure only for
     /// `approvingUnverifiedDevice`).
     ///
-    /// - Throws: `ControllerError.attestationFailed` for a failure that is not approved;
-    ///   `attestationApprovalRefused` if the approved failure's DAC key cannot be read;
-    ///   `attestationValidationFailed` if the attestation cannot be validated at all;
-    ///   `commissioningFailed` if Basic Information cannot be read.
+    /// - Throws: `ControllerError.commissioningFailed` if Basic Information cannot be read or the
+    ///   PASE session supplied no attestation challenge;
+    ///   `attestationValidationFailed` if the CertificateChain or Attestation response is missing
+    ///   its fields;
+    ///   `attestationFailed` if verification fails and the failure is not approved;
+    ///   `attestationApprovalRefused` if the approved failure's DAC key cannot be read.
+    ///   Interaction Model transport and status errors propagate.
     private func attestDevice(
         sessionID: UInt16,
         context: CommissioningController.CommissioningContext,
