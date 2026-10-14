@@ -26,10 +26,21 @@ import X509
 ///   carries no PID;
 /// - the DAC has a VID and a PID, the PAI has a VID equal to the DAC's, a PAI PID (if any)
 ///   equals the DAC's, and a PAA VID (if any) equals the DAC's;
-/// - every certificate is within its validity window at `validationTime`.
+/// - validity, as upstream's controller build does it (`CURRENT_TIME_NOT_IMPLEMENTED` is defined
+///   only for esp32, nrfconnect, efr32 and openiotsdk; src/credentials/BUILD.gn):
+///   - the DAC is valid at `now` (`IsCertificateValidAtCurrentTime`);
+///   - the DAC, PAI and PAA are all valid at the DAC's notBefore (`ValidateCertificateChain`
+///     sets that as the OpenSSL verification time), so a PAI or PAA that has since expired
+///     still verifies, provided it was valid when the DAC was issued.
+///   Both use OpenSSL's `X509_cmp_time` boundaries: valid when `notBefore <= t < notAfter`.
 ///
-/// Upstream validates the PAI and PAA at the DAC's notBefore and only the DAC at the current
-/// time; this policy checks all three at `validationTime`, which is stricter.
+/// This policy is the whole chain policy; `RFC5280Policy` is not used. swift-certificates'
+/// `Verifier` still checks each issuer's signature over its child while building the path
+/// (PAA → PAI, PAI → DAC). The PAA's self-signature is checked when the trust store loads it.
+/// The profile above covers what `RFC5280Policy` contributed for this three-certificate shape
+/// (version, CA-ness, path length). Only basicConstraints, keyUsage and extendedKeyUsage are
+/// handled critical extensions: any other critical extension (nameConstraints included) makes
+/// the chain unbuildable.
 ///
 /// Each failure reason starts with one of the ``Category`` prefixes so the verifier can map it
 /// to an ``AttestationFailureReason``.
@@ -54,8 +65,8 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
         }
     }
 
-    /// The time each certificate's validity window is checked against.
-    let validationTime: Date
+    /// The current time; the DAC must be valid at it.
+    let now: Date
 
     /// Matter requires critical basicConstraints and keyUsage; connectedhomeip also accepts a
     /// critical extendedKeyUsage (vector `struct_*_ext_extended_key_usage_present`).
@@ -65,8 +76,8 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
         .X509ExtensionID.extendedKeyUsage,
     ]
 
-    init(validationTime: Date) {
-        self.validationTime = validationTime
+    init(now: Date) {
+        self.now = now
     }
 
     func chainMeetsPolicyRequirements(chain: UnverifiedCertificateChain) -> PolicyEvaluationResult {
@@ -105,15 +116,26 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
             return .failsToMeetPolicy(reason: violation)
         }
 
-        // Validity.
+        // Validity: the DAC now, then the whole chain at the DAC's notBefore.
+        if let violation = Self.validityViolation(dac, role: .dac, at: now, what: "now") {
+            return .failsToMeetPolicy(reason: violation)
+        }
+        let issuance = dac.notValidBefore
         for (certificate, role) in [(dac, Role.dac), (pai, .pai), (paa, .paa)] {
-            guard certificate.notValidBefore <= validationTime, validationTime <= certificate.notValidAfter else {
-                return .failsToMeetPolicy(reason: Category.validity.reason(
-                    "\(role.rawValue) is valid \(certificate.notValidBefore) to \(certificate.notValidAfter), not at \(validationTime)"
-                ))
+            if let violation = Self.validityViolation(certificate, role: role, at: issuance, what: "the DAC's notBefore") {
+                return .failsToMeetPolicy(reason: violation)
             }
         }
         return .meetsPolicy
+    }
+
+    private static func validityViolation(_ certificate: Certificate, role: Role, at time: Date, what: String) -> String? {
+        guard certificate.notValidBefore <= time, time < certificate.notValidAfter else {
+            return Category.validity.reason(
+                "\(role.rawValue) is valid \(certificate.notValidBefore) to \(certificate.notValidAfter), not at \(what) (\(time))"
+            )
+        }
+        return nil
     }
 
     // MARK: - VID/PID

@@ -11,13 +11,9 @@ import X509
 /// Verifies a Matter device's attestation: the DAC → PAI → PAA chain against a trust store,
 /// the VID/PID rules, the echoed nonce, and the DAC's signature over the attestation elements.
 ///
-/// The chain is validated with swift-certificates' `Verifier` under ``MatterAttestationPolicy``
-/// (checked first, so its reasons classify the failure) followed by `RFC5280Policy()`.
-///
-/// - Note: `RFC5280Policy()` is the only public, non-deprecated RFC 5280 policy, and it checks
-///   validity against the *real* clock. ``MatterAttestationPolicy`` checks every certificate
-///   against `now`, so a `now` at which the chain is valid but the real clock is not (or the
-///   reverse) fails; the second case is reported as ``AttestationFailureReason/chainInvalid``.
+/// The chain is validated with swift-certificates' `Verifier`, which checks each issuer's
+/// signature, under ``MatterAttestationPolicy`` alone (profile, VID/PID and connectedhomeip's
+/// validity model: the DAC at `now`, the chain at the DAC's notBefore).
 public struct DeviceAttestationVerifier: Sendable {
 
     public let trustStore: AttestationTrustStore
@@ -29,10 +25,17 @@ public struct DeviceAttestationVerifier: Sendable {
     /// Verifies an attestation.
     ///
     /// The Certification Declaration inside the attestation elements is not yet checked.
+    ///
+    /// - Parameter basicInformation: the VendorID and ProductID the device reports in its Basic
+    ///   Information cluster. connectedhomeip compares them only with the Certification
+    ///   Declaration (CD vendor_id == VID, PID in product_id_array), never with the DAC: a CD
+    ///   with dac_origin fields legitimately names a DAC vendor other than the product's. They
+    ///   are therefore consumed by the CD check and not compared with the DAC here.
     public func verify(
         dac: Data, pai: Data,
         attestationElements: Data, attestationSignature: Data,
         attestationChallenge: Data, sentNonce: Data,
+        basicInformation: (vendorID: UInt16, productID: UInt16)? = nil,
         now: Date
     ) async -> AttestationResult {
         // 1. Parse.
@@ -47,8 +50,7 @@ public struct DeviceAttestationVerifier: Sendable {
 
         // 3. Chain.
         var verifier = Verifier(rootCertificates: CertificateStore(trustStore.paas)) {
-            MatterAttestationPolicy(validationTime: now)
-            RFC5280Policy()
+            MatterAttestationPolicy(now: now)
         }
         let paa: Certificate
         switch await verifier.validate(leaf: dacCertificate, intermediates: CertificateStore([paiCertificate])) {
@@ -87,7 +89,7 @@ public struct DeviceAttestationVerifier: Sendable {
             return Self.failed(.attestationSignatureInvalid, fingerprint, "the attestation signature does not verify with the DAC key")
         }
 
-        // 6. The Certification Declaration is not checked yet.
+        // 6. The Certification Declaration (and with it `basicInformation`) is not checked yet.
 
         return .verified(VerifiedAttestation(
             vendorID: vendorID, productID: productID,
@@ -127,7 +129,8 @@ public struct DeviceAttestationVerifier: Sendable {
     ///
     /// - A failure from ``MatterAttestationPolicy`` maps by its category: VID/PID →
     ///   `.vidPidMismatch`, validity → `.certificateExpired`, profile → `.malformed`, chain
-    ///   shape → `.chainInvalid`. Any other policy failure (RFC 5280) → `.chainInvalid`.
+    ///   shape → `.chainInvalid`. A reason without a Matter prefix cannot occur (the Matter
+    ///   policy is the only one); it is treated as `.chainInvalid`.
     /// - An empty list means no candidate chain reached a policy: no trusted PAA issued the PAI
     ///   → `.untrustedRoot`; a PAA with the PAI's authority key ID, or the PAI, did not sign its
     ///   child → `.chainInvalid`; otherwise a certificate has a critical extension the policy
