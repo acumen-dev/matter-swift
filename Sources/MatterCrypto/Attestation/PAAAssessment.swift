@@ -27,8 +27,8 @@ extension AttestationTrustStore {
 
     /// Applies, to one DER-encoded certificate, the rules the runtime applies to a PAA:
     /// - it parses;
-    /// - it is a self-signed P-256 CA with a SubjectKeyIdentifier (the store's admission rules);
-    /// - it conforms to the Matter PAA profile that attestation verification applies;
+    /// - it is a self-signed P-256 CA with a SubjectKeyIdentifier that conforms to the Matter PAA
+    ///   profile attestation verification applies (the store's admission rules);
     /// - its subject carries a well-formed Matter VID and no PID.
     ///
     /// Validity dates are deliberately not judged: the runtime accepts a PAA that was valid when
@@ -52,9 +52,6 @@ extension AttestationTrustStore {
         func rejected(_ reason: String, vendorID: UInt16? = nil) -> PAAAssessment {
             PAAAssessment(subject: subject, vendorID: vendorID, rejection: reason)
         }
-        if let violation = MatterAttestationPolicy.profileViolation(certificate, role: .paa) {
-            return rejected(violation)
-        }
         guard let identifiers = try? MatterCertificateAttributes.identifiers(in: certificate.subject) else {
             return rejected("has an invalid Matter VID/PID in its subject")
         }
@@ -71,6 +68,7 @@ extension AttestationTrustStore {
         case .notASelfSignedCA: "is not a self-signed CA"
         case .unsupportedKey: "does not have a P-256 key"
         case .missingSubjectKeyIdentifier: "has no SubjectKeyIdentifier"
+        case .notAMatterPAA(_, let reason): reason
         default: "\(error)"
         }
     }

@@ -88,6 +88,9 @@ public enum AttestationTrustStoreError: Error, Sendable, Equatable {
     case unsupportedKey(String)
     /// The named certificate has no SubjectKeyIdentifier extension.
     case missingSubjectKeyIdentifier(String)
+    /// The named certificate breaks the Matter PAA certificate profile that attestation applies,
+    /// so no chain could verify through it; `reason` says how.
+    case notAMatterPAA(String, reason: String)
     /// The bundled trust data is missing, altered, incomplete or has unlisted files; the message says which.
     /// The manifest detects accidental damage, not deliberate tampering: it shares the binary's trust boundary.
     case bundleCorrupt(String)
@@ -194,7 +197,10 @@ public struct AttestationTrustStore: Sendable {
         return try validatePAA(certificate, label: label)
     }
 
-    /// Key type is checked before the signature so a non-P-256 root reports `unsupportedKey`.
+    /// Admission: a self-signed P-256 CA with a SubjectKeyIdentifier that conforms to the
+    /// Matter PAA profile (``MatterAttestationPolicy``), the same rule
+    /// ``assessPAA(_:)`` and the refresh script apply. Key type is checked before the signature
+    /// so a non-P-256 root reports `unsupportedKey`.
     private static func validatePAA(_ certificate: Certificate, label: String) throws -> Certificate {
         guard P256.Signing.PublicKey(certificate.publicKey) != nil else {
             throw AttestationTrustStoreError.unsupportedKey(label)
@@ -207,6 +213,9 @@ public struct AttestationTrustStore: Sendable {
         }
         guard let ski = try? certificate.extensions.subjectKeyIdentifier, !ski.keyIdentifier.isEmpty else {
             throw AttestationTrustStoreError.missingSubjectKeyIdentifier(label)
+        }
+        if let violation = MatterAttestationPolicy.profileViolation(certificate, role: .paa) {
+            throw AttestationTrustStoreError.notAMatterPAA(label, reason: violation)
         }
         return certificate
     }

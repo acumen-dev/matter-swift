@@ -30,6 +30,9 @@ public struct SyntheticAttestationChain: Sendable {
     ///   - dacSigner: signs the DAC instead of the PAI key (the DAC still names the PAI).
     ///   - dacAKI: the DAC's AuthorityKeyIdentifier; defaults to the PAI's SKI.
     ///   - dacCriticalSubjectAlternativeName: add a critical SAN to the DAC.
+    ///   - paiExtraExtensions: extensions appended to the PAI, for example
+    ///     ``criticalCertificatePolicies``.
+    ///   - dacExtraExtensions: extensions appended to the DAC.
     public init(
         paaValidity: ClosedRange<Date>,
         paiValidity: ClosedRange<Date>,
@@ -38,7 +41,9 @@ public struct SyntheticAttestationChain: Sendable {
         paiAKI: [UInt8]? = nil,
         dacSigner: P256.Signing.PrivateKey? = nil,
         dacAKI: [UInt8]? = nil,
-        dacCriticalSubjectAlternativeName: Bool = false
+        dacCriticalSubjectAlternativeName: Bool = false,
+        paiExtraExtensions: [Certificate.Extension] = [],
+        dacExtraExtensions: [Certificate.Extension] = []
     ) throws {
         let paaKey = P256.Signing.PrivateKey()
         let paiKey = P256.Signing.PrivateKey()
@@ -68,6 +73,7 @@ public struct SyntheticAttestationChain: Sendable {
                 Critical(KeyUsage(keyCertSign: true, cRLSign: true))
                 paiSKI
                 AuthorityKeyIdentifier(keyIdentifier: ArraySlice(paiAKI ?? Array(paaSKI.keyIdentifier)))
+                for ext in paiExtraExtensions { ext }
             },
             issuerPrivateKey: .init(paiSigner ?? paaKey)
         )
@@ -84,6 +90,7 @@ public struct SyntheticAttestationChain: Sendable {
                 if dacCriticalSubjectAlternativeName {
                     Critical(SubjectAlternativeNames([.dnsName("device.example")]))
                 }
+                for ext in dacExtraExtensions { ext }
             },
             issuerPrivateKey: .init(dacSigner ?? paiKey)
         )
@@ -92,6 +99,19 @@ public struct SyntheticAttestationChain: Sendable {
         self.dac = try Self.der(dac)
         self.dacKey = dacKey
     }
+
+    /// A critical certificatePolicies (2.5.29.32) naming anyPolicy (2.5.29.32.0).
+    public static let criticalCertificatePolicies = Certificate.Extension(
+        oid: [2, 5, 29, 32], critical: true,
+        value: [0x30, 0x08, 0x30, 0x06, 0x06, 0x04, 0x55, 0x1D, 0x20, 0x00])
+
+    /// A critical extension no verifier handles, under the RFC 5612 documentation enterprise
+    /// number (1.3.6.1.4.1.32473.1), with a NULL value.
+    public static let criticalUnknownExtension = Certificate.Extension(
+        oid: unknownExtensionOID, critical: true, value: [0x05, 0x00])
+
+    /// The OID of ``criticalUnknownExtension``.
+    public static let unknownExtensionOID: ASN1ObjectIdentifier = [1, 3, 6, 1, 4, 1, 32473, 1]
 
     /// A UTC date at the start of `year`.
     public static func date(_ year: Int, month: Int = 1, day: Int = 1) -> Date {

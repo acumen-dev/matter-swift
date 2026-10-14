@@ -223,7 +223,7 @@ public struct DeviceAttestationVerifier: Sendable {
     /// - An empty list means no candidate chain reached a policy: no trusted PAA issued the PAI
     ///   → `.untrustedRoot`; a PAA with the PAI's authority key ID, or the PAI, did not sign its
     ///   child → `.chainInvalid`; otherwise a certificate has a critical extension the policy
-    ///   does not handle → `.malformed`.
+    ///   does not handle → `.malformed`, with the profile's named violation for the DAC or PAI.
     private func classify(
         _ failures: [CertificateValidationResult.PolicyFailure],
         dac: Certificate, pai: Certificate
@@ -256,6 +256,13 @@ public struct DeviceAttestationVerifier: Sendable {
         }
         guard dac.issuer == pai.subject, pai.publicKey.isValidSignature(dac.signature, for: dac) else {
             return (.chainInvalid, "the PAI did not issue the DAC")
+        }
+        // swift-certificates refuses an unhandled critical extension before the policy runs;
+        // the profile names it.
+        for (certificate, role) in [(pai, MatterAttestationPolicy.Role.pai), (dac, .dac)] {
+            if let violation = MatterAttestationPolicy.profileViolation(certificate, role: role) {
+                return (.malformed, MatterAttestationPolicy.Category.format.reason("\(role.rawValue) \(violation)"))
+            }
         }
         return (.malformed, "a chain certificate has an unsupported critical extension")
     }

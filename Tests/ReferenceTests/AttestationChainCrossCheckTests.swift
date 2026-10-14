@@ -8,6 +8,7 @@
 import Testing
 import Foundation
 import Crypto
+import X509
 import MatterCrypto
 import MatterTypes
 import MatterTestSupport
@@ -96,19 +97,25 @@ struct AttestationChainCrossCheckTests {
         let date = SyntheticAttestationChain.date
         func chain(
             paiSigner: P256.Signing.PrivateKey? = nil, paiAKI: [UInt8]? = nil,
-            dacSigner: P256.Signing.PrivateKey? = nil, dacAKI: [UInt8]? = nil, san: Bool = false
+            dacSigner: P256.Signing.PrivateKey? = nil, dacAKI: [UInt8]? = nil, san: Bool = false,
+            paiExtra: [Certificate.Extension] = [], dacExtra: [Certificate.Extension] = []
         ) throws -> SyntheticAttestationChain {
             try SyntheticAttestationChain(
                 paaValidity: date(2020, 1, 1)...date(2040, 1, 1),
                 paiValidity: date(2021, 1, 1)...date(2039, 1, 1),
                 dacValidity: date(2022, 1, 1)...date(2038, 1, 1),
                 paiSigner: paiSigner, paiAKI: paiAKI, dacSigner: dacSigner, dacAKI: dacAKI,
-                dacCriticalSubjectAlternativeName: san
+                dacCriticalSubjectAlternativeName: san,
+                paiExtraExtensions: paiExtra, dacExtraExtensions: dacExtra
             )
         }
         let cases: [(name: String, chain: SyntheticAttestationChain, valid: Bool)] = [
             ("valid", try chain(), true),
             ("critical SAN", try chain(san: true), true),
+            ("DAC critical certificatePolicies", try chain(dacExtra: [SyntheticAttestationChain.criticalCertificatePolicies]), true),
+            ("PAI critical certificatePolicies", try chain(paiExtra: [SyntheticAttestationChain.criticalCertificatePolicies]), true),
+            ("DAC critical unknown extension", try chain(dacExtra: [SyntheticAttestationChain.criticalUnknownExtension]), false),
+            ("PAI critical unknown extension", try chain(paiExtra: [SyntheticAttestationChain.criticalUnknownExtension]), false),
             ("PAI AKI is not the PAA SKI", try chain(paiAKI: Array(repeating: 0x42, count: 20)), false),
             ("DAC AKI is not the PAI SKI", try chain(dacAKI: Array(repeating: 0x24, count: 20)), false),
             ("PAI signed by another key", try chain(paiSigner: P256.Signing.PrivateKey()), false),

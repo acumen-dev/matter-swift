@@ -41,9 +41,11 @@ import X509
 /// `Verifier` still checks each issuer's signature over its child while building the path
 /// (PAA → PAI, PAI → DAC). The PAA's self-signature is checked when the trust store loads it.
 /// The profile above covers what `RFC5280Policy` contributed for this three-certificate shape
-/// (version, CA-ness, path length). The handled critical extensions are basicConstraints,
-/// keyUsage, extendedKeyUsage and subjectAlternativeName; any other critical extension
-/// (nameConstraints included) makes the chain unbuildable.
+/// (version, CA-ness, path length). The handled critical extensions are
+/// ``handledCriticalExtensions``; swift-certificates will not build a chain through a
+/// certificate with any other critical extension, and the profile names one as a violation,
+/// so a trust store, ``AttestationTrustStore/assessPAA(_:)`` and the refresh script reject such
+/// a PAA by the same rule.
 ///
 /// Each failure reason starts with one of the ``Category`` prefixes so the verifier can map it
 /// to an ``AttestationFailureReason``.
@@ -76,15 +78,24 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
     /// The current time; the DAC must be valid at it.
     let now: Date
 
-    /// Matter requires critical basicConstraints and keyUsage; connectedhomeip also accepts a
-    /// critical extendedKeyUsage (vector `struct_*_ext_extended_key_usage_present`) and a
-    /// critical subjectAlternativeName (chip-cert accepts it; attestation reads nothing from it).
-    let verifyingCriticalExtensions: [ASN1ObjectIdentifier] = [
+    /// certificatePolicies (2.5.29.32), which swift-certificates names no identifier for.
+    static let certificatePolicies: ASN1ObjectIdentifier = [2, 5, 29, 32]
+
+    /// The critical extensions attestation accepts. Matter requires critical basicConstraints
+    /// and keyUsage; connectedhomeip also accepts a critical extendedKeyUsage (vector
+    /// `struct_*_ext_extended_key_usage_present`), and chip-cert (OpenSSL) a critical
+    /// subjectAlternativeName or certificatePolicies; attestation reads nothing from those
+    /// three. Any other critical extension (nameConstraints, policyConstraints,
+    /// inhibitAnyPolicy included) is a profile violation.
+    static let handledCriticalExtensions: [ASN1ObjectIdentifier] = [
         .X509ExtensionID.basicConstraints,
         .X509ExtensionID.keyUsage,
         .X509ExtensionID.extendedKeyUsage,
         .X509ExtensionID.subjectAlternativeName,
+        certificatePolicies,
     ]
+
+    let verifyingCriticalExtensions: [ASN1ObjectIdentifier] = Self.handledCriticalExtensions
 
     init(now: Date) {
         self.now = now
@@ -279,7 +290,9 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
                 }
 
             default:
-                break
+                if ext.critical, !handledCriticalExtensions.contains(ext.oid) {
+                    return "carries an unhandled critical extension \(ext.oid)"
+                }
             }
         }
 

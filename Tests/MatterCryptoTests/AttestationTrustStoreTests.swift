@@ -31,18 +31,19 @@ struct AttestationTrustStoreTests {
         try AttestationTrustStore(paas: paas, cdSigningKeys: [testCDSigningKey()], provenance: provenance)
     }
 
-    /// A self-signed (or self-issued) CA certificate. A different `signer` produces a self-issued
-    /// certificate whose signature does not verify.
+    /// A self-signed (or self-issued) CA certificate in the Matter PAA profile. A different
+    /// `signer` produces a self-issued certificate whose signature does not verify.
     private static func makePAA(
         commonName: String,
         key: P256.Signing.PrivateKey = .init(),
         isCA: Bool = true,
         withSKI: Bool = true,
+        withKeyUsage: Bool = true,
         signer: Certificate.PrivateKey? = nil
     ) throws -> Data {
         try makeCertificate(
             commonName: commonName, key: Certificate.PrivateKey(key), algorithm: .ecdsaWithSHA256,
-            isCA: isCA, withSKI: withSKI, signer: signer)
+            isCA: isCA, withSKI: withSKI, withKeyUsage: withKeyUsage, signer: signer)
     }
 
     private static func makeCertificate(
@@ -51,6 +52,7 @@ struct AttestationTrustStoreTests {
         algorithm: Certificate.SignatureAlgorithm,
         isCA: Bool = true,
         withSKI: Bool = true,
+        withKeyUsage: Bool = true,
         skiBytes: [UInt8]? = nil,
         signer: Certificate.PrivateKey? = nil
     ) throws -> Data {
@@ -66,6 +68,9 @@ struct AttestationTrustStoreTests {
             signatureAlgorithm: algorithm,
             extensions: try Certificate.Extensions {
                 Critical(isCA ? BasicConstraints.isCertificateAuthority(maxPathLength: nil) : BasicConstraints.notCertificateAuthority)
+                if withKeyUsage {
+                    Critical(KeyUsage(keyCertSign: true, cRLSign: true))
+                }
                 if let skiBytes {
                     SubjectKeyIdentifier(keyIdentifier: ArraySlice(skiBytes))
                 } else if withSKI {
@@ -159,6 +164,21 @@ struct AttestationTrustStoreTests {
         #expect(throws: AttestationTrustStoreError.missingSubjectKeyIdentifier("0")) {
             try Self.store(paas: [noSKI])
         }
+    }
+
+    @Test("a self-signed CA outside the Matter PAA profile is refused at admission, naming the violation")
+    func rejectsProfileViolation() throws {
+        let noKeyUsage = try Self.makePAA(commonName: "No keyUsage", withKeyUsage: false)
+        #expect(throws: AttestationTrustStoreError.notAMatterPAA("0", reason: "has no keyUsage")) {
+            try Self.store(paas: [noKeyUsage])
+        }
+        let directory = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try noKeyUsage.write(to: directory.appendingPathComponent("no-key-usage.der"))
+        #expect(throws: AttestationTrustStoreError.notAMatterPAA("no-key-usage.der", reason: "has no keyUsage")) {
+            try AttestationTrustStore(directory: directory, cdSigningKeys: [], provenance: Self.provenance)
+        }
+        #expect(AttestationTrustStore.assessPAA(noKeyUsage).rejection == "has no keyUsage")
     }
 
     // MARK: - CDSigningKey
@@ -555,6 +575,7 @@ struct AttestationTrustStoreTests {
                 signatureAlgorithm: .ecdsaWithSHA256,
                 extensions: try Certificate.Extensions {
                     Critical(BasicConstraints.isCertificateAuthority(maxPathLength: nil))
+                    Critical(KeyUsage(keyCertSign: true, cRLSign: true))
                     SubjectKeyIdentifier(hash: privateKey.publicKey)
                 },
                 issuerPrivateKey: privateKey)

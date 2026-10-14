@@ -49,6 +49,9 @@ OID_BASIC_CONSTRAINTS = "551d13"
 OID_KEY_USAGE = "551d0f"
 OID_SKI = "551d0e"
 OID_AKI = "551d23"
+# MatterAttestationPolicy.handledCriticalExtensions: basicConstraints, keyUsage,
+# extendedKeyUsage, subjectAlternativeName, certificatePolicies.
+HANDLED_CRITICAL = {OID_BASIC_CONSTRAINTS, OID_KEY_USAGE, "551d25", "551d11", "551d20"}
 OID_MATTER_PID = bytes.fromhex("2b0601040182a27c0202")
 
 PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -131,6 +134,19 @@ def parse_certificate(der):
     }
 
 
+def dotted_oid(hex_oid):
+    """The dotted form of a DER OID body given as hex, as swift-certificates prints it."""
+    body = bytes.fromhex(hex_oid)
+    arcs, value = [], 0
+    for byte in body:
+        value = (value << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            arcs.append(value)
+            value = 0
+    first = min(arcs[0] // 40, 2)
+    return ".".join(str(n) for n in [first, arcs[0] - 40 * first] + arcs[1:])
+
+
 def ext_values(cert, oid):
     return [(c, v) for (o, c, v) in cert["extensions"] if o == oid]
 
@@ -207,6 +223,9 @@ def exclusion_reason(der):
     for oid in (OID_BASIC_CONSTRAINTS, OID_KEY_USAGE, OID_SKI, OID_AKI):
         if len(ext_values(cert, oid)) > 1:
             return "repeats an extension"
+    for oid, critical, _ in cert["extensions"]:
+        if critical and oid not in HANDLED_CRITICAL:
+            return "carries an unhandled critical extension %s" % dotted_oid(oid)
     if not bc[0][0]:
         return "basicConstraints is not critical or repeats"
     if path_len not in (None, 1):

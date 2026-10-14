@@ -5,6 +5,7 @@ import Testing
 import Foundation
 import Crypto
 import X509
+import SwiftASN1
 import MatterTypes
 @testable import MatterCrypto
 import MatterTestSupport
@@ -497,14 +498,16 @@ struct DeviceAttestationVerifierTests {
     private static func standardChain(
         paiSigner: P256.Signing.PrivateKey? = nil, paiAKI: [UInt8]? = nil,
         dacSigner: P256.Signing.PrivateKey? = nil, dacAKI: [UInt8]? = nil,
-        dacCriticalSubjectAlternativeName: Bool = false
+        dacCriticalSubjectAlternativeName: Bool = false,
+        paiExtra: [Certificate.Extension] = [], dacExtra: [Certificate.Extension] = []
     ) throws -> SyntheticAttestationChain {
         try SyntheticAttestationChain(
             paaValidity: date(2020)...date(2040),
             paiValidity: date(2021)...date(2039),
             dacValidity: date(2022)...date(2038),
             paiSigner: paiSigner, paiAKI: paiAKI, dacSigner: dacSigner, dacAKI: dacAKI,
-            dacCriticalSubjectAlternativeName: dacCriticalSubjectAlternativeName
+            dacCriticalSubjectAlternativeName: dacCriticalSubjectAlternativeName,
+            paiExtraExtensions: paiExtra, dacExtraExtensions: dacExtra
         )
     }
 
@@ -523,6 +526,76 @@ struct DeviceAttestationVerifierTests {
         guard case .verified = result else {
             Issue.record("expected verified, got \(result)")
             return
+        }
+    }
+
+    @Test("a critical certificatePolicies on the DAC or the PAI verifies (chip-cert and OpenSSL accept it)")
+    func criticalCertificatePolicies() async throws {
+        let policies = SyntheticAttestationChain.criticalCertificatePolicies
+        for chain in [try Self.standardChain(dacExtra: [policies]), try Self.standardChain(paiExtra: [policies])] {
+            let result = try await Self.verify(chain)
+            guard case .verified = result else {
+                Issue.record("expected verified, got \(result)")
+                continue
+            }
+        }
+    }
+
+    @Test("an unhandled critical extension on the DAC or the PAI gives malformed, naming the extension")
+    func criticalUnknownExtension() async throws {
+        let unknown = SyntheticAttestationChain.criticalUnknownExtension
+        let oid = SyntheticAttestationChain.unknownExtensionOID
+        for (role, chain) in [
+            ("DAC", try Self.standardChain(dacExtra: [unknown])),
+            ("PAI", try Self.standardChain(paiExtra: [unknown])),
+        ] {
+            let failure = try #require(Self.failure(try await Self.verify(chain)))
+            #expect(failure.reason == .malformed)
+            #expect(failure.detail.contains("\(role) carries an unhandled critical extension \(oid)"), "\(failure.detail)")
+        }
+    }
+
+    @Test("an unhandled critical extension is a named PAA profile violation; certificatePolicies is not",
+          arguments: ["certificatePolicies", "unknown", "policyConstraints", "inhibitAnyPolicy"])
+    func paaCriticalExtensionProfile(_ which: String) throws {
+        let ext: Certificate.Extension
+        switch which {
+        case "certificatePolicies": ext = SyntheticAttestationChain.criticalCertificatePolicies
+        case "unknown": ext = SyntheticAttestationChain.criticalUnknownExtension
+        case "policyConstraints":
+            ext = Certificate.Extension(oid: [2, 5, 29, 36], critical: true, value: [0x30, 0x03, 0x80, 0x01, 0x00])
+        default:
+            ext = Certificate.Extension(oid: [2, 5, 29, 54], critical: true, value: [0x02, 0x01, 0x00])
+        }
+        let paaKey = P256.Signing.PrivateKey()
+        let name = try DistinguishedName {
+            CommonName("Synthetic PAA")
+        }
+        let paa = try Certificate(
+            version: .v3, serialNumber: .init(), publicKey: .init(paaKey.publicKey),
+            notValidBefore: Self.date(2020), notValidAfter: Self.date(2040),
+            issuer: name, subject: name, signatureAlgorithm: .ecdsaWithSHA256,
+            extensions: try Certificate.Extensions {
+                Critical(BasicConstraints.isCertificateAuthority(maxPathLength: 1))
+                Critical(KeyUsage(keyCertSign: true, cRLSign: true))
+                SubjectKeyIdentifier(hash: Certificate.PublicKey(paaKey.publicKey))
+                ext
+            },
+            issuerPrivateKey: .init(paaKey))
+        var serializer = DER.Serializer()
+        try serializer.serialize(paa)
+        let der = Data(serializer.serializedBytes)
+        let assessment = AttestationTrustStore.assessPAA(der)
+        let admission = Result {
+            try AttestationTrustStore(paas: [der], cdSigningKeys: [], provenance: .init(source: "explicit"))
+        }
+        if which == "certificatePolicies" {
+            #expect(assessment.isAcceptable, "\(assessment)")
+            #expect((try? admission.get()) != nil)
+        } else {
+            let reason = "carries an unhandled critical extension \(ext.oid)"
+            #expect(assessment.rejection == reason)
+            #expect(throws: AttestationTrustStoreError.notAMatterPAA("0", reason: reason)) { try admission.get() }
         }
     }
 
