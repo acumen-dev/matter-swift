@@ -1,0 +1,8 @@
+matter-swift
+Copyright 2026 Monagle Pty Ltd
+
+This product includes test fixtures from connectedhomeip
+(https://github.com/project-chip/connectedhomeip), tag v1.4.0.0,
+Copyright (c) Project CHIP Authors, licensed under the Apache License,
+Version 2.0. The fixtures are in Tests/Fixtures/Attestation; SOURCES.md
+in that directory lists each file and its upstream path.

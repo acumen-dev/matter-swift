@@ -195,7 +195,12 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterCryptoTests",
-            dependencies: ["MatterCrypto"]
+            dependencies: [
+                "MatterCrypto",
+                "MatterTestSupport",
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
         ),
         .testTarget(
             name: "MatterProtocolTests",
