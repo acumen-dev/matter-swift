@@ -8,7 +8,7 @@ import SwiftASN1
 
 // MARK: - CDVerification
 
-/// The outcome of ``CertificationDeclaration/verifySignature(cmsDER:keys:)``.
+/// The outcome of ``CertificationDeclaration/verifySignature(keys:)``.
 public enum CDVerification: Sendable, Equatable {
     case valid
     /// No key in the list has the signer's subject key identifier.

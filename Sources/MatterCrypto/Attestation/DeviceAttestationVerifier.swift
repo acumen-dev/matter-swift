@@ -113,8 +113,7 @@ public struct DeviceAttestationVerifier: Sendable {
     /// `DefaultDACVerifier::ValidateCertificateDeclarationPayload` rule for rule (line numbers
     /// in src/credentials/attestation_verifier/DefaultDeviceAttestationVerifier.cpp). Upstream's
     /// vendor-ID and product-ID failures give `.cdVidPidNotListed`, its authorized-PAA failure
-    /// `.cdPAANotAuthorized`. `nil`
-    /// when the CD passes.
+    /// `.cdPAANotAuthorized`. `nil` when the CD passes.
     ///
     /// Upstream also refuses the test CD signing key unless test keys are enabled (:477-480);
     /// here the trust store alone decides which CD signing keys are trusted.
