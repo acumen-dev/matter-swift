@@ -377,13 +377,36 @@ struct CommissioningControllerTests {
         return ctx
     }
 
-    private func csrResponse(csr: Data, nonce: Data, signedBy key: P256.Signing.PrivateKey = dacKey) throws -> Data {
-        let elements = TLVEncoder.encode(
-            .structure([
+    /// NOCSRElements carrying `csr` and `nonce`; with `length`, padded to exactly that many
+    /// bytes by a vendor-reserved field (tag 3).
+    private func nocsrElements(csr: Data, nonce: Data, length: Int? = nil) -> Data {
+        func encode(padding: Int?) -> Data {
+            var fields: [TLVElement.TLVField] = [
                 .init(tag: .contextSpecific(1), value: .octetString(csr)),
                 .init(tag: .contextSpecific(2), value: .octetString(nonce))
-            ])
-        )
+            ]
+            if let padding {
+                fields.append(.init(tag: .contextSpecific(3), value: .octetString(Data(count: padding))))
+            }
+            return TLVEncoder.encode(.structure(fields))
+        }
+        guard let length else { return encode(padding: nil) }
+        // The padding's length prefix grows with it, so search rather than subtract.
+        for padding in 0...length {
+            let encoded = encode(padding: padding)
+            if encoded.count == length { return encoded }
+        }
+        preconditionFailure("no padding reaches \(length) bytes")
+    }
+
+    private func csrResponse(
+        csr: Data, nonce: Data, signedBy key: P256.Signing.PrivateKey = dacKey, elementsLength: Int? = nil
+    ) throws -> Data {
+        let elements = nocsrElements(csr: csr, nonce: nonce, length: elementsLength)
+        return try csrResponse(elements: elements, signedBy: key)
+    }
+
+    private func csrResponse(elements: Data, signedBy key: P256.Signing.PrivateKey = dacKey) throws -> Data {
         let resp = OperationalCredentialsCluster.CSRResponse(
             nocsrElements: elements,
             attestationSignature: try key.signature(for: elements + Self.challenge).rawRepresentation
@@ -488,6 +511,41 @@ struct CommissioningControllerTests {
             Issue.record("expected failure")
         } catch ControllerError.commissioningFailed(let message) {
             #expect(message.hasPrefix("CSR attestation signature cannot be checked"))
+        }
+    }
+
+    @Test("CSR response: NOCSRElements of 900 bytes are accepted; 901 bytes are refused as RESP_MAX")
+    func csrResponseElementsBound() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let nonce = Data(repeating: 5, count: 32)
+        #expect(CommissioningController.maxResponseElementsLength == 900)
+        _ = try await cc.handleCSRResponse(
+            response: try csrResponse(csr: csr, nonce: nonce, elementsLength: 900),
+            expectedNonce: nonce,
+            deviceNodeID: NodeID(rawValue: 2),
+            context: attestedContext()
+        )
+        await #expect(throws: ControllerError.invalidCSRResponse) {
+            _ = try await cc.handleCSRResponse(
+                response: try csrResponse(csr: csr, nonce: nonce, elementsLength: 901),
+                expectedNonce: nonce,
+                deviceNodeID: NodeID(rawValue: 2),
+                context: attestedContext()
+            )
+        }
+    }
+
+    @Test("CSR response: NOCSRElements that are not TLV are an invalid CSR response, not a raw TLV error")
+    func csrResponseElementsUndecodable() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        await #expect(throws: ControllerError.invalidCSRResponse) {
+            _ = try await cc.handleCSRResponse(
+                response: try csrResponse(elements: Data([0x15, 0x30, 0x01])),
+                expectedNonce: Data(repeating: 6, count: 32),
+                deviceNodeID: NodeID(rawValue: 2),
+                context: attestedContext()
+            )
         }
     }
 
@@ -598,6 +656,33 @@ struct CommissioningControllerTests {
             _ = try cc.handleAttestationResponse(response([
                 .init(tag: .contextSpecific(0), value: .octetString(elements)),
             ]))
+        }
+    }
+
+    @Test("AttestationResponse: elements of 900 bytes pass; 901 bytes are refused before verification")
+    func attestationResponseElementsBound() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        func response(elementsLength: Int) -> Data {
+            InvokeResponse(invokeResponses: [
+                InvokeResponseIB(command: CommandDataIB(
+                    commandPath: CommandPath(
+                        endpointID: .root,
+                        clusterID: ClusterID(rawValue: 0x003E),
+                        commandID: CommandID(rawValue: 0x01)
+                    ),
+                    commandFields: .structure([
+                        .init(tag: .contextSpecific(0), value: .octetString(Data(count: elementsLength))),
+                        .init(tag: .contextSpecific(1), value: .octetString(Data(repeating: 9, count: 64))),
+                    ])
+                ))
+            ]).tlvEncode()
+        }
+        #expect(try cc.handleAttestationResponse(response(elementsLength: 900)).elements.count == 900)
+        do {
+            _ = try cc.handleAttestationResponse(response(elementsLength: 901))
+            Issue.record("expected attestationValidationFailed")
+        } catch ControllerError.attestationValidationFailed(let message) {
+            #expect(message.contains("901 bytes"))
         }
     }
 

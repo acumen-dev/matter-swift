@@ -322,8 +322,19 @@ public struct CommissioningController: Sendable {
         return narrowed
     }
 
+    /// The largest attestation elements or NOCSR elements a device may send: the spec's
+    /// `RESP_MAX`, 900 bytes (`kMaxResponseLength` in connectedhomeip v1.4.0.0).
+    public static let maxResponseElementsLength = 900
+
     /// The attestation elements (tag 0) and attestation signature (tag 1) of an
     /// `AttestationResponse`, unverified.
+    ///
+    /// Elements longer than ``maxResponseElementsLength`` are refused here, before the
+    /// verifier sees them, so the bound is a hard stop rather than an `AttestationFailure`
+    /// an approval could override.
+    ///
+    /// - Throws: `ControllerError.attestationValidationFailed` if either field is missing or the
+    ///   elements exceed ``maxResponseElementsLength``.
     public func handleAttestationResponse(_ response: Data) throws -> (elements: Data, signature: Data) {
         let responseElement = try IMClient.parseInvokeResponse(response)
         guard let element = responseElement,
@@ -331,6 +342,10 @@ public struct CommissioningController: Sendable {
               let elements = fields.first(where: { $0.tag == .contextSpecific(0) })?.value.dataValue,
               let signature = fields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue else {
             throw ControllerError.attestationValidationFailed("AttestationResponse missing its elements or signature")
+        }
+        guard elements.count <= Self.maxResponseElementsLength else {
+            throw ControllerError.attestationValidationFailed(
+                "AttestationResponse elements are \(elements.count) bytes, over the \(Self.maxResponseElementsLength)-byte limit")
         }
         return (elements, signature)
     }
@@ -406,6 +421,7 @@ public struct CommissioningController: Sendable {
     /// - Tag 1: NOCSR (the CSR itself, DER-encoded PKCS#10)
     /// - Tag 2: CSRNonce (echo of our nonce)
     ///
+    /// The NOCSRElements must be at most ``maxResponseElementsLength`` bytes and decode as TLV.
     /// The echoed CSRNonce must equal `expectedNonce`, the attestation signature over
     /// `nocsrElements || attestationChallenge` must verify with `context.dacPublicKey` (set by
     /// ``applyAttestationResult(_:approvingUnverifiedDevice:approvedAt:context:)``, on the
@@ -430,9 +446,17 @@ public struct CommissioningController: Sendable {
         }
 
         let csrResp = try OperationalCredentialsCluster.CSRResponse.fromTLVElement(element)
+        guard csrResp.nocsrElements.count <= Self.maxResponseElementsLength else {
+            throw ControllerError.invalidCSRResponse
+        }
 
         // Parse the NOCSRElements to extract the CSR
-        let (_, nocsrElement) = try TLVDecoder.decode(csrResp.nocsrElements)
+        let nocsrElement: TLVElement
+        do {
+            (_, nocsrElement) = try TLVDecoder.decode(csrResp.nocsrElements)
+        } catch {
+            throw ControllerError.invalidCSRResponse
+        }
         guard case .structure(let nocsrFields) = nocsrElement,
               let csrData = nocsrFields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue else {
             throw ControllerError.invalidCSRResponse

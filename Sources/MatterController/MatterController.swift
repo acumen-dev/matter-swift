@@ -1032,7 +1032,7 @@ public actor MatterController {
     /// - Throws: `ControllerError.commissioningFailed` if Basic Information cannot be read or the
     ///   PASE session supplied no attestation challenge;
     ///   `attestationValidationFailed` if the CertificateChain or Attestation response is missing
-    ///   its fields;
+    ///   its fields, or the attestation elements exceed 900 bytes;
     ///   `attestationFailed` if verification fails and the failure is not approved;
     ///   `attestationApprovalRefused` if the approved failure's DAC key cannot be read.
     ///   Interaction Model transport and status errors propagate.
