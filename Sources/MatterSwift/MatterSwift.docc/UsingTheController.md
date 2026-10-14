@@ -189,7 +189,7 @@ Every commissioned device carries an `attestation` record, saved with the device
 - `.verified` names the PAA the chain ended at and the vendor and product identifiers.
 - `.overridden` holds the DAC fingerprint that was approved, the `AttestationFailureReason` that was overridden, and the time of approval.
 
-A device commissioned before attestation was recorded has `nil`. The device's `vendorID` and `productID` come from its verified DAC, not from what the device reports about itself.
+A device commissioned before attestation was recorded has `nil`. The device's `vendorID` and `productID` are the product's, as it reports them in Basic Information. On a `.verified` device the Certification Declaration lists them, so they are verified; on an `.overridden` device they are the device's unverified claim. A white-label product's DAC can name a different vendor (the OEM's); the DAC's identifiers are the ones in the `.verified` record.
 
 ## Reading Attributes
 

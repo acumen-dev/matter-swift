@@ -1078,9 +1078,12 @@ public actor MatterController {
             basicInformation: (vendorID, productID),
             now: Date()
         )
+        var reported = context
+        reported.basicInformationVendorID = vendorID
+        reported.basicInformationProductID = productID
         let attested = try commissioning.applyAttestationResult(
             result, approvingUnverifiedDevice: approvingUnverifiedDevice,
-            approvedAt: Date(), context: context
+            approvedAt: Date(), context: reported
         )
         switch attested.attestation {
         case .verified(let paaSubject, _, _)?:

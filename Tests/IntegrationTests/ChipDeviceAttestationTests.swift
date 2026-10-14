@@ -63,7 +63,7 @@ struct ChipDeviceAttestationTests {
                 throw Failure(description: "expected an overridden attestation record, got \(String(describing: device.attestation))")
             }
             #expect(approved == fingerprint && reason == .untrustedRoot)
-            // From the DAC (Basic Information would say the same here; the DAC is the source).
+            // From Basic Information (the app's DAC names the same pair; Basic Information is the source).
             #expect(device.vendorID == VendorID(rawValue: Self.appVendorID))
             #expect(device.productID == ProductID(rawValue: Self.appProductID))
 

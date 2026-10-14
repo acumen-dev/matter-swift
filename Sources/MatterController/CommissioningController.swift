@@ -78,11 +78,15 @@ public struct CommissioningController: Sendable {
         /// approved. The CSRResponse's attestation signature is checked against it.
         public var dacPublicKey: P256.Signing.PublicKey?
 
-        /// The vendor ID in the DAC's subject (nil if it has none that can be read).
-        public var dacVendorID: UInt16?
+        /// The VendorID the device reports in Basic Information, which becomes the commissioned
+        /// device's `vendorID`. On a verified attestation the Certification Declaration lists
+        /// it; on the override path it is the device's unverified claim. A white-label product's
+        /// DAC may name another vendor (the OEM's); the DAC's identifiers stay in
+        /// ``attestation``.
+        public var basicInformationVendorID: UInt16?
 
-        /// The product ID in the DAC's subject (nil if it has none that can be read).
-        public var dacProductID: UInt16?
+        /// The ProductID the device reports in Basic Information; as ``basicInformationVendorID``.
+        public var basicInformationProductID: UInt16?
 
         /// How the device passed attestation.
         public var attestation: DeviceAttestationRecord?
@@ -374,8 +378,6 @@ public struct CommissioningController: Sendable {
         switch result {
         case .verified(let verified):
             ctx.dacPublicKey = verified.dacPublicKey
-            ctx.dacVendorID = verified.vendorID
-            ctx.dacProductID = verified.productID
             ctx.attestation = .verified(
                 paaSubject: verified.paaSubject, vendorID: verified.vendorID, productID: verified.productID)
         case .failed(let failure):
@@ -387,8 +389,6 @@ public struct CommissioningController: Sendable {
                     failure, "the DAC's public key cannot be read, so the device cannot be bound to it")
             }
             ctx.dacPublicKey = key
-            ctx.dacVendorID = failure.dacVendorID
-            ctx.dacProductID = failure.dacProductID
             ctx.attestation = .overridden(dacFingerprint: fingerprint, reason: failure.reason, approvedAt: approvedAt)
         }
         return ctx
@@ -618,7 +618,8 @@ public struct CommissioningController: Sendable {
     }
 
     /// Validate the CommissioningComplete response and produce a CommissionedDevice, whose
-    /// vendor and product IDs are those in its DAC and whose attestation record is the
+    /// vendor and product IDs are the context's Basic Information ones
+    /// (``CommissioningContext/basicInformationVendorID``) and whose attestation record is the
     /// context's.
     public func handleCommissioningComplete(
         response: Data,
@@ -646,8 +647,8 @@ public struct CommissioningController: Sendable {
         return CommissionedDevice(
             nodeID: deviceNodeID,
             fabricIndex: fabricIndex,
-            vendorID: context.dacVendorID.map(VendorID.init(rawValue:)),
-            productID: context.dacProductID.map(ProductID.init(rawValue:)),
+            vendorID: context.basicInformationVendorID.map(VendorID.init(rawValue:)),
+            productID: context.basicInformationProductID.map(ProductID.init(rawValue:)),
             attestation: context.attestation
         )
     }

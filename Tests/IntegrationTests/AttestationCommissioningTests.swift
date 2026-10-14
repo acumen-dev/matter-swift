@@ -27,8 +27,9 @@ struct AttestationCommissioningTests {
     /// no dac_origin fields) Ruling 16a's CD checks require BI, CD and DAC to agree, so these
     /// tests cannot tell DAC from BI wherever the CD check runs. In `approvedRetrySucceeds` the
     /// failure is at the chain step, before the CD check, so that agreement is not exercised
-    /// there. That the IDs come from the DAC is pinned at unit level
-    /// (CommissioningControllerTests: `applyAttestationResult`, `handleCommissioningComplete`).
+    /// there. That the device's IDs come from Basic Information, and the DAC's stay in the
+    /// attestation record, is pinned at unit level (CommissioningControllerTests:
+    /// `whiteLabelRecordsBasicInformation`, `handleCommissioningComplete`).
     static let vendorID: UInt16 = 0xFFF2
     static let productID: UInt16 = 0x8001
 
@@ -131,7 +132,7 @@ struct AttestationCommissioningTests {
 
     // MARK: - (a) Trusted
 
-    @Test("A device whose chain the trust store holds is commissioned and recorded as verified, with the DAC's VID/PID")
+    @Test("A device whose chain the trust store holds is commissioned and recorded as verified, with its VID/PID")
     func trustedDeviceVerifies() async throws {
         let creds = try Self.credentials()
         try await Self.withRig(seed: 91, credentials: creds, trustStore: try TestAttestation.trustStore(for: creds)) { rig in

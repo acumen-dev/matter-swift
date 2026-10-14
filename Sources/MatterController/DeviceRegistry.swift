@@ -57,12 +57,14 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
     /// The fabric index the device belongs to.
     public let fabricIndex: FabricIndex
 
-    /// The device's vendor ID, from its DAC. Verified only when ``attestation`` is
-    /// ``DeviceAttestationRecord/verified(paaSubject:vendorID:productID:)``; on the override
-    /// path it is the DAC's unverified claim, so consult ``attestation``.
+    /// The product's vendor ID, as the device reports it in Basic Information. When
+    /// ``attestation`` is ``DeviceAttestationRecord/verified(paaSubject:vendorID:productID:)``
+    /// the verified Certification Declaration lists it; on the override path it is the device's
+    /// unverified claim, so consult ``attestation``. A white-label product's DAC may name a
+    /// different vendor (the OEM's); the DAC's identifiers are the ones in the verified record.
     public let vendorID: VendorID?
 
-    /// The device's product ID, from its DAC; verified or not as ``vendorID``.
+    /// The product's product ID, from Basic Information; verified or not as ``vendorID``.
     public let productID: ProductID?
 
     /// Operational address — host (stored for Codable compatibility).

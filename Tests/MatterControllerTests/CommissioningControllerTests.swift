@@ -271,8 +271,8 @@ struct CommissioningControllerTests {
         var ctx = CommissioningController.CommissioningContext()
         ctx.deviceNodeID = NodeID(rawValue: 42)
         ctx.deviceFabricIndex = FabricIndex(rawValue: 5)
-        ctx.dacVendorID = 0xFFF2
-        ctx.dacProductID = 0x8001
+        ctx.basicInformationVendorID = 0xFFF2
+        ctx.basicInformationProductID = 0x8001
         ctx.attestation = .verified(paaSubject: "CN=Test PAA", vendorID: 0xFFF2, productID: 0x8001)
 
         let respElement = GeneralCommissioningCluster.CommissioningCompleteResponse(
@@ -299,7 +299,7 @@ struct CommissioningControllerTests {
         )
 
         #expect(device.nodeID.rawValue == 42)
-        // The device's identifiers are its DAC's, not the controller's own vendor.
+        // The device's identifiers are its Basic Information's, not the controller's own vendor.
         #expect(device.vendorID == VendorID(rawValue: 0xFFF2))
         #expect(device.productID == ProductID(rawValue: 0x8001))
         #expect(device.attestation == ctx.attestation)
@@ -564,7 +564,7 @@ struct CommissioningControllerTests {
             dacPublicKey: key, dacVendorID: 0xFFF2, dacProductID: 0x8001)
     }
 
-    @Test("Attestation: a verified result records the PAA and the DAC's VID/PID and key")
+    @Test("Attestation: a verified result records the PAA, the DAC's VID/PID, and binds the DAC key")
     func attestationVerified() throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
         let key = P256.Signing.PrivateKey().publicKey
@@ -575,7 +575,48 @@ struct CommissioningControllerTests {
             .verified(verified), approvingUnverifiedDevice: nil, approvedAt: Date(), context: .init())
         #expect(ctx.attestation == .verified(paaSubject: "CN=Test PAA", vendorID: 0xFFF2, productID: 0x8001))
         #expect(ctx.dacPublicKey?.x963Representation == key.x963Representation)
-        #expect(ctx.dacVendorID == 0xFFF2 && ctx.dacProductID == 0x8001)
+    }
+
+    @Test("A white-label device records its Basic Information VID/PID; the DAC's (the OEM's) stay in the record",
+          arguments: [true, false])
+    func whiteLabelRecordsBasicInformation(verified: Bool) throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        // The CD's dac_origin fields name the OEM's DAC (0xFFF2/0x8001); the product is 0xFFF1/0x8000
+        // (connectedhomeip v1.4.0.0 struct_cd_origin_pid_vid_correct).
+        var reported = CommissioningController.CommissioningContext()
+        reported.basicInformationVendorID = 0xFFF1
+        reported.basicInformationProductID = 0x8000
+        reported.deviceNodeID = NodeID(rawValue: 7)
+        reported.deviceFabricIndex = FabricIndex(rawValue: 1)
+        let result: AttestationResult = verified
+            ? .verified(VerifiedAttestation(
+                vendorID: 0xFFF2, productID: 0x8001, paaSubject: "CN=Test PAA",
+                dacFingerprint: Self.fingerprint, dacPublicKey: Self.dacKeyOnFailure))
+            : .failed(failure(.untrustedRoot))
+        let approvedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let ctx = try cc.applyAttestationResult(
+            result, approvingUnverifiedDevice: Self.fingerprint, approvedAt: approvedAt, context: reported)
+        let complete = InvokeResponse(invokeResponses: [
+            InvokeResponseIB(command: CommandDataIB(
+                commandPath: CommandPath(
+                    endpointID: .root,
+                    clusterID: GeneralCommissioningCluster.id,
+                    commandID: GeneralCommissioningCluster.Command.commissioningCompleteResponse
+                ),
+                commandFields: GeneralCommissioningCluster.CommissioningCompleteResponse(
+                    errorCode: .ok, debugText: "").toTLVElement()
+            ))
+        ]).tlvEncode()
+        let device = try cc.handleCommissioningComplete(response: complete, context: ctx)
+
+        #expect(device.vendorID == VendorID(rawValue: 0xFFF1))
+        #expect(device.productID == ProductID(rawValue: 0x8000))
+        if verified {
+            #expect(device.attestation == .verified(paaSubject: "CN=Test PAA", vendorID: 0xFFF2, productID: 0x8001))
+        } else {
+            #expect(device.attestation == .overridden(
+                dacFingerprint: Self.fingerprint, reason: .untrustedRoot, approvedAt: approvedAt))
+        }
     }
 
     @Test("Attestation: a failure is thrown unless its exact fingerprint is approved")
@@ -613,7 +654,6 @@ struct CommissioningControllerTests {
         #expect(ctx.attestation == .overridden(dacFingerprint: Self.fingerprint, reason: reason, approvedAt: approvedAt))
         // The CSRResponse is checked against exactly this key.
         #expect(ctx.dacPublicKey?.x963Representation == Self.dacKeyOnFailure.x963Representation)
-        #expect(ctx.dacVendorID == 0xFFF2 && ctx.dacProductID == 0x8001)
     }
 
     @Test("Attestation: an approval of the exact DAC whose key cannot be read is refused, saying so")
