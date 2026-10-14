@@ -55,8 +55,11 @@ public enum CertificationDeclarationError: Error, Sendable, Equatable, CustomStr
 /// ```
 ///
 /// With no signed attributes the signature covers the eContent octets. Algorithm identifiers
-/// may carry absent or NULL parameters. Upstream reads the same fields but tolerates trailing
-/// elements inside each sequence; this parser does not.
+/// of SignedData.digestAlgorithms may carry absent or NULL parameters, as upstream tolerates;
+/// SignerInfo.digestAlgorithm must have absent parameters, because upstream's `chip-cert print-cd`
+/// fails to read a CD whose SignerInfo digestAlgorithm carries NULL (RFC 5754 §2 says absent).
+/// The signature algorithm may carry absent or NULL parameters. Upstream reads the same fields
+/// but tolerates trailing elements inside each sequence; this parser does not.
 ///
 /// The payload is decoded as upstream `DecodeCertificationElements` (the
 /// `CertificationElementsWithoutPIDs` form the verifier uses): an anonymous structure of
@@ -177,7 +180,7 @@ extension CertificationDeclaration {
             let signedData = try Self.children(explicit[0], .sequence, count: 4, "SignedData")
             try Self.expectVersion3(signedData[0], "SignedData")
             let digestAlgorithms = try Self.children(signedData[1], .set, count: 1, "digestAlgorithms")
-            try Self.expectAlgorithm(digestAlgorithms[0], sha256OID, "digestAlgorithms is not {sha256}")
+            try Self.expectAlgorithm(digestAlgorithms[0], sha256OID, "digestAlgorithms is not {sha256}", allowNull: true)
 
             // EncapsulatedContentInfo
             let encapsulated = try Self.children(signedData[2], .sequence, count: 2, "encapContentInfo")
@@ -190,8 +193,8 @@ extension CertificationDeclaration {
             let signerInfo = try Self.children(signerInfos[0], .sequence, count: 5, "SignerInfo")
             try Self.expectVersion3(signerInfo[0], "SignerInfo")
             let keyIdentifier = try Self.octets(signerInfo[1], contextZero, "sid is not a subjectKeyIdentifier")
-            try Self.expectAlgorithm(signerInfo[2], sha256OID, "SignerInfo digestAlgorithm is not sha256")
-            try Self.expectAlgorithm(signerInfo[3], ecdsaWithSHA256OID, "signatureAlgorithm is not ecdsa-with-SHA256")
+            try Self.expectAlgorithm(signerInfo[2], sha256OID, "SignerInfo digestAlgorithm is not sha256 with absent parameters", allowNull: false)
+            try Self.expectAlgorithm(signerInfo[3], ecdsaWithSHA256OID, "signatureAlgorithm is not ecdsa-with-SHA256", allowNull: true)
             let signatureDER = try Self.octets(signerInfo[4], .octetString, "signature")
             guard let signature = try? P256.Signing.ECDSASignature(derRepresentation: signatureDER) else {
                 throw CertificationDeclarationError.malformedEnvelope("signature is not a DER ECDSA signature")
@@ -237,15 +240,15 @@ extension CertificationDeclaration {
         }
 
         /// AlgorithmIdentifier ::= SEQUENCE { algorithm, parameters ANY OPTIONAL }, accepting
-        /// absent or NULL parameters.
+        /// absent parameters, and NULL parameters when `allowNull`.
         private static func expectAlgorithm(
-            _ node: ASN1Node, _ expected: ASN1ObjectIdentifier, _ failure: String
+            _ node: ASN1Node, _ expected: ASN1ObjectIdentifier, _ failure: String, allowNull: Bool
         ) throws {
             guard node.identifier == .sequence, case .constructed(let collection) = node.content else {
                 throw CertificationDeclarationError.malformedEnvelope(failure)
             }
             let nodes = Array(collection)
-            guard let first = nodes.first, nodes.count <= 2 else {
+            guard let first = nodes.first, nodes.count <= (allowNull ? 2 : 1) else {
                 throw CertificationDeclarationError.malformedEnvelope(failure)
             }
             try Self.expectOID(first, expected, failure)

@@ -4,6 +4,17 @@
 import Foundation
 import MatterCrypto
 
+// MARK: - TestAttestationError
+
+public enum TestAttestationError: Error, Sendable, Equatable, CustomStringConvertible {
+    /// The credentials carry no CD signing certificate, so there is no CD key to trust.
+    case noCDSigningCertificate
+
+    public var description: String {
+        "the credentials have no cdSigningCertificate, so a trust store for them has no CD signing key"
+    }
+}
+
 // MARK: - TestAttestation
 
 /// Trust stores for tests, so a harness states which attestation roots it trusts rather than
@@ -12,10 +23,16 @@ public enum TestAttestation {
 
     /// The store that trusts exactly the chain and CD signer of `creds`: its PAA, and its
     /// dedicated CD signing key.
+    ///
+    /// - Throws: ``TestAttestationError/noCDSigningCertificate`` if `creds` has no
+    ///   `cdSigningCertificate`.
     public static func trustStore(for creds: DeviceAttestationCredentials) throws -> AttestationTrustStore {
-        try AttestationTrustStore(
+        guard let cdSigningCertificate = creds.cdSigningCertificate else {
+            throw TestAttestationError.noCDSigningCertificate
+        }
+        return try AttestationTrustStore(
             paas: [creds.paaCertificate],
-            cdSigningKeys: [try CDSigningKey(certificateDER: creds.cdSigningCertificate)],
+            cdSigningKeys: [try CDSigningKey(certificateDER: cdSigningCertificate)],
             provenance: TrustStoreProvenance(source: "test:credentials"))
     }
 

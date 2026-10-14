@@ -300,3 +300,26 @@ private extension Data {
         map { String(format: "%02x", $0) }.joined()
     }
 }
+
+// MARK: - Certification Declaration Shape
+
+@Suite("Certification Declaration conformance (chip-cert)")
+struct CertificationDeclarationConformanceTests {
+
+    @Test("chip-cert print-cd reads the CD testCredentials generates and prints its SignerKeyId")
+    func chipCertPrintsGeneratedCD() throws {
+        guard let runner = ChipCertRunner.findBinary() else {
+            print("[SKIP] chip-cert not found — run: make ref-setup-cert")
+            return
+        }
+        let creds = try DeviceAttestationCredentials.testCredentials()
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("cd-\(UUID().uuidString).der")
+        try creds.certificationDeclaration.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        // chip-cert print-cd exits 255 for every input, so the output is the verdict.
+        let result = try runner.run(["print-cd", file.path])
+        #expect(result.stdout.contains("SignerKeyId"), "print-cd output: \(result.stdout)\n\(result.stderr)")
+        #expect(result.stdout.contains("value: 65521"), "the declared vendor ID is printed: \(result.stdout)")
+    }
+}

@@ -311,7 +311,7 @@ struct TestCredentialsAttestationTests {
     func cdSignerIsTheDedicatedKey() throws {
         let creds = try DeviceAttestationCredentials.testCredentials()
         let cd = try CertificationDeclaration(cmsDER: creds.certificationDeclaration)
-        let cdKey = try CDSigningKey(certificateDER: creds.cdSigningCertificate)
+        let cdKey = try CDSigningKey(certificateDER: try #require(creds.cdSigningCertificate))
         let paiKey = try CDSigningKey(certificateDER: creds.paiCertificate)
         #expect(cd.signerKeyIdentifier == cdKey.keyIdentifier)
         #expect(cd.signerKeyIdentifier != paiKey.keyIdentifier)

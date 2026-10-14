@@ -24,8 +24,8 @@ import MatterTypes
 ///       └── DAC (Device Attestation Certificate — per device)
 /// ```
 ///
-/// For test/development, we generate a self-signed PAI (acting as PAA+PAI),
-/// and a DAC signed by the PAI key.
+/// For test/development, we generate a full PAA → PAI → DAC chain, plus a dedicated
+/// CD signing key (``cdSigningCertificate``) that signs the Certification Declaration.
 public struct DeviceAttestationCredentials: Sendable {
 
     /// DER-encoded X.509 Device Attestation Certificate.
@@ -40,13 +40,14 @@ public struct DeviceAttestationCredentials: Sendable {
     /// DER-encoded X.509 Product Attestation Authority certificate.
     public let paaCertificate: Data
 
-    /// Certification Declaration (TLV-encoded for test use).
+    /// Certification Declaration: a DER CMS SignedData (§6.3.5) wrapping the TLV payload.
     public let certificationDeclaration: Data
 
     /// DER-encoded self-signed P-256 certificate (with a SubjectKeyIdentifier) of the key that
     /// signed ``certificationDeclaration``. A commissioner that trusts this certificate's key as
-    /// a CD signer accepts the CD.
-    public let cdSigningCertificate: Data
+    /// a CD signer accepts the CD. `nil` when the CD is signed by a key whose certificate the
+    /// device does not hold, as with a CSA-issued CD; `testCredentials` always sets it.
+    public let cdSigningCertificate: Data?
 
     public init(
         dacCertificate: Data,
@@ -54,7 +55,7 @@ public struct DeviceAttestationCredentials: Sendable {
         paiCertificate: Data,
         paaCertificate: Data,
         certificationDeclaration: Data,
-        cdSigningCertificate: Data
+        cdSigningCertificate: Data? = nil
     ) {
         self.dacCertificate = dacCertificate
         self.dacPrivateKey = dacPrivateKey
@@ -500,9 +501,9 @@ public struct DeviceAttestationCredentials: Sendable {
 
         let b = PKCS10CSRBuilder.self
 
-        // digestAlgorithms SET { SEQUENCE { sha-256, NULL } }
+        // digestAlgorithms SET { SEQUENCE { sha-256 } }; parameters absent (RFC 5754 §2)
         let digestAlgorithms = b.derSet(
-            b.derSequence(b.derOID(oidSHA256) + [0x05, 0x00])
+            b.derSequence(b.derOID(oidSHA256))
         )
 
         // encapContentInfo SEQUENCE { OID, [0] EXPLICIT OCTET STRING }
@@ -516,14 +517,14 @@ public struct DeviceAttestationCredentials: Sendable {
         // SignerInfo SEQUENCE { version 3, sid, digestAlg, sigAlg, signature }
         // Version 3 because the sid is a SubjectKeyIdentifier (RFC 5652 §5.3).
         let siVersion  = b.derTLV(tag: 0x02, content: [0x03])  // INTEGER 3
-        let siDigestAlg = b.derSequence(b.derOID(oidSHA256) + [0x05, 0x00])
+        let siDigestAlg = b.derSequence(b.derOID(oidSHA256))
         let siSigAlg   = b.derSequence(b.derOID(oidECDSAwSHA256))
         let siSig      = b.derTLV(tag: 0x04, content: derSig)  // OCTET STRING
         let signerInfo  = b.derSequence(siVersion + subjectKeyIdentifier + siDigestAlg + siSigAlg + siSig)
         let signerInfos = b.derSet(signerInfo)
 
         // SignedData SEQUENCE { version 3, digestAlgorithms, encapContentInfo, signerInfos }
-        // Version 3 required because eContentType is not id-data (RFC 5652 §5.1)
+        // Version 3 because the SignerInfo is version 3 (RFC 5652 §5.1)
         let sdVersion  = b.derTLV(tag: 0x02, content: [0x03])  // INTEGER 3
         let signedData = b.derSequence(
             sdVersion + digestAlgorithms + encapContentInfo + signerInfos

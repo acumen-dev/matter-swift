@@ -156,15 +156,12 @@ struct ChipAttestationMeasurementTests {
            let cd = try? CertificationDeclaration(cmsDER: cdBytes) {
             signerKeyIdentifier = cd.signerKeyIdentifier.map { String(format: "%02X", $0) }.joined()
         }
-        print("MEASURE basicInformation vid=0x\(String(vendorID, radix: 16)) pid=0x\(String(productID, radix: 16))")
-        print("MEASURE cdSignerSKI=\(signerKeyIdentifier)")
-        print("MEASURE dac=\(dac.base64EncodedString())")
-        print("MEASURE pai=\(pai.base64EncodedString())")
 
         guard case .verified(let verified) = result else {
-            throw Failure(description: "the app's attestation did not verify: \(result)")
+            throw Failure(description: "the app's attestation did not verify: \(result)\n"
+                + "Basic Information VID 0x\(String(vendorID, radix: 16)) PID 0x\(String(productID, radix: 16)); "
+                + "CD signer SKI \(signerKeyIdentifier)\nDAC \(dac.base64EncodedString())\nPAI \(pai.base64EncodedString())")
         }
-        print("MEASURE paa=\(verified.paaSubject)")
         #expect(verified.vendorID == vendorID && verified.productID == productID)
     }
 }

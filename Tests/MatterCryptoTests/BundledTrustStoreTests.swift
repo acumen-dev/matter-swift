@@ -75,10 +75,12 @@ struct BundledTrustStoreTests {
         for certificate in store.paas {
             let violation = MatterAttestationPolicy.profileViolation(certificate, role: .paa)
             #expect(violation == nil, "\(certificate.subject): \(violation ?? "")")
-            var serializer = DER.Serializer()
-            try serializer.serialize(certificate)
-            let assessment = AttestationTrustStore.assessPAA(Data(serializer.serializedBytes))
-            #expect(assessment.rejection == nil, "\(certificate.subject): \(assessment.rejection ?? "")")
+        }
+        // The bundled file bytes, not a re-serialization, are what a consumer loads.
+        let directory = try AttestationTrustStore.bundleDirectory()
+        for entry in try Self.manifest().paa {
+            let assessment = AttestationTrustStore.assessPAA(try Data(contentsOf: directory.appendingPathComponent(entry.file)))
+            #expect(assessment.rejection == nil, "\(entry.file): \(assessment.rejection ?? "")")
         }
     }
 

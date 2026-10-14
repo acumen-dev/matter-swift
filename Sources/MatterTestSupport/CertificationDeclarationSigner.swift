@@ -50,7 +50,14 @@ public enum CertificationDeclarationSigner {
     }
 
     /// Wraps `content` in a CMS SignedData signed by `key`, naming the signer by `keyIdentifier`.
-    public static func sign(content: Data, key: P256.Signing.PrivateKey, keyIdentifier: Data) throws -> Data {
+    ///
+    /// `signedDataDigestNull` and `signerInfoDigestNull` add a NULL parameter to the sha-256
+    /// AlgorithmIdentifier in SignedData.digestAlgorithms and SignerInfo.digestAlgorithm, for
+    /// tests of how a parser treats it.
+    public static func sign(
+        content: Data, key: P256.Signing.PrivateKey, keyIdentifier: Data,
+        signedDataDigestNull: Bool = false, signerInfoDigestNull: Bool = false
+    ) throws -> Data {
         let signature = try key.signature(for: content).derRepresentation
         let contextZero = ASN1Identifier(tagWithNumber: 0, tagClass: .contextSpecific)
         let sha256: ASN1ObjectIdentifier = [2, 16, 840, 1, 101, 3, 4, 2, 1]
@@ -62,7 +69,10 @@ public enum CertificationDeclarationSigner {
                 try explicit.appendConstructedNode(identifier: .sequence) { signedData in
                     try signedData.serialize(3)
                     try signedData.appendConstructedNode(identifier: .set) { set in
-                        try set.appendConstructedNode(identifier: .sequence) { try $0.serialize(sha256) }
+                        try set.appendConstructedNode(identifier: .sequence) {
+                            try $0.serialize(sha256)
+                            if signedDataDigestNull { try $0.serialize(ASN1Null()) }
+                        }
                     }
                     try signedData.appendConstructedNode(identifier: .sequence) { encapsulated in
                         try encapsulated.serialize([1, 2, 840, 113549, 1, 7, 1] as ASN1ObjectIdentifier)
@@ -74,7 +84,10 @@ public enum CertificationDeclarationSigner {
                         try set.appendConstructedNode(identifier: .sequence) { signerInfo in
                             try signerInfo.serialize(3)
                             signerInfo.appendPrimitiveNode(identifier: contextZero) { $0.append(contentsOf: keyIdentifier) }
-                            try signerInfo.appendConstructedNode(identifier: .sequence) { try $0.serialize(sha256) }
+                            try signerInfo.appendConstructedNode(identifier: .sequence) {
+                                try $0.serialize(sha256)
+                                if signerInfoDigestNull { try $0.serialize(ASN1Null()) }
+                            }
                             try signerInfo.appendConstructedNode(identifier: .sequence) {
                                 try $0.serialize([1, 2, 840, 10045, 4, 3, 2] as ASN1ObjectIdentifier)
                             }
