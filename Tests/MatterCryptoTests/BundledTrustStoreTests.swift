@@ -4,8 +4,6 @@
 import Foundation
 import Testing
 import Crypto
-import X509
-import SwiftASN1
 @testable import MatterCrypto
 import MatterTestSupport
 
@@ -94,12 +92,6 @@ struct BundledTrustStoreTests {
         #expect(!bundled.contains(Self.sha256(try AttestationFixtures.testPAANoVID)))
     }
 
-    private static func der(_ certificate: Certificate) throws -> [UInt8] {
-        var serializer = DER.Serializer()
-        try serializer.serialize(certificate)
-        return serializer.serializedBytes
-    }
-
     // MARK: - CD signing keys
 
     @Test("the bundled CD signing keys are the CSA production set")
@@ -185,12 +177,23 @@ struct BundledTrustStoreTests {
 
     @Test("a manifest entry that escapes its folder or names a dot-file is bundleCorrupt")
     func escapingEntry() throws {
-        for file in ["paa/../manifest.json", ".hidden/x.der", "paa/.x.der"] {
+        // Each case would load cleanly without the guard: the file exists and the hash is true.
+        for kind in ["dot-file", "parent-traversal"] {
             let copy = try Self.copyOfBundle()
             defer { try? FileManager.default.removeItem(at: copy) }
+            let real = try #require(try Self.manifest().paa.first).file
+            let data = try Data(contentsOf: copy.appendingPathComponent(real))
+            let name = (real as NSString).lastPathComponent
+            let listed: String
+            if kind == "dot-file" {
+                listed = "paa/.x.der"
+                try data.write(to: copy.appendingPathComponent(listed))
+            } else {
+                listed = "paa/../paa/\(name)"
+            }
             try Self.editManifest(in: copy) { manifest in
                 var paa = manifest["paa"] as! [[String: Any]]
-                paa.append(["file": file, "sha256": String(repeating: "0", count: 64)])
+                paa.append(["file": listed, "sha256": Self.sha256(data)])
                 manifest["paa"] = paa
             }
             Self.expectBundleCorrupt(copy)

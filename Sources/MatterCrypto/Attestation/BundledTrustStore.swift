@@ -19,6 +19,9 @@ extension AttestationTrustStore {
     ///
     /// Throws ``AttestationTrustStoreError/bundleCorrupt(_:)`` if any file is missing, extra,
     /// fails its manifest SHA-256, or does not parse.
+    ///
+    /// The manifest detects accidental damage, not deliberate tampering: it ships inside the same
+    /// binary as the data it covers, so it shares that binary's trust boundary.
     public static func bundledProduction() throws -> AttestationTrustStore {
         try loadBundle(at: bundleDirectory())
     }
@@ -41,6 +44,8 @@ extension AttestationTrustStore {
             do {
                 _ = try AttestationTrustStore(
                     paas: [data], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "bundled"))
+            } catch let error as AttestationTrustStoreError {
+                throw AttestationTrustStoreError.bundleCorrupt("\(file) is not a valid PAA: \(describe(error))")
             } catch {
                 throw AttestationTrustStoreError.bundleCorrupt("\(file) is not a valid PAA: \(error)")
             }
@@ -48,6 +53,16 @@ extension AttestationTrustStore {
         return try AttestationTrustStore(
             paas: contents.paas.map(\.data), cdSigningKeys: contents.cdSigningKeys,
             provenance: TrustStoreProvenance(source: "bundled", snapshotDate: contents.snapshotDate))
+    }
+
+    private static func describe(_ error: AttestationTrustStoreError) -> String {
+        switch error {
+        case .notACertificate: "it does not parse as a certificate"
+        case .notASelfSignedCA: "it is not a self-signed CA"
+        case .unsupportedKey: "its key is not P-256"
+        case .missingSubjectKeyIdentifier: "it has no SubjectKeyIdentifier"
+        default: "\(error)"
+        }
     }
 
     /// The directory holding the bundled snapshot inside MatterCrypto's resource bundle.

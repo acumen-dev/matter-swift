@@ -89,6 +89,7 @@ public enum AttestationTrustStoreError: Error, Sendable, Equatable {
     /// The named certificate has no SubjectKeyIdentifier extension.
     case missingSubjectKeyIdentifier(String)
     /// The bundled trust data is missing, altered, incomplete or has unlisted files; the message says which.
+    /// The manifest detects accidental damage, not deliberate tampering: it shares the binary's trust boundary.
     case bundleCorrupt(String)
     /// A directory swap was interrupted and the previous store could not be restored, or
     /// several stranded copies make the right one ambiguous; the message names where they are.
