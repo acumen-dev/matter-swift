@@ -52,6 +52,13 @@ public actor JSONFileFabricStore: MatterFabricStore {
 ///
 /// Persists controller-side identity and device registry to a JSON file.
 ///
+/// The file holds the fabric root CA private key, the controller's operational key and
+/// the IPK epoch key, so it is written owner-only (`0600`). A save creates a temporary
+/// file in the same directory with mode `0600` before writing any bytes, then renames it
+/// over the target: there is no moment at which the secrets are readable by others, and
+/// a save also tightens an existing file that was more permissive. The containing
+/// directory is created if missing but its permissions are the caller's concern.
+///
 /// ```swift
 /// let store = JSONFileControllerStore(
 ///     directory: URL(filePath: "~/.config/swift-matter")
@@ -89,7 +96,52 @@ public actor JSONFileControllerStore: MatterControllerStore {
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true
         )
-        try data.write(to: fileURL, options: .atomic)
+        try Self.writeOwnerOnly(data, to: fileURL)
+    }
+
+    /// Write `data` to a new `0600` file beside `url` and rename it into place.
+    private static func writeOwnerOnly(_ data: Data, to url: URL) throws {
+        let tempPath = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp").path
+        // O_EXCL: never write through a pre-existing (or planted) file; mode 0600 at creation.
+        let fd = open(tempPath, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw posixError(errno, "create \(tempPath)") }
+        do {
+            // The umask can only remove bits, but be explicit about the final mode.
+            guard fchmod(fd, 0o600) == 0 else { throw posixError(errno, "chmod \(tempPath)") }
+            try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+                var offset = 0
+                while offset < buffer.count {
+                    let n = write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                    if n < 0 {
+                        if errno == EINTR { continue }
+                        throw posixError(errno, "write \(tempPath)")
+                    }
+                    offset += n
+                }
+            }
+            guard fsync(fd) == 0 else { throw posixError(errno, "fsync \(tempPath)") }
+        } catch {
+            close(fd)
+            unlink(tempPath)
+            throw error
+        }
+        guard close(fd) == 0 else {
+            let code = errno
+            unlink(tempPath)
+            throw posixError(code, "close \(tempPath)")
+        }
+        guard rename(tempPath, url.path) == 0 else {
+            let code = errno
+            unlink(tempPath)
+            throw posixError(code, "rename \(tempPath)")
+        }
+    }
+
+    private static func posixError(_ code: Int32, _ what: String) -> any Error {
+        NSError(
+            domain: NSPOSIXErrorDomain, code: Int(code),
+            userInfo: [NSLocalizedDescriptionKey: "\(what): \(String(cString: strerror(code)))"])
     }
 }
 

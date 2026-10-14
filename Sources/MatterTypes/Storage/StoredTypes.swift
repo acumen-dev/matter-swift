@@ -176,6 +176,18 @@ public struct StoredACLTarget: Codable, Sendable, Equatable {
 /// the commissioned device registry, and the node ID allocation counter.
 public struct StoredControllerState: Codable, Sendable, Equatable {
 
+    /// The schema version this library writes.
+    ///
+    /// Version 1 is the layout before device attestation records; it has no
+    /// `schemaVersion` key. Version 2 adds `StoredCommissionedDevice.attestation`.
+    /// Bump it whenever a change would make an older library drop data it
+    /// does not understand.
+    public static let currentSchemaVersion = 2
+
+    /// The schema version of this state. A blob with no `schemaVersion` key
+    /// is version 1.
+    public var schemaVersion: Int
+
     /// Controller's fabric identity and root CA key.
     public var identity: StoredControllerIdentity
 
@@ -186,13 +198,45 @@ public struct StoredControllerState: Codable, Sendable, Equatable {
     public var nextNodeID: UInt64
 
     public init(
+        schemaVersion: Int = StoredControllerState.currentSchemaVersion,
         identity: StoredControllerIdentity,
         devices: [StoredCommissionedDevice] = [],
         nextNodeID: UInt64
     ) {
+        self.schemaVersion = schemaVersion
         self.identity = identity
         self.devices = devices
         self.nextNodeID = nextNodeID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, identity, devices, nextNodeID
+    }
+
+    /// Decodes a state, treating a missing `schemaVersion` as 1.
+    ///
+    /// - Throws: `DecodingError.dataCorrupted` if `schemaVersion` is greater than
+    ///   ``currentSchemaVersion``. An older library must not load newer state and
+    ///   then save it back with the fields it does not know missing.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard version <= Self.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion, in: container,
+                debugDescription: "controller state has schemaVersion \(version); this library "
+                    + "understands up to \(Self.currentSchemaVersion). Update the library "
+                    + "rather than load and re-save state it would truncate.")
+        }
+        guard version >= 1 else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion, in: container,
+                debugDescription: "controller state has invalid schemaVersion \(version)")
+        }
+        self.schemaVersion = version
+        self.identity = try container.decode(StoredControllerIdentity.self, forKey: .identity)
+        self.devices = try container.decode([StoredCommissionedDevice].self, forKey: .devices)
+        self.nextNodeID = try container.decode(UInt64.self, forKey: .nextNodeID)
     }
 }
 
@@ -291,6 +335,10 @@ public struct StoredCommissionedDevice: Codable, Sendable, Equatable {
     /// Advertised MRP session active threshold (SAT) in milliseconds, if known.
     public var mrpActiveThresholdMs: UInt32?
 
+    /// How the device passed (or was approved past) attestation at commissioning.
+    /// `nil` for devices commissioned before attestation was recorded.
+    public var attestation: StoredAttestationRecord?
+
     public init(
         nodeID: UInt64,
         fabricIndex: UInt8,
@@ -302,7 +350,8 @@ public struct StoredCommissionedDevice: Codable, Sendable, Equatable {
         commissionedAt: Date,
         mrpIdleIntervalMs: UInt32? = nil,
         mrpActiveIntervalMs: UInt32? = nil,
-        mrpActiveThresholdMs: UInt32? = nil
+        mrpActiveThresholdMs: UInt32? = nil,
+        attestation: StoredAttestationRecord? = nil
     ) {
         self.nodeID = nodeID
         self.fabricIndex = fabricIndex
@@ -315,6 +364,7 @@ public struct StoredCommissionedDevice: Codable, Sendable, Equatable {
         self.mrpIdleIntervalMs = mrpIdleIntervalMs
         self.mrpActiveIntervalMs = mrpActiveIntervalMs
         self.mrpActiveThresholdMs = mrpActiveThresholdMs
+        self.attestation = attestation
     }
 }
 

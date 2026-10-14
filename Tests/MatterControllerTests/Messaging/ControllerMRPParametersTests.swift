@@ -24,7 +24,7 @@ struct ControllerMRPParametersTests {
     }
 
     @Test("A device's MRP parameters survive the stored-device round trip")
-    func persisted() async {
+    func persisted() async throws {
         let registry = DeviceRegistry()
         await registry.register(CommissionedDevice(nodeID: NodeID(rawValue: 5), fabricIndex: FabricIndex(rawValue: 1), mrpParameters: sleepy))
         let stored = await registry.toStoredDevices()
@@ -32,7 +32,7 @@ struct ControllerMRPParametersTests {
         #expect(stored.first?.mrpActiveIntervalMs == 300)
         #expect(stored.first?.mrpActiveThresholdMs == 4000)
 
-        let restored = DeviceRegistry(storedDevices: stored)
+        let restored = try DeviceRegistry(storedDevices: stored)
         #expect(await restored.device(for: NodeID(rawValue: 5))?.mrpParameters == sleepy)
     }
 
@@ -51,7 +51,7 @@ struct ControllerMRPParametersTests {
         let json = #"{"nodeID":7,"fabricIndex":1,"commissionedAt":0}"#
         let decoded = try JSONDecoder().decode(StoredCommissionedDevice.self, from: Data(json.utf8))
         #expect(decoded.mrpIdleIntervalMs == nil)
-        let restored = DeviceRegistry(storedDevices: [decoded])
+        let restored = try DeviceRegistry(storedDevices: [decoded])
         #expect(await restored.device(for: NodeID(rawValue: 7))?.mrpParameters == nil)
     }
 

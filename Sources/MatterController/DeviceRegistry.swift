@@ -5,6 +5,43 @@ import Foundation
 import MatterTypes
 import MatterTransport
 import MatterProtocol
+import MatterCrypto
+
+/// How a commissioned device passed device attestation. Mirrors ``StoredAttestationRecord``.
+public enum DeviceAttestationRecord: Sendable, Codable, Equatable {
+
+    /// The attestation chain verified against a trusted PAA.
+    case verified(paaSubject: String, vendorID: UInt16, productID: UInt16)
+
+    /// Attestation failed with `reason` and the caller approved commissioning the device
+    /// whose DAC has `dacFingerprint` (SHA-256 of the DAC DER) at `approvedAt`.
+    case overridden(dacFingerprint: Data, reason: AttestationFailureReason, approvedAt: Date)
+
+    /// The stored form.
+    var stored: StoredAttestationRecord {
+        switch self {
+        case .verified(let paaSubject, let vendorID, let productID):
+            return .verified(paaSubject: paaSubject, vendorID: vendorID, productID: productID)
+        case .overridden(let fingerprint, let reason, let approvedAt):
+            return .overridden(dacFingerprint: fingerprint, reason: reason.rawValue, approvedAt: approvedAt)
+        }
+    }
+
+    /// - Throws: ``ControllerError/corruptStoredState(_:)`` if an override's reason is not an
+    ///   `AttestationFailureReason`. It is never mapped to another reason.
+    init(stored: StoredAttestationRecord) throws {
+        switch stored {
+        case .verified(let paaSubject, let vendorID, let productID):
+            self = .verified(paaSubject: paaSubject, vendorID: vendorID, productID: productID)
+        case .overridden(let fingerprint, let reason, let approvedAt):
+            guard let parsed = AttestationFailureReason(rawValue: reason) else {
+                throw ControllerError.corruptStoredState(
+                    "stored attestation override has unknown reason \"\(reason)\"")
+            }
+            self = .overridden(dacFingerprint: fingerprint, reason: parsed, approvedAt: approvedAt)
+        }
+    }
+}
 
 /// A commissioned Matter device known to the controller.
 ///
@@ -42,6 +79,10 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
     /// controller's `Configuration.mrp.peer`.
     public var mrpParameters: MRPParameters?
 
+    /// How the device passed attestation at commissioning; `nil` for a device commissioned
+    /// before attestation was recorded.
+    public var attestation: DeviceAttestationRecord?
+
     public init(
         nodeID: NodeID,
         fabricIndex: FabricIndex,
@@ -51,7 +92,8 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
         operationalPort: UInt16? = nil,
         label: String? = nil,
         commissionedAt: Date = Date(),
-        mrpParameters: MRPParameters? = nil
+        mrpParameters: MRPParameters? = nil,
+        attestation: DeviceAttestationRecord? = nil
     ) {
         self.nodeID = nodeID
         self.fabricIndex = fabricIndex
@@ -62,6 +104,7 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
         self.label = label
         self.commissionedAt = commissionedAt
         self.mrpParameters = mrpParameters
+        self.attestation = attestation
     }
 
     // MARK: - Address Convenience
@@ -100,7 +143,10 @@ public actor DeviceRegistry {
     public init() {}
 
     /// Restore a registry from persisted device list.
-    public init(storedDevices: [StoredCommissionedDevice]) {
+    ///
+    /// - Throws: ``ControllerError/corruptStoredState(_:)`` if a stored attestation override
+    ///   names a reason this library does not know.
+    public init(storedDevices: [StoredCommissionedDevice]) throws {
         for sd in storedDevices {
             let device = CommissionedDevice(
                 nodeID: NodeID(rawValue: sd.nodeID),
@@ -111,7 +157,8 @@ public actor DeviceRegistry {
                 operationalPort: sd.operationalPort,
                 label: sd.label,
                 commissionedAt: sd.commissionedAt,
-                mrpParameters: Self.mrpParameters(from: sd)
+                mrpParameters: Self.mrpParameters(from: sd),
+                attestation: try sd.attestation.map { try DeviceAttestationRecord(stored: $0) }
             )
             devices[device.nodeID] = device
         }
@@ -197,7 +244,8 @@ public actor DeviceRegistry {
                 commissionedAt: d.commissionedAt,
                 mrpIdleIntervalMs: d.mrpParameters.map { Self.milliseconds($0.sessionIdleInterval) },
                 mrpActiveIntervalMs: d.mrpParameters.map { Self.milliseconds($0.sessionActiveInterval) },
-                mrpActiveThresholdMs: d.mrpParameters.map { Self.milliseconds($0.sessionActiveThreshold) }
+                mrpActiveThresholdMs: d.mrpParameters.map { Self.milliseconds($0.sessionActiveThreshold) },
+                attestation: d.attestation?.stored
             )
         }
     }

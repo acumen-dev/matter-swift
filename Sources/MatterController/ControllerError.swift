@@ -18,6 +18,12 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// Certificate chain validation failed.
     case chainValidationFailed
 
+    // MARK: - Persistence
+
+    /// Stored controller state is present but cannot be trusted (for example an unknown
+    /// attestation override reason). The state is not loaded.
+    case corruptStoredState(String)
+
     // MARK: - Commissioning
 
     /// PASE handshake failed.

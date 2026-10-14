@@ -168,6 +168,9 @@ public actor MatterController {
     /// The next node ID that would be allocated (for tests).
     var nextNodeID: UInt64 { get async { await fabricManager.nextNodeID } }
 
+    /// The fabric's IPK epoch key (for tests).
+    var ipkEpochKey: Data { fabricManager.ipkEpochKey }
+
     /// Install (or clear) the commissioning failure-injection seam.
     func setCommissioningFailureInjection(_ injection: (@Sendable (CommissioningStep) throws -> Void)?) {
         commissioningFailureInjection = injection
@@ -246,7 +249,7 @@ public actor MatterController {
         self.fabricManager = fabricManager
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
-        self.registry = DeviceRegistry(storedDevices: stored.devices)
+        self.registry = try DeviceRegistry(storedDevices: stored.devices)
         self.subscriptionClient = SubscriptionClient()
         self.messenger = Self.makeMessenger(
             transport: transport,
@@ -291,14 +294,25 @@ public actor MatterController {
                 logger: logger
             )
         } else {
-            return try MatterController(
+            let controller = try MatterController(
                 transport: transport,
                 discovery: discovery,
                 configuration: configuration,
                 store: store,
                 logger: logger
             )
+            // A fresh identity (root key, random IPK) exists nowhere else: save it before
+            // anything can depend on it, rather than on the first commission.
+            try await controller.saveIdentity()
+            return controller
         }
+    }
+
+    /// Save the state and throw on failure. `loadOrCreate` uses it so a new identity that
+    /// could not be persisted is an error, not a warning.
+    private func saveIdentity() async throws {
+        guard let store else { return }
+        try await store.save(await currentState())
     }
 
     // MARK: - Discovery
@@ -1199,16 +1213,19 @@ public actor MatterController {
     /// No-op if no store was configured.
     private func saveState() async {
         guard let store else { return }
-        let state = StoredControllerState(
+        do {
+            try await store.save(await currentState())
+        } catch {
+            logger.warning("Failed to persist controller state: \(error)")
+        }
+    }
+
+    private func currentState() async -> StoredControllerState {
+        StoredControllerState(
             identity: fabricManager.toStoredIdentity(),
             devices: await registry.toStoredDevices(),
             nextNodeID: await fabricManager.nextNodeID
         )
-        do {
-            try await store.save(state)
-        } catch {
-            logger.warning("Failed to persist controller state: \(error)")
-        }
     }
 
     // MARK: - Private Helpers

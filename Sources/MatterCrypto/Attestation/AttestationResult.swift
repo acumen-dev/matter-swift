@@ -7,32 +7,35 @@ import Crypto
 // MARK: - AttestationFailureReason
 
 /// Why device attestation failed.
+///
+/// The `rawValue` is a persistence format (a stored attestation override records it), so each
+/// is spelled out and equals the case name. Renaming a case must not change its raw value.
 public enum AttestationFailureReason: String, Sendable, Codable, CaseIterable {
     /// No path from the PAI to any PAA in the trust store.
-    case untrustedRoot
+    case untrustedRoot = "untrustedRoot"
     /// A path exists but a signature, key-identifier link or chain shape is wrong.
-    case chainInvalid
+    case chainInvalid = "chainInvalid"
     /// A chain certificate is outside its validity window at the verification time.
-    case certificateExpired
+    case certificateExpired = "certificateExpired"
     /// The DAC, PAI and PAA vendor/product identifiers are missing or disagree.
-    case vidPidMismatch
+    case vidPidMismatch = "vidPidMismatch"
     /// The Certification Declaration signature does not verify.
-    case cdSignatureInvalid
+    case cdSignatureInvalid = "cdSignatureInvalid"
     /// The Certification Declaration is signed by a key the trust store does not hold.
-    case cdUnknownSigningKey
+    case cdUnknownSigningKey = "cdUnknownSigningKey"
     /// The Certification Declaration does not list the device's VID/PID.
-    case cdVidPidNotListed
+    case cdVidPidNotListed = "cdVidPidNotListed"
     /// The Certification Declaration has an authorized PAA list that omits the PAA the chain
     /// ends at (connectedhomeip `kCertificationDeclarationInvalidPAA`).
-    case cdPAANotAuthorized
+    case cdPAANotAuthorized = "cdPAANotAuthorized"
     /// The attestation elements are not signed by the DAC key.
-    case attestationSignatureInvalid
+    case attestationSignatureInvalid = "attestationSignatureInvalid"
     /// The attestation elements do not echo the nonce the commissioner sent.
-    case nonceMismatch
+    case nonceMismatch = "nonceMismatch"
     /// A certificate, the attestation elements or the Certification Declaration could not be
     /// parsed, a certificate breaks the Matter attestation certificate profile, or the CD has an
     /// unsupported format version or certification type.
-    case malformed
+    case malformed = "malformed"
 }
 
 // MARK: - AttestationFailure
