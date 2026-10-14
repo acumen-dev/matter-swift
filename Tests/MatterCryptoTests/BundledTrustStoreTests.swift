@@ -88,7 +88,8 @@ struct BundledTrustStoreTests {
     @Test("the fixture test PAAs are not in the production bundle")
     func testPAAsAreAbsent() throws {
         let store = try AttestationTrustStore.bundledProduction()
-        let bundled = Set(try store.paas.map { Self.sha256(Data(try Self.der($0))) })
+        let bundled = Set(try Self.manifest().paa.map(\.sha256))
+        #expect(bundled.count == store.paas.count)
         #expect(!bundled.contains(Self.sha256(try AttestationFixtures.testPAA)))
         #expect(!bundled.contains(Self.sha256(try AttestationFixtures.testPAANoVID)))
     }
@@ -141,12 +142,7 @@ struct BundledTrustStoreTests {
         var data = try Data(contentsOf: file)
         data[data.count - 1] ^= 0x01
         try data.write(to: file)
-        #expect(throws: AttestationTrustStoreError.self) { try AttestationTrustStore.loadBundle(at: copy) }
-        do {
-            _ = try AttestationTrustStore.loadBundle(at: copy)
-        } catch let error as AttestationTrustStoreError {
-            guard case .bundleCorrupt = error else { Issue.record("wrong error \(error)"); return }
-        }
+        Self.expectBundleCorrupt(copy)
     }
 
     @Test("a removed file is bundleCorrupt", arguments: ["paa", "cd"])
@@ -173,6 +169,70 @@ struct BundledTrustStoreTests {
         defer { try? FileManager.default.removeItem(at: copy) }
         try FileManager.default.removeItem(at: copy.appendingPathComponent("manifest.json"))
         Self.expectBundleCorrupt(copy)
+    }
+
+    @Test("a duplicate manifest entry is bundleCorrupt")
+    func duplicateEntry() throws {
+        let copy = try Self.copyOfBundle()
+        defer { try? FileManager.default.removeItem(at: copy) }
+        try Self.editManifest(in: copy) { manifest in
+            var paa = manifest["paa"] as! [[String: Any]]
+            paa.append(paa[0])
+            manifest["paa"] = paa
+        }
+        Self.expectBundleCorrupt(copy)
+    }
+
+    @Test("a manifest entry that escapes its folder or names a dot-file is bundleCorrupt")
+    func escapingEntry() throws {
+        for file in ["paa/../manifest.json", ".hidden/x.der", "paa/.x.der"] {
+            let copy = try Self.copyOfBundle()
+            defer { try? FileManager.default.removeItem(at: copy) }
+            try Self.editManifest(in: copy) { manifest in
+                var paa = manifest["paa"] as! [[String: Any]]
+                paa.append(["file": file, "sha256": String(repeating: "0", count: 64)])
+                manifest["paa"] = paa
+            }
+            Self.expectBundleCorrupt(copy)
+        }
+    }
+
+    @Test("a nested extra directory is bundleCorrupt")
+    func nestedExtraDirectory() throws {
+        let copy = try Self.copyOfBundle()
+        defer { try? FileManager.default.removeItem(at: copy) }
+        try FileManager.default.createDirectory(
+            at: copy.appendingPathComponent("paa/nested"), withIntermediateDirectories: false)
+        Self.expectBundleCorrupt(copy)
+    }
+
+    @Test("a tampered manifest hash is bundleCorrupt")
+    func tamperedManifestHash() throws {
+        let copy = try Self.copyOfBundle()
+        defer { try? FileManager.default.removeItem(at: copy) }
+        try Self.editManifest(in: copy) { manifest in
+            var cd = manifest["cd"] as! [[String: Any]]
+            cd[0]["sha256"] = String(repeating: "0", count: 64)
+            manifest["cd"] = cd
+        }
+        Self.expectBundleCorrupt(copy)
+    }
+
+    @Test("dot-files such as .DS_Store are tolerated")
+    func dotFilesTolerated() throws {
+        let copy = try Self.copyOfBundle()
+        defer { try? FileManager.default.removeItem(at: copy) }
+        for path in [".DS_Store", "paa/.DS_Store", "cd/.DS_Store"] {
+            try Data([0x00]).write(to: copy.appendingPathComponent(path))
+        }
+        #expect(try AttestationTrustStore.loadBundle(at: copy).paas.count == Self.pinnedPAACount)
+    }
+
+    private static func editManifest(in directory: URL, _ edit: (inout [String: Any]) -> Void) throws {
+        let url = directory.appendingPathComponent("manifest.json")
+        var manifest = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        edit(&manifest)
+        try JSONSerialization.data(withJSONObject: manifest).write(to: url)
     }
 
     private static func expectBundleCorrupt(_ directory: URL, sourceLocation: SourceLocation = #_sourceLocation) {

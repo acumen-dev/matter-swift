@@ -134,7 +134,10 @@ public struct AttestationTrustStore: Sendable {
     ///
     /// Assumes no concurrent writer of `directory`.
     ///
-    /// `cdSigningKeys` defaults to ``bundledCDSigningKeys()``.
+    /// `cdSigningKeys` defaults to ``bundledCDSigningKeys()`` when nil. That default needs
+    /// MatterCrypto's resource bundle next to the executable (`Bundle.module` traps if it is
+    /// absent) and throws ``AttestationTrustStoreError/bundleCorrupt(_:)`` if any bundled file
+    /// is damaged.
     public init(directory: URL, cdSigningKeys: [CDSigningKey]? = nil, provenance: TrustStoreProvenance? = nil) throws {
         try self.init(
             directory: directory, cdSigningKeys: try cdSigningKeys ?? Self.bundledCDSigningKeys(),

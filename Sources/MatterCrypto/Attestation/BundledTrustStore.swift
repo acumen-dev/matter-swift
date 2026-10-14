@@ -13,6 +13,10 @@ extension AttestationTrustStore {
     /// Public data only. It is a starting point; swift-matter never refreshes or applies a
     /// store on its own.
     ///
+    /// The snapshot is a SwiftPM resource, read through `Bundle.module`: an executable must ship
+    /// MatterCrypto's resource bundle next to it, or `Bundle.module` traps at first use. Any
+    /// damaged bundled file makes this throw ``AttestationTrustStoreError/bundleCorrupt(_:)``.
+    ///
     /// Throws ``AttestationTrustStoreError/bundleCorrupt(_:)`` if any file is missing, extra,
     /// fails its manifest SHA-256, or does not parse.
     public static func bundledProduction() throws -> AttestationTrustStore {
@@ -20,6 +24,10 @@ extension AttestationTrustStore {
     }
 
     /// The CSA production Certification Declaration signing keys from the bundled snapshot.
+    ///
+    /// Needs MatterCrypto's resource bundle next to the executable (`Bundle.module` traps if it
+    /// is absent), and throws ``AttestationTrustStoreError/bundleCorrupt(_:)`` if any bundled
+    /// file is damaged.
     public static func bundledCDSigningKeys() throws -> [CDSigningKey] {
         try loadBundleContents(at: bundleDirectory()).cdSigningKeys
     }
@@ -28,13 +36,18 @@ extension AttestationTrustStore {
     /// integrity rules. Internal so tests can corrupt a copy.
     static func loadBundle(at directory: URL) throws -> AttestationTrustStore {
         let contents = try loadBundleContents(at: directory)
-        do {
-            return try AttestationTrustStore(
-                paas: contents.paas, cdSigningKeys: contents.cdSigningKeys,
-                provenance: TrustStoreProvenance(source: "bundled", snapshotDate: contents.snapshotDate))
-        } catch {
-            throw AttestationTrustStoreError.bundleCorrupt("a bundled PAA is not valid: \(error)")
+        // Each entry is checked alone so a failure names its file.
+        for (file, data) in contents.paas {
+            do {
+                _ = try AttestationTrustStore(
+                    paas: [data], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "bundled"))
+            } catch {
+                throw AttestationTrustStoreError.bundleCorrupt("\(file) is not a valid PAA: \(error)")
+            }
         }
+        return try AttestationTrustStore(
+            paas: contents.paas.map(\.data), cdSigningKeys: contents.cdSigningKeys,
+            provenance: TrustStoreProvenance(source: "bundled", snapshotDate: contents.snapshotDate))
     }
 
     /// The directory holding the bundled snapshot inside MatterCrypto's resource bundle.
@@ -59,7 +72,7 @@ extension AttestationTrustStore {
 
     private struct BundleContents {
         let snapshotDate: Date
-        let paas: [Data]
+        let paas: [(file: String, data: Data)]
         let cdSigningKeys: [CDSigningKey]
     }
 
@@ -71,7 +84,7 @@ extension AttestationTrustStore {
             manifest = try JSONDecoder().decode(
                 Manifest.self, from: Data(contentsOf: directory.appendingPathComponent("manifest.json")))
         } catch {
-            throw corrupt("manifest.json is missing or unreadable")
+            throw corrupt("manifest.json is missing or unreadable: \(error)")
         }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withFullDate]
@@ -80,12 +93,13 @@ extension AttestationTrustStore {
             throw corrupt("manifest snapshotDate \(manifest.snapshotDate) is not a date")
         }
 
-        func loadFiles(_ entries: [Manifest.Entry], folder: String) throws -> [Data] {
+        func loadFiles(_ entries: [Manifest.Entry], folder: String) throws -> [(file: String, data: Data)] {
             let listed = Set(entries.map(\.file))
             guard listed.count == entries.count else { throw corrupt("\(folder) lists a file twice") }
             let onDisk: [String]
             do {
                 onDisk = try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent(folder).path)
+                    .filter { !$0.hasPrefix(".") }
                     .map { "\(folder)/\($0)" }
             } catch {
                 throw corrupt("\(folder) is missing")
@@ -93,9 +107,11 @@ extension AttestationTrustStore {
             if let extra = Set(onDisk).subtracting(listed).sorted().first {
                 throw corrupt("\(extra) is not listed in the manifest")
             }
-            var result: [Data] = []
+            var result: [(file: String, data: Data)] = []
             for entry in entries {
-                guard entry.file.hasPrefix("\(folder)/"), !entry.file.contains("..") else {
+                guard entry.file.hasPrefix("\(folder)/"), !entry.file.contains(".."),
+                      !entry.file.split(separator: "/").contains(where: { $0.hasPrefix(".") })
+                else {
                     throw corrupt("\(entry.file) is outside \(folder)")
                 }
                 let data: Data
@@ -106,24 +122,32 @@ extension AttestationTrustStore {
                 }
                 guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == entry.sha256.lowercased()
                 else { throw corrupt("\(entry.file) does not match its manifest SHA-256") }
-                result.append(data)
+                result.append((entry.file, data))
             }
             return result
         }
 
-        let rootNames = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let rootNames: [String]
+        do {
+            rootNames = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .filter { !$0.hasPrefix(".") }
+        } catch {
+            throw corrupt("the bundle directory cannot be listed: \(error)")
+        }
         if let extra = Set(rootNames).subtracting(["manifest.json", "paa", "cd"]).sorted().first {
             throw corrupt("\(extra) is not part of the bundle")
         }
 
         let paas = try loadFiles(manifest.paa, folder: "paa")
         let cdFiles = try loadFiles(manifest.cd, folder: "cd")
-        do {
-            return BundleContents(
-                snapshotDate: snapshotDate, paas: paas,
-                cdSigningKeys: try cdFiles.map { try CDSigningKey(certificateDER: $0) })
-        } catch {
-            throw corrupt("a CD signing certificate is not valid: \(error)")
+        var keys: [CDSigningKey] = []
+        for (file, data) in cdFiles {
+            do {
+                keys.append(try CDSigningKey(certificateDER: data))
+            } catch {
+                throw corrupt("\(file) is not a valid CD signing certificate: \(error)")
+            }
         }
+        return BundleContents(snapshotDate: snapshotDate, paas: paas, cdSigningKeys: keys)
     }
 }

@@ -301,7 +301,10 @@ def main():
         name, digest = file_name(der)
         cds[digest] = (name, der)
 
-    staging = tempfile.mkdtemp(prefix="attestation-")
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    # Staged beside OUT so the swap is a same-volume rename.
+    staging = tempfile.mkdtemp(prefix=".attestation-staging-", dir=os.path.dirname(OUT))
+    aside = None
     try:
         manifest = {
             "snapshotDate": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
@@ -319,10 +322,13 @@ def main():
         with open(os.path.join(staging, "manifest.json"), "w") as f:
             json.dump(manifest, f, indent=2, sort_keys=False)
             f.write("\n")
-        shutil.rmtree(OUT, ignore_errors=True)
-        os.makedirs(os.path.dirname(OUT), exist_ok=True)
-        shutil.move(staging, OUT)
-        os.chmod(OUT, 0o755)
+        os.chmod(staging, 0o755)
+        if os.path.exists(OUT):
+            aside = OUT + ".old-%d" % os.getpid()
+            os.replace(OUT, aside)
+        os.replace(staging, OUT)
+        if aside:
+            shutil.rmtree(aside, ignore_errors=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
