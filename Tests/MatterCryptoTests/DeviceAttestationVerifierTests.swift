@@ -4,7 +4,6 @@
 import Testing
 import Foundation
 import Crypto
-import SwiftASN1
 import X509
 import MatterTypes
 @testable import MatterCrypto
@@ -168,8 +167,11 @@ struct DeviceAttestationVerifierTests {
     private static let challenge = Data((0..<16).map { UInt8($0) })
     private static let nonce = Data((0..<32).map { UInt8(0xA0 &+ $0) })
 
-    /// A time at which every fixture certificate that is meant to be valid is valid.
-    private static let now = Date()
+    /// A fixed time at which every fixture certificate that is meant to be valid is valid:
+    /// after the latest success-case DAC notBefore (2024-05-27) and before the
+    /// `struct_pai_valid_in_*` DACs expire (2024-09-27), so those vectors fail on the PAI rule
+    /// they test rather than on the DAC-at-now rule.
+    private static let now = SyntheticAttestationChain.date(2024, month: 7, day: 1)
 
     private static func trustStore(paas: [Data]? = nil) throws -> AttestationTrustStore {
         try AttestationTrustStore(
@@ -239,8 +241,8 @@ struct DeviceAttestationVerifierTests {
         #expect(result == .verified(expected))
     }
 
-    @Test("a DER-encoded attestation signature is accepted")
-    func derSignatureAccepted() async throws {
+    @Test("a DER-encoded attestation signature gives attestationSignatureInvalid (raw r||s only)")
+    func derSignatureRejected() async throws {
         let elements = Self.elements(cd: try AttestationFixtures.testCD, nonce: Self.nonce)
         let signature = try Self.devKey().signature(for: elements + Self.challenge).derRepresentation
         let result = await DeviceAttestationVerifier(trustStore: try Self.trustStore()).verify(
@@ -248,10 +250,7 @@ struct DeviceAttestationVerifierTests {
             attestationElements: elements, attestationSignature: signature,
             attestationChallenge: Self.challenge, sentNonce: Self.nonce, now: Self.now
         )
-        guard case .verified = result else {
-            Issue.record("expected verified, got \(result)")
-            return
-        }
+        #expect(Self.failure(result)?.reason == .attestationSignatureInvalid)
     }
 
     // MARK: - Failures
@@ -383,6 +382,10 @@ struct DeviceAttestationVerifierTests {
             break
         case (.failed(let reason), .failed(let failure)):
             #expect(failure.reason == reason, "\(row.name): \(failure.detail)")
+            if row.name.hasPrefix("struct_pai_valid_in_") {
+                // At the fixed `now` the DAC is valid; the PAI-at-issuance rule must be what fails.
+                #expect(failure.detail.contains("PAI is valid"), "\(row.name): \(failure.detail)")
+            }
         case (.failsOnlyAtCD, .failed(let failure)):
             let cdReasons: Set<AttestationFailureReason> = [.cdSignatureInvalid, .cdUnknownSigningKey, .cdVidPidNotListed]
             #expect(cdReasons.contains(failure.reason), "\(row.name): \(failure.reason) \(failure.detail)")
@@ -415,170 +418,139 @@ struct DeviceAttestationVerifierTests {
             outcomes[key, default: []].append(name)
         }
         #expect(outcomes.values.map(\.count).reduce(0, +) > 0)
-        for (key, names) in outcomes.sorted(by: { $0.key < $1.key }) {
-            print("CD-VECTOR-OUTCOME \(key) \(names.count): \(key == "verified" ? "" : names.joined(separator: " "))")
-        }
     }
 
     // MARK: - Basic Information
 
-    @Test("a matching Basic Information VID/PID verifies")
-    func basicInformationMatching() async throws {
+    /// Task 3 guarantees only that `basicInformation` has no effect before the CD stage;
+    /// connectedhomeip compares it with the CD alone (Task 4).
+    @Test("basicInformation does not change the chain-stage result")
+    func basicInformationHasNoChainStageEffect() async throws {
         let elements = Self.elements(cd: try AttestationFixtures.testCD, nonce: Self.nonce)
-        let result = await DeviceAttestationVerifier(trustStore: try Self.trustStore()).verify(
+        let signature = try Self.sign(elements, with: Self.devKey())
+        let verifier = DeviceAttestationVerifier(trustStore: try Self.trustStore())
+        var results: [AttestationResult] = []
+        for info: (vendorID: UInt16, productID: UInt16)? in [nil, (0xFFF1, 0x8000), (0xFFF2, 0x8001)] {
+            results.append(await verifier.verify(
+                dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
+                attestationElements: elements, attestationSignature: signature,
+                attestationChallenge: Self.challenge, sentNonce: Self.nonce,
+                basicInformation: info, now: Self.now
+            ))
+        }
+        #expect(results[1] == results[0])
+        #expect(results[2] == results[0])
+    }
+
+    // MARK: - Attestation elements
+
+    private static func verifyElements(_ fields: [TLVElement.TLVField]) async throws -> AttestationResult {
+        let elements = TLVEncoder.encode(.structure(fields))
+        return await DeviceAttestationVerifier(trustStore: try trustStore()).verify(
             dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
-            attestationElements: elements, attestationSignature: try Self.sign(elements, with: Self.devKey()),
-            attestationChallenge: Self.challenge, sentNonce: Self.nonce,
-            basicInformation: (vendorID: 0xFFF1, productID: 0x8000), now: Self.now
+            attestationElements: elements, attestationSignature: try sign(elements, with: devKey()),
+            attestationChallenge: challenge, sentNonce: nonce, now: now
         )
+    }
+
+    @Test("attestation elements with a firmware field, a later context tag and a profile tag verify")
+    func elementsWithOptionalFields() async throws {
+        let result = try await Self.verifyElements([
+            .init(tag: .contextSpecific(1), value: .octetString(try AttestationFixtures.testCD)),
+            .init(tag: .contextSpecific(2), value: .octetString(Self.nonce)),
+            .init(tag: .contextSpecific(3), value: .unsignedInt(0)),
+            .init(tag: .contextSpecific(4), value: .octetString(Data([1, 2, 3]))),
+            .init(tag: .contextSpecific(7), value: .unsignedInt(1)),
+            .init(tag: .fullyQualified(vendorID: 0xFFF1, profileNumber: 1, tag: 1), value: .octetString(Data([9]))),
+        ])
         guard case .verified = result else {
             Issue.record("expected verified, got \(result)")
             return
         }
     }
 
-    /// connectedhomeip compares Basic Information only with the CD, never with the DAC: a CD
-    /// with dac_origin fields names a DAC vendor other than the product's
-    /// (`struct_cd_origin_pid_vid_correct`: DAC VID 0xFFF2, Basic Information and CD VID 0xFFF1,
-    /// an upstream success case). So a Basic Information VID/PID different from the DAC's does
-    /// not fail the chain stage.
-    @Test("a Basic Information VID/PID other than the DAC's is not a chain failure (dac_origin, struct_cd_origin_pid_vid_correct)")
-    func basicInformationDifferentFromDAC() async throws {
-        let elements = Self.elements(cd: try AttestationFixtures.testCD, nonce: Self.nonce)
-        let result = await DeviceAttestationVerifier(trustStore: try Self.trustStore()).verify(
-            dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
-            attestationElements: elements, attestationSignature: try Self.sign(elements, with: Self.devKey()),
-            attestationChallenge: Self.challenge, sentNonce: Self.nonce,
-            basicInformation: (vendorID: 0xFFF2, productID: 0x8001), now: Self.now
-        )
-        let chainReasons: Set<AttestationFailureReason> = [.untrustedRoot, .chainInvalid, .certificateExpired, .vidPidMismatch, .malformed]
-        if case .failed(let failure) = result {
-            #expect(!chainReasons.contains(failure.reason), "\(failure.reason): \(failure.detail)")
-        }
+    @Test("attestation elements without the CD (tag 1) give malformed")
+    func elementsMissingCD() async throws {
+        let result = try await Self.verifyElements([
+            .init(tag: .contextSpecific(2), value: .octetString(Self.nonce)),
+            .init(tag: .contextSpecific(3), value: .unsignedInt(0)),
+        ])
+        #expect(Self.failure(result)?.reason == .malformed)
     }
 
-    // MARK: - Synthetic chains (signatures and the validity model)
-
-    /// A Matter-profile PAA → PAI → DAC chain built here, with chosen validity and signers.
-    struct SyntheticChain {
-        let paa: Data
-        let pai: Data
-        let dac: Data
-        let dacKey: P256.Signing.PrivateKey
-
-        static let vidOID: ASN1ObjectIdentifier = [1, 3, 6, 1, 4, 1, 37244, 2, 1]
-        static let pidOID: ASN1ObjectIdentifier = [1, 3, 6, 1, 4, 1, 37244, 2, 2]
-
-        static func name(_ commonName: String, vid: String, pid: String? = nil) -> DistinguishedName {
-            var rdns = [
-                RelativeDistinguishedName(.init(type: .RDNAttributeType.commonName, utf8String: commonName)),
-                RelativeDistinguishedName(.init(type: vidOID, utf8String: vid)),
-            ]
-            if let pid { rdns.append(RelativeDistinguishedName(.init(type: pidOID, utf8String: pid))) }
-            return DistinguishedName(rdns)
-        }
-
-        static func der(_ certificate: Certificate) throws -> Data {
-            var serializer = DER.Serializer()
-            try serializer.serialize(certificate)
-            return Data(serializer.serializedBytes)
-        }
-
-        /// - Parameters:
-        ///   - paiSigner: signs the PAI instead of the PAA key (the PAI still names the PAA).
-        ///   - paiAKI: the PAI's AuthorityKeyIdentifier; defaults to the PAA's SKI.
-        init(
-            paaValidity: ClosedRange<Date>,
-            paiValidity: ClosedRange<Date>,
-            dacValidity: ClosedRange<Date>,
-            paiSigner: P256.Signing.PrivateKey? = nil,
-            paiAKI: [UInt8]? = nil
-        ) throws {
-            let paaKey = P256.Signing.PrivateKey()
-            let paiKey = P256.Signing.PrivateKey()
-            let dacKey = P256.Signing.PrivateKey()
-            let paaSKI = SubjectKeyIdentifier(hash: Certificate.PublicKey(paaKey.publicKey))
-            let paiSKI = SubjectKeyIdentifier(hash: Certificate.PublicKey(paiKey.publicKey))
-            let paaName = Self.name("Synthetic PAA", vid: "FFF1")
-            let paiName = Self.name("Synthetic PAI", vid: "FFF1")
-
-            let paa = try Certificate(
-                version: .v3, serialNumber: .init(), publicKey: .init(paaKey.publicKey),
-                notValidBefore: paaValidity.lowerBound, notValidAfter: paaValidity.upperBound,
-                issuer: paaName, subject: paaName, signatureAlgorithm: .ecdsaWithSHA256,
-                extensions: try Certificate.Extensions {
-                    Critical(BasicConstraints.isCertificateAuthority(maxPathLength: 1))
-                    Critical(X509.KeyUsage(keyCertSign: true, cRLSign: true))
-                    paaSKI
-                },
-                issuerPrivateKey: .init(paaKey)
-            )
-            let pai = try Certificate(
-                version: .v3, serialNumber: .init(), publicKey: .init(paiKey.publicKey),
-                notValidBefore: paiValidity.lowerBound, notValidAfter: paiValidity.upperBound,
-                issuer: paaName, subject: paiName, signatureAlgorithm: .ecdsaWithSHA256,
-                extensions: try Certificate.Extensions {
-                    Critical(BasicConstraints.isCertificateAuthority(maxPathLength: 0))
-                    Critical(X509.KeyUsage(keyCertSign: true, cRLSign: true))
-                    paiSKI
-                    AuthorityKeyIdentifier(keyIdentifier: ArraySlice(paiAKI ?? Array(paaSKI.keyIdentifier)))
-                },
-                issuerPrivateKey: .init(paiSigner ?? paaKey)
-            )
-            let dac = try Certificate(
-                version: .v3, serialNumber: .init(), publicKey: .init(dacKey.publicKey),
-                notValidBefore: dacValidity.lowerBound, notValidAfter: dacValidity.upperBound,
-                issuer: paiName, subject: Self.name("Synthetic DAC", vid: "FFF1", pid: "8000"),
-                signatureAlgorithm: .ecdsaWithSHA256,
-                extensions: try Certificate.Extensions {
-                    Critical(BasicConstraints.notCertificateAuthority)
-                    Critical(X509.KeyUsage(digitalSignature: true))
-                    SubjectKeyIdentifier(hash: Certificate.PublicKey(dacKey.publicKey))
-                    AuthorityKeyIdentifier(keyIdentifier: paiSKI.keyIdentifier)
-                },
-                issuerPrivateKey: .init(paiKey)
-            )
-            self.paa = try Self.der(paa)
-            self.pai = try Self.der(pai)
-            self.dac = try Self.der(dac)
-            self.dacKey = dacKey
-        }
-
-        func verify(now: Date) async throws -> AttestationResult {
-            let store = try AttestationTrustStore(
-                paas: [paa], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit"))
-            let elements = DeviceAttestationVerifierTests.elements(cd: Data(), nonce: DeviceAttestationVerifierTests.nonce)
-            return await DeviceAttestationVerifier(trustStore: store).verify(
-                dac: dac, pai: pai,
-                attestationElements: elements,
-                attestationSignature: try DeviceAttestationVerifierTests.sign(elements, with: dacKey),
-                attestationChallenge: DeviceAttestationVerifierTests.challenge,
-                sentNonce: DeviceAttestationVerifierTests.nonce, now: now
-            )
-        }
+    @Test("attestation elements without the timestamp (tag 3) give malformed")
+    func elementsMissingTimestamp() async throws {
+        let result = try await Self.verifyElements([
+            .init(tag: .contextSpecific(1), value: .octetString(try AttestationFixtures.testCD)),
+            .init(tag: .contextSpecific(2), value: .octetString(Self.nonce)),
+        ])
+        #expect(Self.failure(result)?.reason == .malformed)
     }
 
-    private static func date(_ year: Int) -> Date {
-        var components = DateComponents()
-        components.year = year
-        components.month = 1
-        components.day = 1
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        return calendar.date(from: components)!
+    @Test("attestation elements with out-of-order tags give malformed")
+    func elementsOutOfOrder() async throws {
+        let result = try await Self.verifyElements([
+            .init(tag: .contextSpecific(1), value: .octetString(try AttestationFixtures.testCD)),
+            .init(tag: .contextSpecific(3), value: .unsignedInt(0)),
+            .init(tag: .contextSpecific(2), value: .octetString(Self.nonce)),
+        ])
+        #expect(Self.failure(result)?.reason == .malformed)
     }
+
+    @Test("attestation elements with a timestamp above UInt32.max give malformed")
+    func elementsTimestampTooLarge() async throws {
+        let result = try await Self.verifyElements([
+            .init(tag: .contextSpecific(1), value: .octetString(try AttestationFixtures.testCD)),
+            .init(tag: .contextSpecific(2), value: .octetString(Self.nonce)),
+            .init(tag: .contextSpecific(3), value: .unsignedInt(UInt64(UInt32.max) + 1)),
+        ])
+        #expect(Self.failure(result)?.reason == .malformed)
+    }
+
+    // MARK: - Synthetic chains (signatures, key identifiers and the validity model)
+
+    private static func date(_ year: Int) -> Date { SyntheticAttestationChain.date(year) }
 
     /// `now` is fixed so the outcome never depends on the wall clock.
     private static let syntheticNow = date(2030)
 
+    private static func verify(_ chain: SyntheticAttestationChain, now: Date = syntheticNow) async throws -> AttestationResult {
+        let store = try AttestationTrustStore(
+            paas: [chain.paa], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit"))
+        let elements = Self.elements(cd: Data(), nonce: Self.nonce)
+        return await DeviceAttestationVerifier(trustStore: store).verify(
+            dac: chain.dac, pai: chain.pai,
+            attestationElements: elements, attestationSignature: try Self.sign(elements, with: chain.dacKey),
+            attestationChallenge: Self.challenge, sentNonce: Self.nonce, now: now
+        )
+    }
+
+    private static func standardChain(
+        paiSigner: P256.Signing.PrivateKey? = nil, paiAKI: [UInt8]? = nil,
+        dacSigner: P256.Signing.PrivateKey? = nil, dacAKI: [UInt8]? = nil,
+        dacCriticalSubjectAlternativeName: Bool = false
+    ) throws -> SyntheticAttestationChain {
+        try SyntheticAttestationChain(
+            paaValidity: date(2020)...date(2040),
+            paiValidity: date(2021)...date(2039),
+            dacValidity: date(2022)...date(2038),
+            paiSigner: paiSigner, paiAKI: paiAKI, dacSigner: dacSigner, dacAKI: dacAKI,
+            dacCriticalSubjectAlternativeName: dacCriticalSubjectAlternativeName
+        )
+    }
+
     @Test("a synthetic Matter-profile chain verifies")
     func syntheticChainVerifies() async throws {
-        let chain = try SyntheticChain(
-            paaValidity: Self.date(2020)...Self.date(2040),
-            paiValidity: Self.date(2021)...Self.date(2039),
-            dacValidity: Self.date(2022)...Self.date(2038)
-        )
-        let result = try await chain.verify(now: Self.syntheticNow)
+        let result = try await Self.verify(Self.standardChain())
+        guard case .verified = result else {
+            Issue.record("expected verified, got \(result)")
+            return
+        }
+    }
+
+    @Test("a DAC with a critical subjectAlternativeName verifies")
+    func criticalSubjectAlternativeName() async throws {
+        let result = try await Self.verify(Self.standardChain(dacCriticalSubjectAlternativeName: true))
         guard case .verified = result else {
             Issue.record("expected verified, got \(result)")
             return
@@ -587,37 +559,43 @@ struct DeviceAttestationVerifierTests {
 
     @Test("a PAI whose signature does not verify under the PAA (same AKI) gives chainInvalid")
     func paiSignatureInvalid() async throws {
-        let chain = try SyntheticChain(
-            paaValidity: Self.date(2020)...Self.date(2040),
-            paiValidity: Self.date(2021)...Self.date(2039),
-            dacValidity: Self.date(2022)...Self.date(2038),
-            paiSigner: P256.Signing.PrivateKey()
-        )
-        let result = try await chain.verify(now: Self.syntheticNow)
+        let result = try await Self.verify(Self.standardChain(paiSigner: P256.Signing.PrivateKey()))
         #expect(Self.failure(result)?.reason == .chainInvalid, "\(result)")
     }
 
     @Test("a PAI signed by an unknown key with another AKI gives untrustedRoot")
     func paiFromUnknownAuthority() async throws {
-        let chain = try SyntheticChain(
-            paaValidity: Self.date(2020)...Self.date(2040),
-            paiValidity: Self.date(2021)...Self.date(2039),
-            dacValidity: Self.date(2022)...Self.date(2038),
-            paiSigner: P256.Signing.PrivateKey(),
-            paiAKI: Array(repeating: 0x42, count: 20)
-        )
-        let result = try await chain.verify(now: Self.syntheticNow)
+        let result = try await Self.verify(Self.standardChain(
+            paiSigner: P256.Signing.PrivateKey(), paiAKI: Array(repeating: 0x42, count: 20)))
         #expect(Self.failure(result)?.reason == .untrustedRoot, "\(result)")
+    }
+
+    @Test("a PAI signed by the PAA but whose AKI is not the PAA's SKI gives untrustedRoot")
+    func paiAKIMismatch() async throws {
+        let result = try await Self.verify(Self.standardChain(paiAKI: Array(repeating: 0x42, count: 20)))
+        #expect(Self.failure(result)?.reason == .untrustedRoot, "\(result)")
+    }
+
+    @Test("a DAC signed by the PAI but whose AKI is not the PAI's SKI gives chainInvalid")
+    func dacAKIMismatch() async throws {
+        let result = try await Self.verify(Self.standardChain(dacAKI: Array(repeating: 0x24, count: 20)))
+        #expect(Self.failure(result)?.reason == .chainInvalid, "\(result)")
+    }
+
+    @Test("a DAC naming the PAI (DN and AKI) but signed by another key gives chainInvalid")
+    func dacSignedByAnotherKey() async throws {
+        let result = try await Self.verify(Self.standardChain(dacSigner: P256.Signing.PrivateKey()))
+        #expect(Self.failure(result)?.reason == .chainInvalid, "\(result)")
     }
 
     @Test("a PAI and PAA expired now but valid at the DAC's notBefore verify (upstream's reference time)")
     func issuersValidAtDACIssuance() async throws {
-        let chain = try SyntheticChain(
+        let chain = try SyntheticAttestationChain(
             paaValidity: Self.date(2020)...Self.date(2029),
             paiValidity: Self.date(2021)...Self.date(2028),
             dacValidity: Self.date(2022)...Self.date(2038)
         )
-        let result = try await chain.verify(now: Self.syntheticNow)
+        let result = try await Self.verify(chain)
         guard case .verified = result else {
             Issue.record("expected verified, got \(result)")
             return
@@ -626,40 +604,37 @@ struct DeviceAttestationVerifierTests {
 
     @Test("a PAI not yet valid at the DAC's notBefore gives certificateExpired")
     func paiNotValidAtDACIssuance() async throws {
-        let chain = try SyntheticChain(
+        let chain = try SyntheticAttestationChain(
             paaValidity: Self.date(2020)...Self.date(2040),
             paiValidity: Self.date(2023)...Self.date(2039),
             dacValidity: Self.date(2022)...Self.date(2038)
         )
-        let result = try await chain.verify(now: Self.syntheticNow)
-        #expect(Self.failure(result)?.reason == .certificateExpired, "\(result)")
+        #expect(Self.failure(try await Self.verify(chain))?.reason == .certificateExpired)
     }
 
     @Test("a PAA expired by the DAC's notBefore gives certificateExpired")
     func paaExpiredAtDACIssuance() async throws {
-        let chain = try SyntheticChain(
+        let chain = try SyntheticAttestationChain(
             paaValidity: Self.date(2020)...Self.date(2021),
             paiValidity: Self.date(2020)...Self.date(2039),
             dacValidity: Self.date(2022)...Self.date(2038)
         )
-        let result = try await chain.verify(now: Self.syntheticNow)
-        #expect(Self.failure(result)?.reason == .certificateExpired, "\(result)")
+        #expect(Self.failure(try await Self.verify(chain))?.reason == .certificateExpired)
     }
 
     @Test("a DAC expired now gives certificateExpired even though it was valid at issuance")
     func dacExpiredNow() async throws {
-        let chain = try SyntheticChain(
+        let chain = try SyntheticAttestationChain(
             paaValidity: Self.date(2020)...Self.date(2040),
             paiValidity: Self.date(2021)...Self.date(2039),
             dacValidity: Self.date(2022)...Self.date(2029)
         )
-        let result = try await chain.verify(now: Self.syntheticNow)
-        #expect(Self.failure(result)?.reason == .certificateExpired, "\(result)")
+        #expect(Self.failure(try await Self.verify(chain))?.reason == .certificateExpired)
     }
 
     // MARK: - NOCSR signature
 
-    @Test("verifyNOCSRSignature accepts the DAC's signature and rejects another key")
+    @Test("verifyNOCSRSignature accepts the DAC's raw signature and rejects another key, a DER signature and garbage")
     func nocsrSignature() throws {
         let key = try Self.devKey()
         let nocsr = TLVEncoder.encode(.structure([
@@ -671,7 +646,7 @@ struct DeviceAttestationVerifierTests {
         #expect(DeviceAttestationVerifier.verifyNOCSRSignature(
             nocsrElements: nocsr, signature: signature.rawRepresentation,
             attestationChallenge: Self.challenge, dacPublicKey: key.publicKey))
-        #expect(DeviceAttestationVerifier.verifyNOCSRSignature(
+        #expect(!DeviceAttestationVerifier.verifyNOCSRSignature(
             nocsrElements: nocsr, signature: signature.derRepresentation,
             attestationChallenge: Self.challenge, dacPublicKey: key.publicKey))
         #expect(!DeviceAttestationVerifier.verifyNOCSRSignature(

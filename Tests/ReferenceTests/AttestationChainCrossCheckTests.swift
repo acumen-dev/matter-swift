@@ -80,5 +80,44 @@ struct AttestationChainCrossCheckTests {
         }
         print("CROSS-CHECK agreed \(agreed)/\(cases.count); chip-cert valid \(chipCertValid), invalid \(cases.count - chipCertValid)")
     }
+
+    @Test("chip-cert and the verifier agree on synthetic chains isolating signatures and key-identifier links")
+    func chipCertAgreesOnSyntheticChains() async throws {
+        guard let runner = ChipCertRunner.findBinary() else {
+            print("[SKIP] chip-cert not found — run: make ref-setup-cert")
+            return
+        }
+        let date = SyntheticAttestationChain.date
+        func chain(
+            paiSigner: P256.Signing.PrivateKey? = nil, paiAKI: [UInt8]? = nil,
+            dacSigner: P256.Signing.PrivateKey? = nil, dacAKI: [UInt8]? = nil, san: Bool = false
+        ) throws -> SyntheticAttestationChain {
+            try SyntheticAttestationChain(
+                paaValidity: date(2020, 1, 1)...date(2040, 1, 1),
+                paiValidity: date(2021, 1, 1)...date(2039, 1, 1),
+                dacValidity: date(2022, 1, 1)...date(2038, 1, 1),
+                paiSigner: paiSigner, paiAKI: paiAKI, dacSigner: dacSigner, dacAKI: dacAKI,
+                dacCriticalSubjectAlternativeName: san
+            )
+        }
+        let cases: [(name: String, chain: SyntheticAttestationChain, valid: Bool)] = [
+            ("valid", try chain(), true),
+            ("critical SAN", try chain(san: true), true),
+            ("PAI AKI is not the PAA SKI", try chain(paiAKI: Array(repeating: 0x42, count: 20)), false),
+            ("DAC AKI is not the PAI SKI", try chain(dacAKI: Array(repeating: 0x24, count: 20)), false),
+            ("PAI signed by another key", try chain(paiSigner: P256.Signing.PrivateKey()), false),
+            ("DAC signed by another key", try chain(dacSigner: P256.Signing.PrivateKey()), false),
+        ]
+        for item in cases {
+            let store = try AttestationTrustStore(
+                paas: [item.chain.paa], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit"))
+            let chipCert = try runner.validateAttestationChain(dac: item.chain.dac, pai: item.chain.pai, paa: item.chain.paa)
+            let (ours, outcome) = await Self.chainVerdict(
+                dac: item.chain.dac, pai: item.chain.pai, key: item.chain.dacKey.rawRepresentation, cd: Data(), store: store)
+            #expect(chipCert.succeeded == item.valid, "\(item.name): chip-cert exit \(chipCert.exitCode) \(chipCert.stderr)")
+            #expect(ours == item.valid, "\(item.name): verifier \(outcome)")
+            print("SYNTHETIC-CROSS-CHECK \(item.name): chip-cert exit \(chipCert.exitCode), verifier \(outcome)")
+        }
+    }
 }
 #endif

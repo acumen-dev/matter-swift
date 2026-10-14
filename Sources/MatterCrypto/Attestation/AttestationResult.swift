@@ -10,7 +10,7 @@ import Crypto
 public enum AttestationFailureReason: String, Sendable, Codable, CaseIterable {
     /// No path from the PAI to any PAA in the trust store.
     case untrustedRoot
-    /// A path exists but a signature, RFC 5280 rule or chain shape is wrong.
+    /// A path exists but a signature, key-identifier link or chain shape is wrong.
     case chainInvalid
     /// A chain certificate is outside its validity window at the verification time.
     case certificateExpired
@@ -89,7 +89,7 @@ public struct VerifiedAttestation: Sendable, Equatable {
 
 // MARK: - AttestationResult
 
-/// The outcome of ``DeviceAttestationVerifier/verify(dac:pai:attestationElements:attestationSignature:attestationChallenge:sentNonce:now:)``.
+/// The outcome of ``DeviceAttestationVerifier/verify(dac:pai:attestationElements:attestationSignature:attestationChallenge:sentNonce:basicInformation:now:)``.
 public enum AttestationResult: Sendable, Equatable {
     case verified(VerifiedAttestation)
     case failed(AttestationFailure)

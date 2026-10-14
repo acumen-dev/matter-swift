@@ -26,6 +26,9 @@ import X509
 ///   carries no PID;
 /// - the DAC has a VID and a PID, the PAI has a VID equal to the DAC's, a PAI PID (if any)
 ///   equals the DAC's, and a PAA VID (if any) equals the DAC's;
+/// - the PAI's AuthorityKeyIdentifier is the PAA's SubjectKeyIdentifier (upstream finds the PAA
+///   by that key ID), and the DAC's is the PAI's (OpenSSL's per-link check). swift-certificates
+///   links issuers by subject name only, so this policy enforces both;
 /// - validity, as upstream's controller build does it (`CURRENT_TIME_NOT_IMPLEMENTED` is defined
 ///   only for esp32, nrfconnect, efr32 and openiotsdk; src/credentials/BUILD.gn):
 ///   - the DAC is valid at `now` (`IsCertificateValidAtCurrentTime`);
@@ -38,9 +41,9 @@ import X509
 /// `Verifier` still checks each issuer's signature over its child while building the path
 /// (PAA → PAI, PAI → DAC). The PAA's self-signature is checked when the trust store loads it.
 /// The profile above covers what `RFC5280Policy` contributed for this three-certificate shape
-/// (version, CA-ness, path length). Only basicConstraints, keyUsage and extendedKeyUsage are
-/// handled critical extensions: any other critical extension (nameConstraints included) makes
-/// the chain unbuildable.
+/// (version, CA-ness, path length). The handled critical extensions are basicConstraints,
+/// keyUsage, extendedKeyUsage and subjectAlternativeName; any other critical extension
+/// (nameConstraints included) makes the chain unbuildable.
 ///
 /// Each failure reason starts with one of the ``Category`` prefixes so the verifier can map it
 /// to an ``AttestationFailureReason``.
@@ -54,8 +57,13 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
         case validity = "matter-validity"
         /// A break of the Matter certificate profile. Maps to ``AttestationFailureReason/malformed``.
         case format = "matter-format"
-        /// A chain of the wrong shape. Maps to ``AttestationFailureReason/chainInvalid``.
+        /// A chain of the wrong shape, or a DAC whose AuthorityKeyIdentifier is not the PAI's
+        /// SubjectKeyIdentifier. Maps to ``AttestationFailureReason/chainInvalid``.
         case chain = "matter-chain"
+        /// A PAI whose AuthorityKeyIdentifier is not this PAA's SubjectKeyIdentifier (upstream
+        /// looks the PAA up by that key ID: `kPaaNotFound`). Maps to
+        /// ``AttestationFailureReason/untrustedRoot``.
+        case paaNotFound = "matter-paa-not-found"
 
         func reason(_ detail: String) -> String { "\(rawValue): \(detail)" }
 
@@ -69,11 +77,13 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
     let now: Date
 
     /// Matter requires critical basicConstraints and keyUsage; connectedhomeip also accepts a
-    /// critical extendedKeyUsage (vector `struct_*_ext_extended_key_usage_present`).
+    /// critical extendedKeyUsage (vector `struct_*_ext_extended_key_usage_present`) and a
+    /// critical subjectAlternativeName (chip-cert accepts it; attestation reads nothing from it).
     let verifyingCriticalExtensions: [ASN1ObjectIdentifier] = [
         .X509ExtensionID.basicConstraints,
         .X509ExtensionID.keyUsage,
         .X509ExtensionID.extendedKeyUsage,
+        .X509ExtensionID.subjectAlternativeName,
     ]
 
     init(now: Date) {
@@ -93,7 +103,7 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
             }
         }
 
-        // VID/PID.
+        // DAC and PAI VID/PID.
         let dacIDs: (vendorID: UInt16?, productID: UInt16?)
         let paiIDs: (vendorID: UInt16?, productID: UInt16?)
         let paaIDs: (vendorID: UInt16?, productID: UInt16?)
@@ -107,18 +117,40 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
         } catch {
             return .failsToMeetPolicy(reason: Category.format.reason("PAI VID/PID attributes are invalid (\(error))"))
         }
+        if let violation = Self.identifierViolation(dac: dacIDs, pai: paiIDs) {
+            return .failsToMeetPolicy(reason: violation)
+        }
+
+        // The PAA is the one the PAI's AuthorityKeyIdentifier names (upstream's PAA lookup).
+        guard Self.authorityKeyID(of: pai) == Self.subjectKeyID(of: paa) else {
+            return .failsToMeetPolicy(reason: Category.paaNotFound.reason(
+                "the PAI's authority key ID is not the PAA's subject key ID"))
+        }
+
+        // PAA VID/PID.
         do {
             paaIDs = try MatterCertificateAttributes.identifiers(in: paa.subject)
         } catch {
             return .failsToMeetPolicy(reason: Category.format.reason("PAA VID/PID attributes are invalid (\(error))"))
         }
-        if let violation = Self.identifierViolation(dac: dacIDs, pai: paiIDs, paa: paaIDs) {
+        if let paaVID = paaIDs.vendorID, paaVID != paiIDs.vendorID {
+            return .failsToMeetPolicy(reason: Category.vidPidMismatch.reason(
+                "PAA VID \(Self.hex(paaVID)) differs from the PAI and DAC VID"))
+        }
+        guard paaIDs.productID == nil else {
+            return .failsToMeetPolicy(reason: Category.format.reason("PAA carries a PID"))
+        }
+
+        // The DAC now.
+        if let violation = Self.validityViolation(dac, role: .dac, at: now, what: "now") {
             return .failsToMeetPolicy(reason: violation)
         }
 
-        // Validity: the DAC now, then the whole chain at the DAC's notBefore.
-        if let violation = Self.validityViolation(dac, role: .dac, at: now, what: "now") {
-            return .failsToMeetPolicy(reason: violation)
+        // Chain validation (upstream X509_verify_cert): the DAC's issuer is the PAI its
+        // AuthorityKeyIdentifier names, and every certificate is valid at the DAC's notBefore.
+        guard Self.authorityKeyID(of: dac) == Self.subjectKeyID(of: pai) else {
+            return .failsToMeetPolicy(reason: Category.chain.reason(
+                "the DAC's authority key ID is not the PAI's subject key ID"))
         }
         let issuance = dac.notValidBefore
         for (certificate, role) in [(dac, Role.dac), (pai, .pai), (paa, .paa)] {
@@ -142,8 +174,7 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
 
     private static func identifierViolation(
         dac: (vendorID: UInt16?, productID: UInt16?),
-        pai: (vendorID: UInt16?, productID: UInt16?),
-        paa: (vendorID: UInt16?, productID: UInt16?)
+        pai: (vendorID: UInt16?, productID: UInt16?)
     ) -> String? {
         guard let dacVID = dac.vendorID else {
             return Category.vidPidMismatch.reason("DAC has no VID")
@@ -160,13 +191,19 @@ struct MatterAttestationPolicy: VerifierPolicy, Sendable {
         if let paiPID = pai.productID, paiPID != dacPID {
             return Category.vidPidMismatch.reason("PAI PID \(hex(paiPID)) differs from DAC PID \(hex(dacPID))")
         }
-        if let paaVID = paa.vendorID, paaVID != dacVID {
-            return Category.vidPidMismatch.reason("PAA VID \(hex(paaVID)) differs from DAC VID \(hex(dacVID))")
-        }
-        guard paa.productID == nil else {
-            return Category.format.reason("PAA carries a PID")
-        }
         return nil
+    }
+
+    // MARK: - Key identifiers
+
+    /// The AuthorityKeyIdentifier's key identifier; the profile has already required it.
+    static func authorityKeyID(of certificate: Certificate) -> [UInt8]? {
+        (try? certificate.extensions.authorityKeyIdentifier)?.keyIdentifier.map(Array.init)
+    }
+
+    /// The SubjectKeyIdentifier; the profile has already required it.
+    static func subjectKeyID(of certificate: Certificate) -> [UInt8]? {
+        (try? certificate.extensions.subjectKeyIdentifier).map { Array($0.keyIdentifier) }
     }
 
     private static func hex(_ value: UInt16) -> String {

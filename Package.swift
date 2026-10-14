@@ -161,6 +161,8 @@ let package = Package(
                 "MatterProtocol",
                 "MatterTransport",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
             ]
         ),
 
