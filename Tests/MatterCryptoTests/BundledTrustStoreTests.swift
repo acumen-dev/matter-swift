@@ -200,6 +200,26 @@ struct BundledTrustStoreTests {
         }
     }
 
+    @Test("a paa entry that names a file in another folder is bundleCorrupt")
+    func wrongFolderEntry() throws {
+        let copy = try Self.copyOfBundle()
+        defer { try? FileManager.default.removeItem(at: copy) }
+        // A real PAA placed in cd/ and listed there loads fine (as a CD signing key).
+        let real = try #require(try Self.manifest().paa.first).file
+        let data = try Data(contentsOf: copy.appendingPathComponent(real))
+        try data.write(to: copy.appendingPathComponent("cd/p.der"))
+        let entry: [String: Any] = ["file": "cd/p.der", "sha256": Self.sha256(data)]
+        try Self.editManifest(in: copy) { manifest in
+            manifest["cd"] = (manifest["cd"] as! [[String: Any]]) + [entry]
+        }
+        #expect(try AttestationTrustStore.loadBundle(at: copy).paas.count == Self.pinnedPAACount)
+        // The same file also listed under paa is outside paa/.
+        try Self.editManifest(in: copy) { manifest in
+            manifest["paa"] = (manifest["paa"] as! [[String: Any]]) + [entry]
+        }
+        Self.expectBundleCorrupt(copy)
+    }
+
     @Test("a nested extra directory is bundleCorrupt")
     func nestedExtraDirectory() throws {
         let copy = try Self.copyOfBundle()

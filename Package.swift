@@ -220,6 +220,7 @@ let package = Package(
             dependencies: [
                 "MatterController", "MatterModel", "MatterCrypto", "MatterTransport",
                 "MatterProtocol", "MatterTypes", "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .testTarget(

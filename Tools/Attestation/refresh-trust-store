@@ -49,6 +49,7 @@ OID_BASIC_CONSTRAINTS = "551d13"
 OID_KEY_USAGE = "551d0f"
 OID_SKI = "551d0e"
 OID_AKI = "551d23"
+OID_MATTER_PID = bytes.fromhex("2b0601040182a27c0202")
 
 PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUT = os.path.join(PACKAGE_ROOT, "Sources", "MatterCrypto", "Resources", "Attestation")
@@ -230,6 +231,10 @@ def exclusion_reason(der):
         return "keyUsage is not keyCertSign and cRLSign"
     if skis[0][0] or len(key_id(skis[0][1], False)) != 20:
         return "subjectKeyIdentifier is critical or not 20 bytes"
+    # Runtime rule (MatterAttestationPolicy): a PAA's subject carries no PID, either as the Matter
+    # attribute or as an "Mpid:" common-name tag. This byte search is deliberately a superset.
+    if OID_MATTER_PID in cert["subject"] or b"Mpid:" in cert["subject"]:
+        return "carries a PID"
     akis = ext_values(cert, OID_AKI)
     if akis and (akis[0][0] or key_id(akis[0][1], True) is None or len(key_id(akis[0][1], True)) != 20):
         return "authorityKeyIdentifier is critical or not 20 bytes"

@@ -71,15 +71,18 @@ public struct DCLTrustStoreFetcher: Sendable {
     /// from `current`. Never writes or applies anything.
     ///
     /// Every certificate the DCL returns for a (subject, key identifier) is considered, not only
-    /// the first. A certificate is kept only if ``AttestationTrustStore/assessPAA(_:now:)``
-    /// accepts it at `now` (it parses, is a self-signed P-256 CA, conforms to the PAA profile and
-    /// is valid) and its VID agrees with the DCL record's `vid`. A record with no `vid`, or a
-    /// certificate whose subject names no VID, is not contradicted by the other. Anything else
-    /// is excluded rather than thrown: its reason is in ``TrustStoreDiff/excluded``, and the
-    /// rest of the response is still used.
+    /// the first. A certificate is kept only if ``AttestationTrustStore/assessPAA(_:)`` accepts
+    /// it (it parses, is a self-signed P-256 CA, conforms to the PAA profile, names no PID) and
+    /// its VID agrees with the DCL record's `vid`. The DCL serialises an absent VID as `0`, so a
+    /// zero `vid` means the record has none; likewise a certificate whose subject names no VID is
+    /// not contradicted by the record. Validity dates are not judged (the runtime accepts a PAA
+    /// that was valid when the DAC's validity began); diff entries carry `notValidAfter`.
+    /// Anything that fails is excluded rather than thrown: its reason is in
+    /// ``TrustStoreDiff/excluded``, and the rest of the response is still used.
     ///
     /// The candidate keeps `current.cdSigningKeys` and has provenance `dcl:main-net` stamped
-    /// with `now`.
+    /// with `now`, whatever `baseURL` is: provenance is informational and names the network the
+    /// fetcher is for, not the host it happened to reach.
     ///
     /// - Throws: ``DCLFetchError``; or whatever the HTTP client throws.
     public func fetchProduction(current: AttestationTrustStore, now: Date) async throws
@@ -93,16 +96,19 @@ public struct DCLTrustStoreFetcher: Sendable {
             if root.subject == Self.cdSigningCASubject && root.subjectKeyId == Self.cdSigningCASKI { continue }
             let path = "/dcl/pki/certificates/\(Self.escape(root.subject))/\(Self.escape(root.subjectKeyId))"
             let leaf: CertificateSet = try await getJSON(path: path)
+            if leaf.approvedCertificates.certs.isEmpty {
+                excluded.append("\(Self.label(root)): the DCL returned no approved certificate")
+            }
             for record in leaf.approvedCertificates.certs {
                 guard let der = Self.der(fromPEM: record.pemCert) else {
                     excluded.append("\(Self.label(root)): does not parse as a certificate (the PEM is not valid)")
                     continue
                 }
-                let assessment = AttestationTrustStore.assessPAA(der, now: now)
+                let assessment = AttestationTrustStore.assessPAA(der)
                 let label = assessment.subject ?? Self.label(root)
                 if let rejection = assessment.rejection {
                     excluded.append("\(label): \(rejection)")
-                } else if let recorded = record.vid, let actual = assessment.vendorID, recorded != actual {
+                } else if let recorded = record.vid, recorded != 0, let actual = assessment.vendorID, recorded != actual {
                     excluded.append("\(label): VID 0x\(String(actual, radix: 16, uppercase: true)) "
                         + "does not match the DCL record's VID 0x\(String(recorded, radix: 16, uppercase: true))")
                 } else {
@@ -112,14 +118,24 @@ public struct DCLTrustStoreFetcher: Sendable {
         }
 
         guard !accepted.isEmpty else { throw DCLFetchError.noRoots }
+        let provenance = TrustStoreProvenance(source: "dcl:main-net", snapshotDate: now)
         let candidate: AttestationTrustStore
         do {
             candidate = try AttestationTrustStore(
-                paas: accepted, cdSigningKeys: current.cdSigningKeys,
-                provenance: TrustStoreProvenance(source: "dcl:main-net", snapshotDate: now))
+                paas: accepted, cdSigningKeys: current.cdSigningKeys, provenance: provenance)
         } catch {
-            // Every certificate was assessed already, so this means the assessment and the store disagree.
-            throw DCLFetchError.malformedResponse("an assessed certificate was refused by the store: \(error)")
+            // Each certificate passed assessment alone, so the store refusing the set is our bug.
+            assertionFailure("an assessed certificate set was refused by the store: \(error)")
+            let kept = accepted.filter {
+                (try? AttestationTrustStore(paas: [$0], cdSigningKeys: [], provenance: provenance)) != nil
+            }
+            excluded.append("internal: the store refused the assessed set (\(error)); retrying certificate by certificate")
+            guard !kept.isEmpty, let retry = try? AttestationTrustStore(
+                paas: kept, cdSigningKeys: current.cdSigningKeys, provenance: provenance)
+            else { throw DCLFetchError.noRoots }
+            var diff = retry.diff(from: current)
+            diff.excluded = excluded
+            return (retry, diff)
         }
         var diff = candidate.diff(from: current)
         diff.excluded = excluded
@@ -128,23 +144,40 @@ public struct DCLTrustStoreFetcher: Sendable {
 
     // MARK: - Requests
 
-    private func getJSON<T: Decodable>(path: String) async throws -> T {
+    private func getJSON<T: DCLResponse>(path: String) async throws -> T {
         let base = baseURL.absoluteString.hasSuffix("/") ? String(baseURL.absoluteString.dropLast()) : baseURL.absoluteString
         guard let url = URL(string: base + path) else {
             throw DCLFetchError.malformedResponse("\(path) does not form a URL")
         }
         let (data, status) = try await client.get(url)
         guard status == 200 else { throw DCLFetchError.httpStatus(status) }
+        let decoded: T
         do {
-            return try JSONDecoder().decode(T.self, from: data)
+            decoded = try JSONDecoder().decode(T.self, from: data)
         } catch {
             throw DCLFetchError.malformedResponse("\(path): \(error)")
         }
+        // Tripwire: the live DCL does not paginate either endpoint. If it starts to, a partial
+        // read must not pass for the whole trust store.
+        if let next = decoded.pagination?.nextKey, !next.isEmpty {
+            throw DCLFetchError.malformedResponse("\(path): the response is paginated, which is not supported")
+        }
+        return decoded
     }
 
     // MARK: - Wire shapes
 
-    private struct RootListing: Decodable {
+    private struct Pagination: Decodable {
+        let nextKey: String?
+        enum CodingKeys: String, CodingKey { case nextKey = "next_key" }
+    }
+
+    private protocol DCLResponse: Decodable {
+        var pagination: Pagination? { get }
+    }
+
+    private struct RootListing: DCLResponse {
+        let pagination: Pagination?
         struct Certs: Decodable {
             let certs: [Root]
         }
@@ -156,7 +189,8 @@ public struct DCLTrustStoreFetcher: Sendable {
         let subjectKeyId: String
     }
 
-    private struct CertificateSet: Decodable {
+    private struct CertificateSet: DCLResponse {
+        let pagination: Pagination?
         struct Certs: Decodable {
             let certs: [Record]
         }
@@ -165,22 +199,8 @@ public struct DCLTrustStoreFetcher: Sendable {
 
     private struct Record: Decodable {
         let pemCert: String
-        /// The DCL serialises the VID as a number, or as a string for some records.
+        /// The DCL serialises an absent VID as `0`. A VID outside UInt16 is a malformed response.
         let vid: UInt16?
-
-        enum CodingKeys: String, CodingKey { case pemCert, vid }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            pemCert = try container.decode(String.self, forKey: .pemCert)
-            if let number = try? container.decodeIfPresent(UInt16.self, forKey: .vid) {
-                vid = number
-            } else if let text = try? container.decodeIfPresent(String.self, forKey: .vid), let number = UInt16(text) {
-                vid = number
-            } else {
-                vid = nil
-            }
-        }
     }
 
     // MARK: - Helpers
@@ -202,8 +222,10 @@ public struct DCLTrustStoreFetcher: Sendable {
     }
 
     private static func der(fromPEM pem: String) -> Data? {
+        // The live DCL sometimes ends a PEM with a stray space after the final newline.
         let body = pem.split(whereSeparator: \.isNewline)
-            .filter { !$0.hasPrefix("-----") }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("-----") }
             .joined()
         guard !body.isEmpty else { return nil }
         return Data(base64Encoded: body)

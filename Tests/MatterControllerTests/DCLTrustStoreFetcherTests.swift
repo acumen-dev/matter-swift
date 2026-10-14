@@ -10,11 +10,12 @@ import MatterTestSupport
 
 // MARK: - Recorded client
 
-/// Replays recorded responses keyed by request path, and records every request made.
+/// Replays canned responses and records every request.
 private struct RecordedDCLClient: DCLHTTPClient {
 
-    /// Path (with the `/dcl/pki/` prefix, each segment percent-decoded) to body and status.
+    /// "roots", or "<subject>\n<ski>" for a leaf, to body and status.
     let responses: [String: (Data, Int)]
+    /// The raw (still percent-encoded) URLs requested.
     let requests: LockedValue<[String]>
 
     init(_ responses: [String: (Data, Int)]) {
@@ -24,12 +25,18 @@ private struct RecordedDCLClient: DCLHTTPClient {
 
     func get(_ url: URL) async throws -> (Data, Int) {
         let text = url.absoluteString
-        let prefix = "https://dcl.example"
-        precondition(text.hasPrefix(prefix), "unexpected host in \(text)")
-        let decoded = text.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
-            .map { String($0).removingPercentEncoding ?? String($0) }.joined(separator: "/")
-        requests.withLock { $0.append(decoded) }
-        return responses[decoded] ?? (Data(), 404)
+        requests.withLock { $0.append(text) }
+        let path = String(text.dropFirst(DCLFixtures.base.absoluteString.count))
+        let key: String
+        if path == "/dcl/pki/root-certificates" {
+            key = "roots"
+        } else if path.hasPrefix("/dcl/pki/certificates/") {
+            let segments = path.dropFirst("/dcl/pki/certificates/".count).split(separator: "/", omittingEmptySubsequences: false)
+            key = segments.map { String($0).removingPercentEncoding ?? String($0) }.joined(separator: "\n")
+        } else {
+            key = path
+        }
+        return responses[key] ?? (Data(), 404)
     }
 }
 
@@ -40,75 +47,20 @@ private enum DCLFixtures {
     static let now = SyntheticAttestationChain.date(2026, month: 10, day: 14)
     static let base = URL(string: "https://dcl.example")!
 
-    static let fixtureDirectory = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().appendingPathComponent("Fixtures/DCL")
+    static let directory = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()  // MatterControllerTests/
+        .deletingLastPathComponent()  // Tests/
+        .appendingPathComponent("Fixtures/DCL")
 
-    private static let file = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().appendingPathComponent("Fixtures/DCL/dcl-recorded.json")
-
-    struct Recorded: Decodable {
-        struct Listing: Decodable { let approvedRootCertificates: Roots }
-        struct Roots: Decodable { let certs: [Root] }
-        struct Root: Decodable { let subject: String; let subjectKeyId: String }
-        let rootCertificates: Listing
-        let expectedGood: [Good]
-        struct Good: Decodable { let file: String; let sha256: String }
-
-        enum CodingKeys: String, CodingKey {
-            case rootCertificates = "root-certificates", expectedGood
-        }
+    static func json(_ name: String) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(
+            with: Data(contentsOf: directory.appendingPathComponent(name))) as? [String: Any])
     }
 
-    static func recorded() throws -> Recorded {
-        try JSONDecoder().decode(Recorded.self, from: Data(contentsOf: file))
-    }
-
-    static func rawDocument() throws -> [String: Any] {
-        try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-    }
-
-    /// The fixture's responses as a client would receive them.
-    static func recordedResponses() throws -> [String: (Data, Int)] {
-        let document = try rawDocument()
-        var responses: [String: (Data, Int)] = [:]
-        responses["/dcl/pki/root-certificates"] = (
-            try JSONSerialization.data(withJSONObject: try #require(document["root-certificates"])), 200)
-        for (key, body) in try #require(document["certificates"] as? [String: Any]) {
-            let parts = key.split(separator: " ").map(String.init)
-            responses["/dcl/pki/certificates/\(parts[0])/\(parts[1])"] = (
-                try JSONSerialization.data(withJSONObject: body), 200)
-        }
-        return responses
-    }
-
-    static func der(fromPEM pem: String) throws -> Data {
-        let body = pem.split(whereSeparator: \.isNewline).filter { !$0.hasPrefix("-----") }.joined()
+    static func derFromPEM(_ pem: String) throws -> Data {
+        let body = pem.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("-----") }.joined()
         return try #require(Data(base64Encoded: body))
-    }
-
-    /// The certificates the recorded response serves under a synthetic listing label.
-    static func recordedCertificate(label: String) throws -> Data {
-        let document = try rawDocument()
-        let certificates = try #require(document["certificates"] as? [String: Any])
-        let subject = Data("fixture:\(label)".utf8).base64EncodedString()
-        let entry = try #require(certificates.first { $0.key.hasPrefix(subject + " ") }?.value as? [String: Any])
-        let certs = try #require((entry["approvedCertificates"] as? [String: Any])?["certs"] as? [[String: Any]])
-        return try der(fromPEM: try #require(certs.first?["pemCert"] as? String))
-    }
-
-    /// Every real certificate the recorded response serves, in listing order.
-    static func recordedGoodCertificates() throws -> [Data] {
-        let document = try rawDocument()
-        let certificates = try #require(document["certificates"] as? [String: Any])
-        var result: [Data] = []
-        for root in try recorded().rootCertificates.approvedRootCertificates.certs {
-            guard let entry = certificates["\(root.subject) \(root.subjectKeyId)"] as? [String: Any],
-                  !String(data: Data(base64Encoded: root.subject) ?? Data(), encoding: .utf8).map({ $0.hasPrefix("fixture:") })!
-            else { continue }
-            let certs = try #require((entry["approvedCertificates"] as? [String: Any])?["certs"] as? [[String: Any]])
-            for cert in certs { result.append(try der(fromPEM: try #require(cert["pemCert"] as? String))) }
-        }
-        return result
     }
 
     static func pem(_ der: Data) -> String {
@@ -116,29 +68,85 @@ private enum DCLFixtures {
         return "-----BEGIN CERTIFICATE-----\n\(body)\n-----END CERTIFICATE-----\n"
     }
 
-    /// A one-root response whose single leaf carries `entries`.
-    static func response(_ entries: [(der: Data, vid: Any?)]) throws -> [String: (Data, Int)] {
-        let subject = "c3ViamVjdA=="
-        let ski = "01:02:03"
-        let listing: [String: Any] = ["approvedRootCertificates": ["certs": [["subject": subject, "subjectKeyId": ski]]]]
-        let certs: [[String: Any]] = entries.map { entry in
-            var record: [String: Any] = ["pemCert": pem(entry.der)]
-            if let vid = entry.vid { record["vid"] = vid }
-            return record
+    static func key(_ subject: String, _ ski: String) -> String { "\(subject)\n\(ski)" }
+
+    static func body(_ object: Any) throws -> (Data, Int) { (try JSONSerialization.data(withJSONObject: object), 200) }
+
+    // MARK: Recorded (real) responses
+
+    struct Leaf {
+        let subject: String
+        let ski: String
+        let body: [String: Any]
+        let certs: [[String: Any]]
+        var der: Data { get throws { try derFromPEM(try #require(certs[0]["pemCert"] as? String)) } }
+        var vid: Int? { certs[0]["vid"] as? Int }
+        var text: String { certs[0]["subjectAsText"] as? String ?? "" }
+    }
+
+    static func recordedLeaves() throws -> [Leaf] {
+        try (try #require(json("dcl-recorded.json")["leaves"] as? [[String: Any]])).map { leaf in
+            let set = try #require(leaf["approvedCertificates"] as? [String: Any])
+            return Leaf(
+                subject: try #require(set["subject"] as? String), ski: try #require(set["subjectKeyId"] as? String),
+                body: leaf, certs: try #require(set["certs"] as? [[String: Any]]))
         }
-        let leaf: [String: Any] = ["approvedCertificates": ["certs": certs]]
-        return [
-            "/dcl/pki/root-certificates": (try JSONSerialization.data(withJSONObject: listing), 200),
-            "/dcl/pki/certificates/\(subject)/\(ski)": (try JSONSerialization.data(withJSONObject: leaf), 200),
-        ]
     }
 
-    static func chain(paa: ClosedRange<Date>) throws -> SyntheticAttestationChain {
-        try SyntheticAttestationChain(
-            paaValidity: paa, paiValidity: paa, dacValidity: paa)
+    static func recordedResponses() throws -> [String: (Data, Int)] {
+        var responses = ["roots": try body(try #require(json("dcl-recorded.json")["root-certificates"]))]
+        for leaf in try recordedLeaves() { responses[key(leaf.subject, leaf.ski)] = try body(leaf.body) }
+        return responses
     }
 
-    static let longValidity = SyntheticAttestationChain.date(2020)...SyntheticAttestationChain.date(2040)
+    /// The recorded roots that are PAAs the fetcher should keep (everything but the NXP PAA).
+    static func recordedLeaf(containing text: String) throws -> Leaf {
+        try #require(try recordedLeaves().first { $0.text.contains(text) })
+    }
+
+    // MARK: Synthetic entries
+
+    struct Synthetic {
+        let label: String
+        let subject: String
+        let ski: String
+        let certs: [[String: Any]]
+    }
+
+    static func synthetic(_ label: String) throws -> Synthetic {
+        let entries = try #require(json("dcl-synthetic.json")["entries"] as? [[String: Any]])
+        let entry = try #require(entries.first { $0["label"] as? String == label })
+        return Synthetic(
+            label: label, subject: try #require(entry["subject"] as? String), ski: try #require(entry["subjectKeyId"] as? String),
+            certs: try #require(entry["certs"] as? [[String: Any]]))
+    }
+
+    static func syntheticDER(_ label: String) throws -> Data {
+        try derFromPEM(try #require(try synthetic(label).certs[0]["pemCert"] as? String))
+    }
+
+    /// A response made of listing entries `(subject, ski, certs)`, each served as its own leaf.
+    static func response(_ roots: [(subject: String, ski: String, certs: [[String: Any]])]) throws -> [String: (Data, Int)] {
+        let listing: [String: Any] = ["approvedRootCertificates": [
+            "certs": roots.map { ["subject": $0.subject, "subjectKeyId": $0.ski] }]]
+        var responses = ["roots": try body(listing)]
+        for root in roots {
+            responses[key(root.subject, root.ski)] = try body(
+                ["approvedCertificates": ["subject": root.subject, "subjectKeyId": root.ski, "certs": root.certs]])
+        }
+        return responses
+    }
+
+    static func response(_ entries: [Synthetic]) throws -> [String: (Data, Int)] {
+        try response(entries.map { ($0.subject, $0.ski, $0.certs) })
+    }
+
+    /// One listing entry serving `ders`, each record with the given `vid`.
+    static func response(serving ders: [Data], vid: Any = 0) throws -> [String: (Data, Int)] {
+        try response([("c3ViamVjdA==", "01:02:03", ders.map { ["pemCert": pem($0), "vid": vid] })])
+    }
+
+    // MARK: Fetching
 
     static func emptyStore() throws -> AttestationTrustStore {
         try AttestationTrustStore(paas: [], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit"))
@@ -152,6 +160,13 @@ private enum DCLFixtures {
     }
 
     static func sha256(_ der: Data) -> Data { Data(SHA256.hash(data: der)) }
+
+    static let longValidity = SyntheticAttestationChain.date(2020)...SyntheticAttestationChain.date(2040)
+
+    static func syntheticPAA(validity: ClosedRange<Date>? = nil) throws -> Data {
+        let range = validity ?? longValidity
+        return try SyntheticAttestationChain(paaValidity: range, paiValidity: range, dacValidity: range).paa
+    }
 }
 
 // MARK: - DCLTrustStoreFetcherTests
@@ -159,13 +174,15 @@ private enum DCLFixtures {
 @Suite("DCLTrustStoreFetcher Tests", .timeLimit(.minutes(5)))
 struct DCLTrustStoreFetcherTests {
 
-    // MARK: - Happy path
+    // MARK: - Recorded DCL
 
     @Test("the recorded DCL builds a candidate and a diff against a store missing one and holding one extra")
     func happyPath() async throws {
-        let good = try DCLFixtures.recordedGoodCertificates()
+        let leaves = try DCLFixtures.recordedLeaves()
+        #expect(leaves.count == 7)
+        let good = try leaves.filter { !$0.text.contains("NXP") }.map { try $0.der }
         #expect(good.count == 6)
-        let extra = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
+        let extra = try DCLFixtures.syntheticPAA()
         let cdKey = try #require(try AttestationTrustStore.bundledCDSigningKeys().first)
         let current = try AttestationTrustStore(
             paas: Array(good.dropFirst()) + [extra], cdSigningKeys: [cdKey],
@@ -181,133 +198,102 @@ struct DCLTrustStoreFetcherTests {
         #expect(diff.added.map(\.sha256) == [DCLFixtures.sha256(good[0])])
         #expect(diff.removed.map(\.sha256) == [DCLFixtures.sha256(extra)])
         #expect(diff.changed.isEmpty)
-        #expect(Set(try DCLFixtures.recorded().expectedGood.map(\.sha256))
-            == Set(good.map { DCLFixtures.sha256($0).map { String(format: "%02x", $0) }.joined() }))
+        // The one real certificate swift-certificates cannot parse is excluded, not thrown.
+        #expect(diff.excluded.count == 1)
+        #expect(diff.excluded[0].contains("does not parse"))
+        // The CD-signing CA is listed but never requested.
+        #expect(client.requests.value.count == 1 + 7)
+        #expect(!client.requests.value.contains { $0.contains("97%3AE4%3A69%3AD0") })
     }
 
-    @Test("every certificate returned for one (subject, SKI) is kept, not only the first")
-    func keepsEveryCertificate() async throws {
-        let (_, diff) = try await DCLFixtures.fetch(try DCLFixtures.recordedResponses())
-        let good = try DCLFixtures.recordedGoodCertificates()
-        // good[0] and good[1] are served under the first listing entry.
-        let hashes = Set(diff.added.map(\.sha256))
-        #expect(hashes.contains(DCLFixtures.sha256(good[0])))
-        #expect(hashes.contains(DCLFixtures.sha256(good[1])))
-        #expect(hashes.count == 6)
+    @Test("records with vid 0 whose subjects name a VID are accepted: 0 means absent")
+    func zeroVIDIsAbsent() async throws {
+        let zero = try DCLFixtures.recordedLeaves().filter { $0.vid == 0 && $0.text.contains("vid=0x") }
+        #expect(zero.count == 3)
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.recordedResponses())
+        let kept = Set(diff.added.map(\.sha256))
+        for leaf in zero { #expect(kept.contains(DCLFixtures.sha256(try leaf.der)), "\(leaf.text)") }
+        #expect(candidate.paas.count == 6)
+        #expect(!diff.excluded.contains { $0.contains("does not match") })
     }
 
-    @Test("the recorded entries that fail are excluded with reasons, never thrown")
-    func recordedExclusions() async throws {
-        let (_, diff) = try await DCLFixtures.fetch(try DCLFixtures.recordedResponses())
-        #expect(diff.excluded.count == 3)
-        #expect(diff.excluded.contains { $0.contains("P-256") })
-        #expect(diff.excluded.contains { $0.contains("not a self-signed CA") })
-        #expect(diff.excluded.contains { $0.contains("does not parse") })
+    // MARK: - Synthetic exclusions
+
+    @Test("synthetic entries that fail are excluded with a reason, and good neighbours survive",
+          arguments: [
+            ("p384", "P-256"), ("not-self-signed", "not a self-signed CA"), ("null-parameter", "does not parse"),
+            ("not-der", "does not parse"), ("pid-in-subject", "carries a PID"),
+            ("vid-mismatch", "does not match the DCL record's VID 0x117D"),
+          ])
+    func syntheticExclusion(label: String, reason: String) async throws {
+        let good = try DCLFixtures.recordedLeaf(containing: "Feit")
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([
+            (good.subject, good.ski, good.certs), DCLFixtures.synthetic(label).asRoot,
+        ]))
+        #expect(candidate.paas.count == 1)
+        #expect(diff.excluded.count == 1)
+        #expect(diff.excluded[0].contains(reason), "\(diff.excluded)")
     }
 
-    @Test("the CD-signing CA is never requested")
-    func skipsCDSigningCA() async throws {
-        let client = RecordedDCLClient(try DCLFixtures.recordedResponses())
-        _ = try await DCLTrustStoreFetcher(baseURL: DCLFixtures.base, client: client)
-            .fetchProduction(current: try DCLFixtures.emptyStore(), now: DCLFixtures.now)
-        let requests = client.requests.value
-        #expect(requests.contains("/dcl/pki/root-certificates"))
-        #expect(requests.count == 1 + 8)
-        #expect(!requests.contains { $0.contains("97:E4:69:D0") })
+    @Test("assessPAA rejects a PAA whose subject carries a PID")
+    func assessmentRejectsPID() throws {
+        let assessment = AttestationTrustStore.assessPAA(try DCLFixtures.syntheticDER("pid-in-subject"))
+        #expect(assessment.rejection == "carries a PID")
+        #expect(assessment.vendorID == 0xFFF1)
     }
 
-    @Test("path segments are percent-encoded with no safe characters")
+    @Test("a listing subject containing '/' and '+' is percent-encoded, and its certificate accepted")
     func encodesSegments() async throws {
-        let client = RecordedDCLClient(try DCLFixtures.recordedResponses())
-        var raw: [String] = []
-        let recording = RawURLClient(inner: client, urls: LockedValue([]))
-        _ = try await DCLTrustStoreFetcher(baseURL: DCLFixtures.base, client: recording)
+        let entry = try DCLFixtures.synthetic("slash-and-plus")
+        #expect(entry.subject.contains("/") && entry.subject.contains("+"))
+        let client = RecordedDCLClient(try DCLFixtures.response([entry]))
+        let (candidate, _) = try await DCLTrustStoreFetcher(baseURL: DCLFixtures.base, client: client)
             .fetchProduction(current: try DCLFixtures.emptyStore(), now: DCLFixtures.now)
-        raw = recording.urls.value
-        for url in raw where url.contains("/certificates/") {
-            let segments = url.components(separatedBy: "/certificates/")[1]
-            #expect(!segments.contains("+") && !segments.contains("=") && !segments.contains(":"))
-            #expect(segments.filter { $0 == "/" }.count == 1)
-        }
+        #expect(candidate.paas.count == 1)
+        #expect(client.requests.value.last == "https://dcl.example/dcl/pki/certificates/a%2Bb%2Fc%2Bd%2Fe%3D%3D/AB%3ACD%3AEF%3A01")
     }
 
-    // MARK: - Exclusions
+    @Test("every certificate in a leaf is kept, not only the first")
+    func keepsEveryCertificate() async throws {
+        let a = try DCLFixtures.recordedLeaf(containing: "Feit").der
+        let b = try DCLFixtures.recordedLeaf(containing: "Legrand").der
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response(serving: [a, b]))
+        #expect(candidate.paas.count == 2)
+        #expect(Set(diff.added.map(\.sha256)) == [DCLFixtures.sha256(a), DCLFixtures.sha256(b)])
+    }
 
-    @Test("a certificate that is not self-signed is excluded")
-    func nonRoot() async throws {
-        let chain = try DCLFixtures.chain(paa: DCLFixtures.longValidity)
-        let good = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let (candidate, diff) = try await DCLFixtures.fetch(
-            try DCLFixtures.response([(chain.pai, nil), (good, nil)]))
+    @Test("validity dates are not judged: expired and not-yet-valid PAAs are kept")
+    func validityNotJudged() async throws {
+        let old = try DCLFixtures.syntheticPAA(
+            validity: SyntheticAttestationChain.date(2015)...SyntheticAttestationChain.date(2020))
+        let future = try DCLFixtures.syntheticPAA(
+            validity: SyntheticAttestationChain.date(2030)...SyntheticAttestationChain.date(2040))
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response(serving: [old, future]))
+        #expect(candidate.paas.count == 2)
+        #expect(diff.excluded.isEmpty)
+        #expect(AttestationTrustStore.assessPAA(old).rejection == nil)
+    }
+
+    @Test("a leaf with no certificates records an exclusion")
+    func emptyLeaf() async throws {
+        let good = try DCLFixtures.recordedLeaf(containing: "Feit")
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([
+            (good.subject, good.ski, good.certs), ("ZW1wdHk=", "AA:BB", []),
+        ]))
         #expect(candidate.paas.count == 1)
         #expect(diff.excluded.count == 1)
-        #expect(diff.excluded[0].contains("not a self-signed CA"))
+        #expect(diff.excluded[0].contains("the DCL returned no approved certificate"))
     }
 
-    @Test("a non-P-256 certificate is excluded")
-    func nonP256() async throws {
-        let p384 = try DCLFixtures.recordedCertificate(label: "synthetic-p384")
-        let good = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([(p384, nil), (good, nil)]))
-        #expect(candidate.paas.count == 1)
-        #expect(diff.excluded.count == 1)
-        #expect(diff.excluded[0].contains("P-256"))
-    }
-
-    @Test("an expired certificate is excluded")
-    func expired() async throws {
-        let old = try DCLFixtures.chain(paa: SyntheticAttestationChain.date(2015)...SyntheticAttestationChain.date(2020)).paa
-        let good = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([(old, nil), (good, nil)]))
-        #expect(candidate.paas.count == 1)
-        #expect(diff.excluded.count == 1)
-        #expect(diff.excluded[0].contains("expired"))
-    }
-
-    @Test("a certificate that is not yet valid is excluded")
-    func notYetValid() async throws {
-        let future = try DCLFixtures.chain(paa: SyntheticAttestationChain.date(2030)...SyntheticAttestationChain.date(2040)).paa
-        let good = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let (_, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([(future, nil), (good, nil)]))
-        #expect(diff.excluded.count == 1)
-        #expect(diff.excluded[0].contains("not yet valid"))
-    }
-
-    @Test("a VID that disagrees with the DCL record is excluded; agreement and absence are accepted")
-    func vidMismatch() async throws {
-        let a = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let b = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let c = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let d = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        // The synthetic PAAs name VID 0xFFF1 (65521).
-        let (candidate, diff) = try await DCLFixtures.fetch(
-            try DCLFixtures.response([(a, 0x1234), (b, 0xFFF1), (c, "65521"), (d, nil)]))
-        #expect(candidate.paas.count == 3)
-        #expect(diff.excluded.count == 1)
-        #expect(diff.excluded[0].contains("does not match the DCL record's VID 0x1234"))
-    }
-
-    @Test("a certificate swift-certificates cannot parse is excluded with a parse reason")
-    func unparseable() async throws {
-        let nullParameter = try DCLFixtures.recordedCertificate(label: "synthetic-null-parameter")
-        let good = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        let (candidate, diff) = try await DCLFixtures.fetch(
-            try DCLFixtures.response([(nullParameter, nil), (Data([0x30, 0x03, 0x01, 0x01, 0x00]), nil), (good, nil)]))
-        #expect(candidate.paas.count == 1)
-        #expect(diff.excluded.count == 2)
-        #expect(diff.excluded.allSatisfy { $0.contains("does not parse") })
-    }
-
-    @Test("an invalid PEM body is excluded, not thrown")
+    @Test("an invalid PEM body is excluded with a parse reason, not thrown")
     func invalidPEM() async throws {
-        let good = try DCLFixtures.chain(paa: DCLFixtures.longValidity).paa
-        var responses = try DCLFixtures.response([(good, nil)])
-        let leafKey = try #require(responses.keys.first { $0.contains("/certificates/") })
-        let leaf = ["approvedCertificates": ["certs": [["pemCert": "not a pem"], ["pemCert": DCLFixtures.pem(good)]]]]
-        responses[leafKey] = (try JSONSerialization.data(withJSONObject: leaf), 200)
-        let (candidate, diff) = try await DCLFixtures.fetch(responses)
+        let good = try DCLFixtures.recordedLeaf(containing: "Feit")
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([
+            ("c3ViamVjdA==", "01:02:03", [["pemCert": "not a pem", "vid": 0], good.certs[0]]),
+        ]))
         #expect(candidate.paas.count == 1)
         #expect(diff.excluded.count == 1)
+        #expect(diff.excluded[0].contains("does not parse as a certificate"))
     }
 
     // MARK: - Failures
@@ -315,47 +301,66 @@ struct DCLTrustStoreFetcherTests {
     @Test("HTTP 500 on the listing is httpStatus(500)")
     func httpError() async throws {
         await #expect(throws: DCLFetchError.httpStatus(500)) {
-            try await DCLFixtures.fetch(["/dcl/pki/root-certificates": (Data(), 500)])
+            try await DCLFixtures.fetch(["roots": (Data(), 500)])
         }
     }
 
     @Test("a non-200 on a leaf is httpStatus")
     func leafHTTPError() async throws {
         var responses = try DCLFixtures.recordedResponses()
-        let leafKey = try #require(responses.keys.first { $0.contains("/certificates/") })
-        responses[leafKey] = (Data(), 404)
+        let leaf = try #require(try DCLFixtures.recordedLeaves().first)
+        responses[DCLFixtures.key(leaf.subject, leaf.ski)] = (Data(), 404)
         await #expect(throws: DCLFetchError.httpStatus(404)) { try await DCLFixtures.fetch(responses) }
     }
 
-    @Test("garbage JSON is malformedResponse")
-    func garbageJSON() async throws {
+    @Test("garbage JSON, the wrong shape, a bad vid and pagination are malformedResponse",
+          arguments: [
+            "not json", "{\"x\":1}",
+            "{\"approvedRootCertificates\":{\"certs\":[]},\"pagination\":{\"next_key\":\"AAAA\",\"total\":\"0\"}}",
+          ])
+    func malformedListing(body: String) async throws {
         do {
-            _ = try await DCLFixtures.fetch(["/dcl/pki/root-certificates": (Data("not json".utf8), 200)])
+            _ = try await DCLFixtures.fetch(["roots": (Data(body.utf8), 200)])
             Issue.record("expected malformedResponse")
         } catch let error as DCLFetchError {
             guard case .malformedResponse = error else { Issue.record("got \(error)"); return }
         }
     }
 
-    @Test("valid JSON of the wrong shape is malformedResponse")
-    func wrongShape() async throws {
+    @Test("a non-numeric or out-of-range vid is malformedResponse", arguments: ["70000", "-1", "\"0x1188\"", "true"])
+    func badVID(json: String) async throws {
+        let good = try DCLFixtures.recordedLeaf(containing: "Feit")
         do {
-            _ = try await DCLFixtures.fetch(["/dcl/pki/root-certificates": (Data("{\"x\":1}".utf8), 200)])
+            _ = try await DCLFixtures.fetch(try DCLFixtures.response(
+                serving: [try good.der],
+                vid: try JSONSerialization.jsonObject(with: Data(json.utf8), options: .fragmentsAllowed)))
             Issue.record("expected malformedResponse")
         } catch let error as DCLFetchError {
             guard case .malformedResponse = error else { Issue.record("got \(error)"); return }
         }
     }
 
-    @Test("no valid roots is noRoots")
+    @Test("a paginated leaf is malformedResponse")
+    func paginatedLeaf() async throws {
+        var responses = try DCLFixtures.recordedResponses()
+        let leaf = try #require(try DCLFixtures.recordedLeaves().first)
+        var body = leaf.body
+        body["pagination"] = ["next_key": "AAAA"]
+        responses[DCLFixtures.key(leaf.subject, leaf.ski)] = try DCLFixtures.body(body)
+        do {
+            _ = try await DCLFixtures.fetch(responses)
+            Issue.record("expected malformedResponse")
+        } catch let error as DCLFetchError {
+            guard case .malformedResponse = error else { Issue.record("got \(error)"); return }
+        }
+    }
+
+    @Test("no surviving certificate is noRoots")
     func noRoots() async throws {
-        let old = try DCLFixtures.chain(paa: SyntheticAttestationChain.date(2015)...SyntheticAttestationChain.date(2020)).paa
+        let bad = try DCLFixtures.synthetic("p384")
+        await #expect(throws: DCLFetchError.noRoots) { try await DCLFixtures.fetch(try DCLFixtures.response([bad])) }
         await #expect(throws: DCLFetchError.noRoots) {
-            try await DCLFixtures.fetch(try DCLFixtures.response([(old, nil)]))
-        }
-        await #expect(throws: DCLFetchError.noRoots) {
-            try await DCLFixtures.fetch(["/dcl/pki/root-certificates": (
-                Data("{\"approvedRootCertificates\":{\"certs\":[]}}".utf8), 200)])
+            try await DCLFixtures.fetch(try DCLFixtures.response([] as [DCLFixtures.Synthetic]))
         }
     }
 
@@ -364,33 +369,32 @@ struct DCLTrustStoreFetcherTests {
     @Test("a fetch writes nothing: the fetcher takes no directory and the working directory is unchanged")
     func writesNothing() async throws {
         let cwd = FileManager.default.currentDirectoryPath
-        let before = try FileManager.default.subpathsOfDirectory(atPath: DCLFixtures.fixtureDirectory.path).sorted()
+        let before = try FileManager.default.subpathsOfDirectory(atPath: DCLFixtures.directory.path).sorted()
         let cwdBefore = try FileManager.default.contentsOfDirectory(atPath: cwd).sorted()
         _ = try await DCLFixtures.fetch(try DCLFixtures.recordedResponses())
-        #expect(try FileManager.default.subpathsOfDirectory(atPath: DCLFixtures.fixtureDirectory.path).sorted() == before)
+        #expect(try FileManager.default.subpathsOfDirectory(atPath: DCLFixtures.directory.path).sorted() == before)
         #expect(try FileManager.default.contentsOfDirectory(atPath: cwd).sorted() == cwdBefore)
     }
 
     // MARK: - Live
 
-    @Test("the real DCL yields at least one root",
+    @Test("the real DCL keeps every bundled root: nothing removed, nothing mismatched",
           .enabled(if: ProcessInfo.processInfo.environment["MATTER_LIVE_DCL"] == "1"))
     func live() async throws {
-        let (candidate, _) = try await DCLTrustStoreFetcher().fetchProduction(
+        let (candidate, diff) = try await DCLTrustStoreFetcher().fetchProduction(
             current: try AttestationTrustStore.bundledProduction(), now: Date())
+        print("live DCL: \(candidate.paas.count) roots, added \(diff.added.count), removed \(diff.removed.count), "
+            + "changed \(diff.changed.count), excluded \(diff.excluded.count)")
+        print("live DCL excluded: \(diff.excluded)\nlive DCL removed: \(diff.removed.map(\.subject))")
         #expect(candidate.paas.count >= 1)
+        #expect(!diff.excluded.contains { $0.contains("does not match") })
+        #expect(diff.removed.isEmpty, "\(diff.removed.map(\.subject))")
+        // Only the known unparseable NXP PAA may be excluded.
+        #expect(diff.excluded.count <= 1)
+        #expect(diff.excluded.allSatisfy { $0.contains("does not parse") })
     }
 }
 
-// MARK: - Helpers
-
-/// Records the raw (still percent-encoded) URLs, then delegates.
-private struct RawURLClient: DCLHTTPClient {
-    let inner: RecordedDCLClient
-    let urls: LockedValue<[String]>
-
-    func get(_ url: URL) async throws -> (Data, Int) {
-        urls.withLock { $0.append(url.absoluteString) }
-        return try await inner.get(url)
-    }
+private extension DCLFixtures.Synthetic {
+    var asRoot: (subject: String, ski: String, certs: [[String: Any]]) { (subject, ski, certs) }
 }

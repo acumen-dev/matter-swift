@@ -1,0 +1,383 @@
+{
+ "note": "Recorded from the main-net DCL (https://on.dcl.csa-iot.org) with read-only GETs on 2026-10-14, trimmed to eight roots. Bodies are unmodified. The first root is the CSA CD-signing CA: it is listed but, as in the refresh script, never fetched, so it has no leaf here. Records for TP-Link, Legrand and Feit carry vid 0 although their subjects name a VID (the protobuf default). The PuzL Labs record ends its PEM with a stray space after the final newline. The NXP PAA is the live certificate whose ECDSA AlgorithmIdentifier carries a NULL parameter.",
+ "root-certificates": {
+  "approvedRootCertificates": {
+   "certs": [
+    {
+     "subject": "MFIxDDAKBgNVBAoMA0NTQTEsMCoGA1UEAwwjTWF0dGVyIENlcnRpZmljYXRpb24gYW5kIFRlc3RpbmcgQ0ExFDASBgorBgEEAYKifAIBDARDNUEw",
+     "subjectKeyId": "97:E4:69:D0:C5:04:14:C2:6F:C7:01:F7:7E:94:77:39:09:8D:F6:A5"
+    },
+    {
+     "subject": "MDMxGzAZBgNVBAMMElRQLUxpbmsgTWF0dGVyIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDExODg=",
+     "subjectKeyId": "C5:85:31:41:9E:E0:3E:E4:A1:DC:F5:51:E0:34:40:DC:2B:BE:C2:0A"
+    },
+    {
+     "subject": "MDkxITAfBgNVBAMMGExlZ3JhbmQgR3JvdXAgTWF0dGVyIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDEwMjE=",
+     "subjectKeyId": "0B:51:07:BC:DE:0D:30:41:D6:26:89:18:CA:7D:7A:92:86:42:A1:F1"
+    },
+    {
+     "subject": "MDIxGjAYBgNVBAMMEUZlaXQgRWxlY3RyaWMgUEFBMRQwEgYKKwYBBAGConwCAQwEMTQyMw==",
+     "subjectKeyId": "06:9E:86:BF:71:DB:52:F9:DF:3C:EA:7D:E4:29:0C:9F:5B:99:68:F1"
+    },
+    {
+     "subject": "MDYxIDAeBgNVBAMMF1N0cm9uZ0tleSBNYXR0ZXIgRzEgUEFBMRIwEAYDVQQKDAlTdHJvbmdLZXk=",
+     "subjectKeyId": "37:4E:29:5A:C5:51:73:0B:AF:65:D5:29:83:9B:4E:E0:9D:39:58:8A"
+    },
+    {
+     "subject": "MD0xJTAjBgNVBAMMHElLRUEgb2YgU3dlZGVuIE1hdHRlciBQQUEgRzExFDASBgorBgEEAYKifAIBDAQxMTdD",
+     "subjectKeyId": "6B:31:8C:FC:E9:99:20:D7:32:8F:5F:43:6D:5E:A3:32:B8:B7:5D:9A"
+    },
+    {
+     "subject": "MGExFzAVBgNVBAUMDjYzNzA5MzMwNDAwMDAxMSAwHgYDVQQKDBdOWFAgU2VtaWNvbmR1Y3RvcnMgTi5WLjELMAkGA1UEBgwCTkwxFzAVBgNVBAMMDk5YUCBNYXR0ZXIgUEFB",
+     "subjectKeyId": "97:97:A4:2F:8D:07:6F:23:C3:88:80:4D:4D:82:42:D9:3D:D7:71:FD"
+    },
+    {
+     "subject": "ME4xHjAcBgNVBAMMFXBhYS1wcm9kLnB1emxsYWJzLmNvbTEUMBIGCisGAQQBgqJ8AgEMBDE0OUQxFjAUBgNVBAoMDVB1ekwgTGFicyBMTEM=",
+     "subjectKeyId": "07:AA:23:AB:C2:7F:59:76:74:96:1E:18:B9:0A:3B:AC:2C:95:8B:44"
+    }
+   ]
+  }
+ },
+ "leaves": [
+  {
+   "approvedCertificates": {
+    "subject": "MDMxGzAZBgNVBAMMElRQLUxpbmsgTWF0dGVyIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDExODg=",
+    "subjectKeyId": "C5:85:31:41:9E:E0:3E:E4:A1:DC:F5:51:E0:34:40:DC:2B:BE:C2:0A",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIIBxDCCAWqgAwIBAgIICmgdKV4p8FgwCgYIKoZIzj0EAwIwMzEbMBkGA1UEAwwS\nVFAtTGluayBNYXR0ZXIgUEFBMRQwEgYKKwYBBAGConwCAQwEMTE4ODAgFw0yMjEw\nMTYxNDIzNDNaGA85OTk5MTIzMTIzNTk1OVowMzEbMBkGA1UEAwwSVFAtTGluayBN\nYXR0ZXIgUEFBMRQwEgYKKwYBBAGConwCAQwEMTE4ODBZMBMGByqGSM49AgEGCCqG\nSM49AwEHA0IABBthPNrOBLxk1aUHRQ0qNpp5jxrxD0IYU2VrkqPao+N5W8yXX0co\nYe5mQRUoKx/1auDoaKu56CgtKFbP7sHTsoCjZjBkMBIGA1UdEwEB/wQIMAYBAf8C\nAQEwDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBTFhTFBnuA+5KHc9VHgNEDcK77C\nCjAfBgNVHSMEGDAWgBTFhTFBnuA+5KHc9VHgNEDcK77CCjAKBggqhkjOPQQDAgNI\nADBFAiAPczAEcWoN58U17EoNmiFaBzDo1OknOOnJJ7ooAaSWcQIhAPOWwghDzToJ\nFGEBvcYtYdEgv9Za5uwKYfQt9J4/loDc\n-----END CERTIFICATE-----\n",
+      "serialNumber": "749881401467859032",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "MDMxGzAZBgNVBAMMElRQLUxpbmsgTWF0dGVyIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDExODg=",
+      "subjectKeyId": "C5:85:31:41:9E:E0:3E:E4:A1:DC:F5:51:E0:34:40:DC:2B:BE:C2:0A",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1666974152",
+        "info": "CSA proposal for TP-Link Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1hx657pawrp9294akamspsmj7y8y07mypwnh9a0",
+        "time": "1666974726",
+        "info": "Approval from DSR",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1666975712",
+        "info": "Approval from Samsung",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "CN=TP-Link Matter PAA,vid=0x1188",
+      "rejects": [],
+      "vid": 0,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  },
+  {
+   "approvedCertificates": {
+    "subject": "MDkxITAfBgNVBAMMGExlZ3JhbmQgR3JvdXAgTWF0dGVyIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDEwMjE=",
+    "subjectKeyId": "0B:51:07:BC:DE:0D:30:41:D6:26:89:18:CA:7D:7A:92:86:42:A1:F1",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB3DCCAYKgAwIBAgIUVyXsUE9uwOsz3WIzCwpjyxHpuRowCgYIKoZIzj0EAwIw\nOTEhMB8GA1UEAwwYTGVncmFuZCBHcm91cCBNYXR0ZXIgUEFBMRQwEgYKKwYBBAGC\nonwCAQwEMTAyMTAgFw0yMjEwMTExODQzMjNaGA8yMDc5MDYwNTIzNTk1OVowOTEh\nMB8GA1UEAwwYTGVncmFuZCBHcm91cCBNYXR0ZXIgUEFBMRQwEgYKKwYBBAGConwC\nAQwEMTAyMTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNxf8IrVTUSMZIC1mO/p\nNeEvJxiRi+luZmMCydMzWZ4JTWz5ue96T1HbsTmrn8BCnHz7zwE3d1wuxtEfSoTc\nWpyjZjBkMBIGA1UdEwEB/wQIMAYBAf8CAQEwDgYDVR0PAQH/BAQDAgEGMB8GA1Ud\nIwQYMBaAFAtRB7zeDTBB1iaJGMp9epKGQqHxMB0GA1UdDgQWBBQLUQe83g0wQdYm\niRjKfXqShkKh8TAKBggqhkjOPQQDAgNIADBFAiAX46VlfsA+SgimfSPbrm3EFRrV\n6yOCBGcyOQaXWZ9C5wIhANukApPkPni8AEEtZBXcTlahRBIYochPoxeG7dXQOZK0\n-----END CERTIFICATE-----\n",
+      "serialNumber": "497527910461672997936566668066661592345080346906",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "MDkxITAfBgNVBAMMGExlZ3JhbmQgR3JvdXAgTWF0dGVyIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDEwMjE=",
+      "subjectKeyId": "0B:51:07:BC:DE:0D:30:41:D6:26:89:18:CA:7D:7A:92:86:42:A1:F1",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1672170836",
+        "info": "CSA proposal for Legrand Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1672172236",
+        "info": "Approval from Samsung",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1wjcn2yv96xllzr24pjpgdqcnq2s9qpg0z9uk8m",
+        "time": "1672185786",
+        "info": "Latch",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "CN=Legrand Group Matter PAA,vid=0x1021",
+      "rejects": [],
+      "vid": 0,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  },
+  {
+   "approvedCertificates": {
+    "subject": "MDIxGjAYBgNVBAMMEUZlaXQgRWxlY3RyaWMgUEFBMRQwEgYKKwYBBAGConwCAQwEMTQyMw==",
+    "subjectKeyId": "06:9E:86:BF:71:DB:52:F9:DF:3C:EA:7D:E4:29:0C:9F:5B:99:68:F1",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIIByzCCAXGgAwIBAgIUe3w51hygpwHd6Tlxj2adk6IF5pswCgYIKoZIzj0EAwIw\nMjEaMBgGA1UEAwwRRmVpdCBFbGVjdHJpYyBQQUExFDASBgorBgEEAYKifAIBDAQx\nNDIzMCAXDTIzMDcyMTA1MzM1MFoYDzgzMjMwOTA3MDUzMzUwWjAyMRowGAYDVQQD\nDBFGZWl0IEVsZWN0cmljIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDE0MjMwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAAQT516150jQlChLACUsk9Y+KWG6i53J9UFXF8hS\nQeD91fdRMagNnT9fvq67FaQxw+I8ZJlhr0S6dmWcJ2mg/l+io2MwYTAPBgNVHRMB\nAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUBp6Gv3HbUvnfPOp9\n5CkMn1uZaPEwHwYDVR0jBBgwFoAUBp6Gv3HbUvnfPOp95CkMn1uZaPEwCgYIKoZI\nzj0EAwIDSAAwRQIgL85qVK45czuhx53cqICB+NUVZTnyx5n+Yxc1hjZjrt4CIQDQ\n+vG34+tSW9Yu870l08ArF9MDmh2slLXKEOlXKXZ4Ew==\n-----END CERTIFICATE-----",
+      "serialNumber": "704976195474727228854770492120686444909517203099",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "MDIxGjAYBgNVBAMMEUZlaXQgRWxlY3RyaWMgUEFBMRQwEgYKKwYBBAGConwCAQwEMTQyMw==",
+      "subjectKeyId": "06:9E:86:BF:71:DB:52:F9:DF:3C:EA:7D:E4:29:0C:9F:5B:99:68:F1",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1690479073",
+        "info": "CSA proposal for Feit Electric Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1690479332",
+        "info": "Approval from Samsung",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos15hzlqqg27xm9e0eky3ynwepux4833ayygnzmcj",
+        "time": "1690836150",
+        "info": "Comcast Approval",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1hx657pawrp9294akamspsmj7y8y07mypwnh9a0",
+        "time": "1690983372",
+        "info": "DSR approval",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "CN=Feit Electric PAA,vid=0x1423",
+      "rejects": [],
+      "vid": 0,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  },
+  {
+   "approvedCertificates": {
+    "subject": "MDYxIDAeBgNVBAMMF1N0cm9uZ0tleSBNYXR0ZXIgRzEgUEFBMRIwEAYDVQQKDAlTdHJvbmdLZXk=",
+    "subjectKeyId": "37:4E:29:5A:C5:51:73:0B:AF:65:D5:29:83:9B:4E:E0:9D:39:58:8A",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB1DCCAXygAwIBAgIUc2o+vqQtP7EOoBw7/O0Wpob9HWUwCgYIKoZIzj0EAwIw\nNjEgMB4GA1UEAwwXU3Ryb25nS2V5IE1hdHRlciBHMSBQQUExEjAQBgNVBAoMCVN0\ncm9uZ0tleTAgFw0yMjA5MTMyMTIyMzVaGA85OTk5MTIzMTIzNTk1OVowNjEgMB4G\nA1UEAwwXU3Ryb25nS2V5IE1hdHRlciBHMSBQQUExEjAQBgNVBAoMCVN0cm9uZ0tl\neTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEqgWEHD/XHc8QXOrtjCZn6x34i1\nl/vM1nYVdGfNT7HGQojTd3TMjKWQppKcTnl7pN6ua3XmuJQCm/RekenBvcujZjBk\nMBIGA1UdEwEB/wQIMAYBAf8CAQEwHwYDVR0jBBgwFoAUN04pWsVRcwuvZdUpg5tO\n4J05WIowHQYDVR0OBBYEFDdOKVrFUXMLr2XVKYObTuCdOViKMA4GA1UdDwEB/wQE\nAwIBBjAKBggqhkjOPQQDAgNGADBDAh8a5dw6CObybMr8nqaou9lv9PqPbj3DSd+c\nyQm19Mg7AiAVcSK0RXTwLjAef55gWgq7SBRM/u3f3nRV/fvCYgWZfA==\n-----END CERTIFICATE-----",
+      "serialNumber": "658903283469391611940490897887627591572164255077",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "MDYxIDAeBgNVBAMMF1N0cm9uZ0tleSBNYXR0ZXIgRzEgUEFBMRIwEAYDVQQKDAlTdHJvbmdLZXk=",
+      "subjectKeyId": "37:4E:29:5A:C5:51:73:0B:AF:65:D5:29:83:9B:4E:E0:9D:39:58:8A",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1665442880",
+        "info": "CSA proposal for StrongKey Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1wjcn2yv96xllzr24pjpgdqcnq2s9qpg0z9uk8m",
+        "time": "1665443169",
+        "info": "Latch",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1665444537",
+        "info": "Approval from Samsung",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "CN=StrongKey Matter G1 PAA,O=StrongKey",
+      "rejects": [],
+      "vid": 5475,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  },
+  {
+   "approvedCertificates": {
+    "subject": "MD0xJTAjBgNVBAMMHElLRUEgb2YgU3dlZGVuIE1hdHRlciBQQUEgRzExFDASBgorBgEEAYKifAIBDAQxMTdD",
+    "subjectKeyId": "6B:31:8C:FC:E9:99:20:D7:32:8F:5F:43:6D:5E:A3:32:B8:B7:5D:9A",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB4zCCAYqgAwIBAgIUPqEhcfoGwW/yt/qRsBs+jf7MklswCgYIKoZIzj0EAwIw\nPTElMCMGA1UEAwwcSUtFQSBvZiBTd2VkZW4gTWF0dGVyIFBBQSBHMTEUMBIGCisG\nAQQBgqJ8AgEMBDExN0MwIBcNMjQwMjE0MTQ1ODMzWhgPMjA5OTAxMjYxNDU4MzJa\nMD0xJTAjBgNVBAMMHElLRUEgb2YgU3dlZGVuIE1hdHRlciBQQUEgRzExFDASBgor\nBgEEAYKifAIBDAQxMTdDMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6/PMOZHP\nVJqqJbBLzK6Q5+9kjTEnjCnJ6Ba9+/3kCQPRZmiZnXYHB0Z0cUYmenTFXPlGfUCp\nblSOtmL48AtPF6NmMGQwEgYDVR0TAQH/BAgwBgEB/wIBATAfBgNVHSMEGDAWgBRr\nMYz86Zkg1zKPX0NtXqMyuLddmjAdBgNVHQ4EFgQUazGM/OmZINcyj19DbV6jMri3\nXZowDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMCA0cAMEQCIETlgc4Us5SE7gPJ\nTY9W4D9Fh27DGjtosGP/l99EWrmYAiAXFqbpGtFV1FAx2GxDNa5zYssd4ZpLoewg\nrJdUrJOP/g==\n-----END CERTIFICATE-----",
+      "serialNumber": "357550761257726767084305391143685043168169726555",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "MD0xJTAjBgNVBAMMHElLRUEgb2YgU3dlZGVuIE1hdHRlciBQQUEgRzExFDASBgorBgEEAYKifAIBDAQxMTdD",
+      "subjectKeyId": "6B:31:8C:FC:E9:99:20:D7:32:8F:5F:43:6D:5E:A3:32:B8:B7:5D:9A",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1708039399",
+        "info": "CSA proposal for IKEA of Sweden Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1708039611",
+        "info": "",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos15hzlqqg27xm9e0eky3ynwepux4833ayygnzmcj",
+        "time": "1708185480",
+        "info": "Comcast Approval",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1hx657pawrp9294akamspsmj7y8y07mypwnh9a0",
+        "time": "1708323954",
+        "info": "",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "CN=IKEA of Sweden Matter PAA G1,vid=0x117C",
+      "rejects": [],
+      "vid": 4476,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  },
+  {
+   "approvedCertificates": {
+    "subject": "MGExFzAVBgNVBAUMDjYzNzA5MzMwNDAwMDAxMSAwHgYDVQQKDBdOWFAgU2VtaWNvbmR1Y3RvcnMgTi5WLjELMAkGA1UEBgwCTkwxFzAVBgNVBAMMDk5YUCBNYXR0ZXIgUEFB",
+    "subjectKeyId": "97:97:A4:2F:8D:07:6F:23:C3:88:80:4D:4D:82:42:D9:3D:D7:71:FD",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIICKjCCAc6gAwIBAgIQZIhrnLD8JtUdBFKOg5azKDAMBggqhkjOPQQDAgUAMGEx\nFzAVBgNVBAUMDjYzNzA5MzMwNDAwMDAxMSAwHgYDVQQKDBdOWFAgU2VtaWNvbmR1\nY3RvcnMgTi5WLjELMAkGA1UEBgwCTkwxFzAVBgNVBAMMDk5YUCBNYXR0ZXIgUEFB\nMB4XDTIyMTAwMTE0MjM0M1oXDTQ5MTIzMTIzNTk1OVowYTEXMBUGA1UEBQwONjM3\nMDkzMzA0MDAwMDExIDAeBgNVBAoMF05YUCBTZW1pY29uZHVjdG9ycyBOLlYuMQsw\nCQYDVQQGDAJOTDEXMBUGA1UEAwwOTlhQIE1hdHRlciBQQUEwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAAQmG9CGuc3THfDL4EvdtnLGVa7HLvsWKITV6EDfswaqKGid\nk2TYwuUIVKwU6LxEWhensDfKkEx05I33Gv8bNaAvo2YwZDASBgNVHRMBAf8ECDAG\nAQH/AgEBMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUl5ekL40HbyPDiIBNTYJC\n2T3Xcf0wHwYDVR0jBBgwFoAUl5ekL40HbyPDiIBNTYJC2T3Xcf0wDAYIKoZIzj0E\nAwIFAANIADBFAiAoIKgE0cFKmvPSG07jpNrjFX5+9BzTUrnY+ZzItV4q4wIhAKar\n+mfA4WFw1ZlFODuQ1NeD7sAqEzDzgqzj+8Loafcn\n-----END CERTIFICATE-----\n",
+      "serialNumber": "133631134583447461218106222770845561640",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "MGExFzAVBgNVBAUMDjYzNzA5MzMwNDAwMDAxMSAwHgYDVQQKDBdOWFAgU2VtaWNvbmR1Y3RvcnMgTi5WLjELMAkGA1UEBgwCTkwxFzAVBgNVBAMMDk5YUCBNYXR0ZXIgUEFB",
+      "subjectKeyId": "97:97:A4:2F:8D:07:6F:23:C3:88:80:4D:4D:82:42:D9:3D:D7:71:FD",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1672167759",
+        "info": "CSA proposal for NXP Semiconductors Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1672169535",
+        "info": "Approval from Samsung",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1wjcn2yv96xllzr24pjpgdqcnq2s9qpg0z9uk8m",
+        "time": "1672185795",
+        "info": "Latch",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "SERIALNUMBER=63709330400001,CN=NXP Matter PAA,O=NXP Semiconductors N.V.,C=NL",
+      "rejects": [],
+      "vid": 4151,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  },
+  {
+   "approvedCertificates": {
+    "subject": "ME4xHjAcBgNVBAMMFXBhYS1wcm9kLnB1emxsYWJzLmNvbTEUMBIGCisGAQQBgqJ8AgEMBDE0OUQxFjAUBgNVBAoMDVB1ekwgTGFicyBMTEM=",
+    "subjectKeyId": "07:AA:23:AB:C2:7F:59:76:74:96:1E:18:B9:0A:3B:AC:2C:95:8B:44",
+    "certs": [
+     {
+      "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB3zCCAYSgAwIBAgIQbvASj6shOg2fKhdI5q2VEzAKBggqhkjOPQQDAjBOMR4w\nHAYDVQQDDBVwYWEtcHJvZC5wdXpsbGFicy5jb20xFDASBgorBgEEAYKifAIBDAQx\nNDlEMRYwFAYDVQQKDA1QdXpMIExhYnMgTExDMCAXDTI2MDIxNzIwMzIxNVoYDzIw\nNjYwMjA3MjEzMjE0WjBOMR4wHAYDVQQDDBVwYWEtcHJvZC5wdXpsbGFicy5jb20x\nFDASBgorBgEEAYKifAIBDAQxNDlEMRYwFAYDVQQKDA1QdXpMIExhYnMgTExDMFkw\nEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEj9p54czKiG/B2D+RZtNHxSBaKc60/1eM\nWTR7NtS7i0Sf0vCz6hkvqAX+3BOZDcDEFm0//aFEKhfvQZW4lq25O6NCMEAwDwYD\nVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUB6ojq8J/WXZ0lh4YuQo7rCyVi0QwDgYD\nVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMCA0kAMEYCIQDafIWo+nvpAO6PwepXR/Ho\navJ62ZDzjVtfrnHC2DWBGgIhAK7rQo7FfMXEiuqbVIIoWW4KNYg9veJ2DOGEB0DH\n+EZG\n-----END CERTIFICATE-----\n ",
+      "serialNumber": "147461607248351315300163976592435811603",
+      "issuer": "",
+      "authorityKeyId": "",
+      "rootSubject": "",
+      "rootSubjectKeyId": "",
+      "isRoot": true,
+      "owner": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+      "subject": "ME4xHjAcBgNVBAMMFXBhYS1wcm9kLnB1emxsYWJzLmNvbTEUMBIGCisGAQQBgqJ8AgEMBDE0OUQxFjAUBgNVBAoMDVB1ekwgTGFicyBMTEM=",
+      "subjectKeyId": "07:AA:23:AB:C2:7F:59:76:74:96:1E:18:B9:0A:3B:AC:2C:95:8B:44",
+      "approvals": [
+       {
+        "address": "cosmos10y99lgptfnylv28qecpjk7gsexvvcz9s6w4vgu",
+        "time": "1772761102",
+        "info": "Alliance proposal for PuzL Labs LLC Root CA",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos15hzlqqg27xm9e0eky3ynwepux4833ayygnzmcj",
+        "time": "1772802453",
+        "info": "Comcast Approval",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1r4536sk78smtaeu6xnky2pdgm3z4kdjncv9mk6",
+        "time": "1773176962",
+        "info": "Samsung approval",
+        "schemaVersion": 0
+       },
+       {
+        "address": "cosmos1hx657pawrp9294akamspsmj7y8y07mypwnh9a0",
+        "time": "1773221517",
+        "info": "DSR approval",
+        "schemaVersion": 0
+       }
+      ],
+      "subjectAsText": "CN=paa-prod.puzllabs.com,O=PuzL Labs LLC,vid=0x149D",
+      "rejects": [],
+      "vid": 5277,
+      "certificateType": "DeviceAttestationPKI",
+      "schemaVersion": 0
+     }
+    ],
+    "schemaVersion": 0
+   }
+  }
+ ]
+}
