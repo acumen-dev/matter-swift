@@ -44,6 +44,10 @@ struct AttestationChainCrossCheckTests {
             dac: dac, pai: pai,
             attestationElements: elements, attestationSignature: signature,
             attestationChallenge: challenge, sentNonce: nonce,
+            // The wall clock, deliberately: `chip-cert validate-att-cert` has no time option, so
+            // it judges validity at the wall clock too and both sides move together. When the
+            // fixtures expire both report invalid and the rows still agree; the pinned valid
+            // count in `chipCertAgrees` is what turns that red.
             basicInformation: (vendorID: 0xFFF1, productID: 0x8000), now: Date()
         )
         switch result {
@@ -86,6 +90,9 @@ struct AttestationChainCrossCheckTests {
             if chipCert.succeeded { chipCertValid += 1 }
         }
         print("CROSS-CHECK agreed \(agreed)/\(cases.count); chip-cert valid \(chipCertValid), invalid \(cases.count - chipCertValid)")
+        // Agreement alone passes vacuously once the fixtures expire (every row invalid on both
+        // sides); 86 is the count while they are in date.
+        #expect(chipCertValid == 86, "chip-cert found \(chipCertValid) valid chains, not 86: have the fixtures expired?")
     }
 
     @Test("chip-cert and the verifier agree on synthetic chains isolating signatures and key-identifier links")
