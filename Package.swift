@@ -21,6 +21,8 @@ let package = Package(
         .library(name: "MatterProtocol", targets: ["MatterProtocol"]),
         // Device/bridge role: endpoint management, attribute storage
         .library(name: "MatterDevice", targets: ["MatterDevice"]),
+        // Conformance suite for MatterControllerStore implementations. Link ONLY from test targets.
+        .library(name: "MatterStoreConformance", targets: ["MatterStoreConformance"]),
         // Controller role: commissioning, device management
         .library(name: "MatterController", targets: ["MatterController"]),
         // Platform-agnostic transport protocol abstractions
@@ -34,7 +36,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
-        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
@@ -68,7 +70,8 @@ let package = Package(
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
-            ]
+            ],
+            resources: [.copy("Resources/Attestation")]
         ),
 
         // MARK: - Transport Abstractions
@@ -149,10 +152,11 @@ let package = Package(
             ]
         ),
 
-        // MARK: - Test Support (not a product)
+        // MARK: - Test Support
 
         // Deterministic clock, fault-injecting in-memory link and frame helpers
         // for messaging tests. Pure Swift: runs on Linux and Apple platforms.
+        // Not a product.
         .target(
             name: "MatterTestSupport",
             dependencies: [
@@ -161,7 +165,16 @@ let package = Package(
                 "MatterProtocol",
                 "MatterTransport",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
             ]
+        ),
+
+        // Store conformance suite: a library product, but link it only from
+        // test targets (it imports Testing).
+        .target(
+            name: "MatterStoreConformance",
+            dependencies: ["MatterTypes"]
         ),
 
         // MARK: - Convenience Re-export
@@ -195,21 +208,36 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterCryptoTests",
-            dependencies: ["MatterCrypto"]
+            dependencies: [
+                "MatterCrypto",
+                "MatterTypes",
+                "MatterTestSupport",
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
         ),
         .testTarget(
             name: "MatterProtocolTests",
-            dependencies: ["MatterProtocol", "MatterCrypto", "MatterTransport", "MatterTestSupport"]
+            dependencies: [
+                "MatterProtocol", "MatterCrypto", "MatterTransport", "MatterTypes", "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
         ),
         .testTarget(
             name: "MatterDeviceTests",
-            dependencies: ["MatterDevice", "MatterCrypto", "MatterProtocol", "MatterTransport", "MatterTypes", "MatterTestSupport"]
+            dependencies: [
+                "MatterDevice", "MatterCrypto", "MatterModel", "MatterProtocol", "MatterTransport",
+                "MatterTypes", "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
         ),
         .testTarget(
             name: "MatterControllerTests",
             dependencies: [
                 "MatterController", "MatterModel", "MatterCrypto", "MatterTransport",
-                "MatterProtocol", "MatterTypes", "MatterTestSupport",
+                "MatterProtocol", "MatterTypes", "MatterTestSupport", "MatterStoreConformance",
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .testTarget(
@@ -247,6 +275,9 @@ let package = Package(
                 "MatterModel",
                 "MatterTypes",
                 "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
             ]
         ),
         .testTarget(
@@ -256,6 +287,8 @@ let package = Package(
                 "MatterDevice",
                 "MatterTypes",
                 "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
             ],
             path: "Tests/ReferenceTests"
         ),

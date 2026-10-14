@@ -49,7 +49,9 @@ struct ControllerSessionTests {
             nodeID: NodeID(rawValue: 2),
             rcac: rcac,
             noc: deviceNOC,
-            operationalKey: deviceKey
+            operationalKey: deviceKey,
+            // The device holds the IPK the controller gave it at AddNOC; a fresh controller's is random.
+            ipkEpochKey: controllerManager.ipkEpochKey
         )
 
         return (controllerManager, deviceFabricInfo, rootKey)

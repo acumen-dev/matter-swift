@@ -13,7 +13,7 @@ import MatterTransport
 
 /// A point in commissioning at which a test can inject a failure.
 enum CommissioningStep: Sendable {
-    case afterArmFailSafe, afterCSR, afterAddNOC, afterACLWrite, afterCASE
+    case afterArmFailSafe, afterAttestation, afterCSR, afterAddNOC, afterACLWrite, afterCASE
 }
 
 /// High-level Matter controller that orchestrates commissioning and
@@ -109,6 +109,19 @@ public actor MatterController {
         /// host schedules it. Production code leaves the default.
         public var discoveryClock: any MRPClock
 
+        /// The roots and Certification Declaration signing keys device attestation is verified
+        /// against during commissioning. `nil` (the default) uses
+        /// `AttestationTrustStore.bundledProduction()`, the DCL production PAAs and CSA CD
+        /// signing keys bundled with MatterCrypto, loaded once when the controller is created.
+        /// Nothing refreshes it: a consumer that wants a newer store passes one here.
+        ///
+        /// The nil default reads MatterCrypto's resource bundle through `Bundle.module`, which
+        /// **traps** if the bundle is not deployed next to the executable; only a present but
+        /// damaged bundle makes the controller's init throw
+        /// ``ControllerError/attestationTrustStoreUnavailable(_:)``. Deployments without the
+        /// bundle must pass a store.
+        public var attestationTrustStore: AttestationTrustStore?
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -120,7 +133,8 @@ public actor MatterController {
             discoveryTimeout: Duration = .seconds(30),
             addressRefreshTimeout: Duration = .seconds(5),
             commissionableResolveTimeout: Duration = .seconds(5),
-            discoveryClock: any MRPClock = ContinuousClock()
+            discoveryClock: any MRPClock = ContinuousClock(),
+            attestationTrustStore: AttestationTrustStore? = nil
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -133,6 +147,7 @@ public actor MatterController {
             self.addressRefreshTimeout = addressRefreshTimeout
             self.commissionableResolveTimeout = commissionableResolveTimeout
             self.discoveryClock = discoveryClock
+            self.attestationTrustStore = attestationTrustStore
         }
     }
 
@@ -147,6 +162,7 @@ public actor MatterController {
     private let configuration: Configuration
     private let logger: Logger
     private let store: (any MatterControllerStore)?
+    private let attestationVerifier: DeviceAttestationVerifier
 
     /// The message layer: the transport's single reader, exchanges and MRP.
     /// Exposed for the Interaction Model client (subscription reports are
@@ -161,12 +177,15 @@ public actor MatterController {
     private var stopped = false
 
     /// Test seam: called at each ``CommissioningStep`` point of
-    /// ``commission(address:setupCode:mrp:)``; a thrown error fails
+    /// ``commission(address:setupCode:mrp:approvingUnverifiedDevice:)``; a thrown error fails
     /// commissioning there. Always nil in production.
     var commissioningFailureInjection: (@Sendable (CommissioningStep) throws -> Void)?
 
     /// The next node ID that would be allocated (for tests).
     var nextNodeID: UInt64 { get async { await fabricManager.nextNodeID } }
+
+    /// The fabric's IPK epoch key (for tests).
+    var ipkEpochKey: Data { fabricManager.ipkEpochKey }
 
     /// Install (or clear) the commissioning failure-injection seam.
     func setCommissioningFailureInjection(_ injection: (@Sendable (CommissioningStep) throws -> Void)?) {
@@ -187,6 +206,10 @@ public actor MatterController {
     ///   - configuration: Controller configuration.
     ///   - store: Optional controller store for persistence across restarts.
     ///   - logger: Logger instance (default: "matter.controller").
+    /// - Throws: ``ControllerError/attestationTrustStoreUnavailable(_:)`` if
+    ///   `configuration.attestationTrustStore` is nil and the bundled production store is
+    ///   damaged. If MatterCrypto's resource bundle is absent altogether, `Bundle.module` traps
+    ///   instead (see ``Configuration/attestationTrustStore``).
     public init(
         transport: any MatterUDPTransport,
         discovery: any MatterDiscovery,
@@ -201,6 +224,8 @@ public actor MatterController {
             vendorID: configuration.vendorID
         )
         self.fabricManager = fabricManager
+        self.attestationVerifier = DeviceAttestationVerifier(
+            trustStore: try Self.attestationTrustStore(configuration))
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
         self.registry = DeviceRegistry()
@@ -231,6 +256,8 @@ public actor MatterController {
     ///   - stored: Previously persisted controller state.
     ///   - store: Controller store for ongoing persistence.
     ///   - logger: Logger instance (default: "matter.controller").
+    /// - Throws: as ``init(transport:discovery:configuration:store:logger:)`` for the trust
+    ///   store; `corruptStoredState` for untrustworthy stored state.
     public init(
         transport: any MatterUDPTransport,
         discovery: any MatterDiscovery,
@@ -244,9 +271,11 @@ public actor MatterController {
             nextNodeID: stored.nextNodeID
         )
         self.fabricManager = fabricManager
+        self.attestationVerifier = DeviceAttestationVerifier(
+            trustStore: try Self.attestationTrustStore(configuration))
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
-        self.registry = DeviceRegistry(storedDevices: stored.devices)
+        self.registry = try DeviceRegistry(storedDevices: stored.devices)
         self.subscriptionClient = SubscriptionClient()
         self.messenger = Self.makeMessenger(
             transport: transport,
@@ -261,10 +290,26 @@ public actor MatterController {
         logger.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
     }
 
+    /// The configured trust store, or the bundled production store when none is configured.
+    private static func attestationTrustStore(_ configuration: Configuration) throws -> AttestationTrustStore {
+        if let configured = configuration.attestationTrustStore { return configured }
+        do {
+            return try AttestationTrustStore.bundledProduction()
+        } catch {
+            throw ControllerError.attestationTrustStoreUnavailable("the bundled production trust store did not load: \(error)")
+        }
+    }
+
     /// Load a controller from persisted state or create a fresh one.
     ///
     /// Tries to load from the store. If stored state exists, reconstructs the
-    /// controller from it. Otherwise creates a fresh controller with new certificates.
+    /// controller from it. Otherwise creates a fresh controller with new certificates
+    /// and **saves the new identity to the store before returning**; if that save fails,
+    /// `loadOrCreate` throws rather than return a controller whose identity exists nowhere.
+    ///
+    /// Callers must serialize concurrent `loadOrCreate` calls on one store: two racing calls
+    /// on an empty store would each create and save a different identity, and the last
+    /// save wins.
     ///
     /// ```swift
     /// let controller = try await MatterController.loadOrCreate(
@@ -291,14 +336,25 @@ public actor MatterController {
                 logger: logger
             )
         } else {
-            return try MatterController(
+            let controller = try MatterController(
                 transport: transport,
                 discovery: discovery,
                 configuration: configuration,
                 store: store,
                 logger: logger
             )
+            // A fresh identity (root key, random IPK) exists nowhere else: save it before
+            // anything can depend on it, rather than on the first commission.
+            try await controller.saveIdentity()
+            return controller
         }
+    }
+
+    /// Save the state and throw on failure. `loadOrCreate` uses it so a new identity that
+    /// could not be persisted is an error, not a warning.
+    private func saveIdentity() async throws {
+        guard let store else { return }
+        try await store.save(await currentState())
     }
 
     // MARK: - Discovery
@@ -580,13 +636,16 @@ public actor MatterController {
     ///   - discoveryTimeout: How long to search (default: `configuration.discoveryTimeout`).
     ///   - mrp: Overrides the advertised MRP parameters (until an address
     ///     refresh; see above).
+    ///   - approvingUnverifiedDevice: see
+    ///     ``commission(address:setupCode:mrp:approvingUnverifiedDevice:)``.
     /// - Throws: `ControllerError.invalidSetupCode` (naming the problem, never
     ///   the code); the errors of `findCommissionable` and of
-    ///   ``commission(address:setupCode:mrp:)``.
+    ///   ``commission(address:setupCode:mrp:approvingUnverifiedDevice:)``.
     public func commission(
         setupCode: String,
         discoveryTimeout: Duration? = nil,
-        mrp: MRPParameters? = nil
+        mrp: MRPParameters? = nil,
+        approvingUnverifiedDevice: Data? = nil
     ) async throws -> CommissionedDevice {
         let code: SetupCode
         do {
@@ -595,7 +654,10 @@ public actor MatterController {
             throw ControllerError.invalidSetupCode(Self.describe(error))
         }
         let found = try await findCommissionable(code, timeout: discoveryTimeout)
-        return try await commission(address: found.address, setupCode: code.passcode, mrp: mrp ?? found.mrp)
+        return try await commission(
+            address: found.address, setupCode: code.passcode, mrp: mrp ?? found.mrp,
+            approvingUnverifiedDevice: approvingUnverifiedDevice
+        )
     }
 
     /// The case name only: a payload (`malformedQRCode`) may carry the code text.
@@ -617,13 +679,28 @@ public actor MatterController {
     /// 1. PASE session establishment (PBKDFParamRequest → Pake3) on one unsecured exchange
     /// 2. ArmFailSafe
     /// 3. LocationCapability read → SetRegulatoryConfig with a location the device supports
-    /// 4. CSRRequest → generate NOC
-    /// 5. AddTrustedRootCert + AddNOC
-    /// 6. ACL write
-    /// 7. CASE session to the device on the new fabric
-    /// 8. CommissioningComplete over that CASE session
+    /// 4. Device attestation: Basic Information VendorID and ProductID reads,
+    ///    CertificateChainRequest for the DAC and the PAI, AttestationRequest, then
+    ///    verification against `configuration.attestationTrustStore` at the current time
+    /// 5. CSRRequest (its attestation signature checked against the DAC key) → generate NOC
+    /// 6. AddTrustedRootCert + AddNOC
+    /// 7. ACL write
+    /// 8. CASE session to the device on the new fabric
+    /// 9. CommissioningComplete over that CASE session
     ///
-    /// Steps 2-6 run over the PASE session, registered with the message layer
+    /// A device that fails attestation is refused with
+    /// `ControllerError.attestationFailed`, before anything is staged on it: the fail-safe is
+    /// disarmed and no node ID is consumed. To commission it anyway, retry passing the
+    /// failure's `dacFingerprint` as `approvingUnverifiedDevice`: a failure, whatever its
+    /// reason, whose fingerprint equals it exactly and which carries the DAC's public key is
+    /// approved and recorded as
+    /// ``DeviceAttestationRecord/overridden(dacFingerprint:reason:approvedAt:)``. Approval does
+    /// not skip the CSRResponse check: the CSR must be signed with that DAC key, so a device
+    /// that cannot sign with it still fails. That check re-proving key possession is the only
+    /// reason a nonce-mismatch or attestation-signature failure is approvable. A matching
+    /// approval whose DAC key cannot be read throws `attestationApprovalRefused`.
+    ///
+    /// Steps 2-7 run over the PASE session, registered with the message layer
     /// for their duration and unregistered on every exit path. The CASE
     /// session is kept: on success it is cached as the node's operational
     /// session; on failure it is unregistered.
@@ -649,11 +726,16 @@ public actor MatterController {
     ///     used for its CASE sessions until an address refresh finds the
     ///     node at a new address, when the timing from its operational TXT
     ///     replaces it (an empty operational TXT keeps it).
-    /// - Returns: The commissioned device record.
+    ///   - approvingUnverifiedDevice: the SHA-256 fingerprint of a DAC whose failed
+    ///     attestation the caller approves (from a previous `attestationFailed`); `nil`
+    ///     approves nothing.
+    /// - Returns: The commissioned device record, with its attestation record and the
+    ///   vendor and product IDs in its DAC.
     public func commission(
         address: MatterAddress,
         setupCode: UInt32,
-        mrp: MRPParameters? = nil
+        mrp: MRPParameters? = nil,
+        approvingUnverifiedDevice: Data? = nil
     ) async throws -> CommissionedDevice {
         let timeout = configuration.operationTimeout
         let address = address.canonicalised
@@ -735,7 +817,8 @@ public actor MatterController {
         let caseSession: SecureSession
         do {
             (device, caseSession) = try await commissionOverPASE(
-                session: paseSession, context: paseContext, address: address, mrp: mrp
+                session: paseSession, context: paseContext, address: address, mrp: mrp,
+                approvingUnverifiedDevice: approvingUnverifiedDevice
             )
         } catch {
             await messenger.unregisterSession(localSessionID: paseSession.localSessionID)
@@ -762,7 +845,7 @@ public actor MatterController {
         return device
     }
 
-    /// Commissioning steps 2-6 over the established PASE session, then
+    /// Commissioning steps 2-7 over the established PASE session, then
     /// CommissioningComplete over CASE on the new fabric.
     ///
     /// Once ArmFailSafe has been sent, the fail-safe counts as armed unless
@@ -782,7 +865,8 @@ public actor MatterController {
         session: SecureSession,
         context ctx3: CommissioningController.CommissioningContext,
         address: MatterAddress,
-        mrp: MRPParameters?
+        mrp: MRPParameters?,
+        approvingUnverifiedDevice: Data?
     ) async throws -> (CommissionedDevice, SecureSession) {
         var failSafeArmed = false
         var allocatedNodeID: NodeID?
@@ -792,6 +876,7 @@ public actor MatterController {
         do {
             return try await runCommissioningSteps(
                 session: session, context: ctx3, address: address, mrp: mrp,
+                approvingUnverifiedDevice: approvingUnverifiedDevice,
                 failSafeArmed: &failSafeArmed, allocatedNodeID: &allocatedNodeID,
                 completeSent: &completeSent, caseReservation: &caseReservation,
                 caseSession: &caseSession
@@ -839,6 +924,7 @@ public actor MatterController {
         context ctx3: CommissioningController.CommissioningContext,
         address: MatterAddress,
         mrp: MRPParameters?,
+        approvingUnverifiedDevice: Data?,
         failSafeArmed: inout Bool,
         allocatedNodeID: inout NodeID?,
         completeSent: inout Bool,
@@ -874,35 +960,42 @@ public actor MatterController {
         let regResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: regMsg)
         try commissioning.handleSetRegulatoryConfigResponse(response: regResp.payload)
 
-        // Step 4: CSRRequest
+        // Step 4: Device attestation. Nothing is staged on the device yet and no node ID is
+        // allocated, so a failure here only disarms the fail-safe.
+        let ctxAttested = try await attestDevice(
+            sessionID: paseSessionID, context: ctx5, approvingUnverifiedDevice: approvingUnverifiedDevice
+        )
+        try commissioningFailureInjection?(.afterAttestation)
+
+        // Step 5: CSRRequest; its attestation signature is checked against the DAC key
         let (csrMsg, csrNonce) = commissioning.buildCSRRequest()
         let csrResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: csrMsg)
         let deviceNodeID = await fabricManager.allocateNodeID()
         allocatedNodeID = deviceNodeID
         let (addRootMsg, addNOCMsg, ctx6) = try await commissioning.handleCSRResponse(
-            response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctx5
+            response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctxAttested
         )
         logger.debug("Device will be node \(deviceNodeID.rawValue)")
         try commissioningFailureInjection?(.afterCSR)
 
-        // Step 5: AddTrustedRootCert
+        // Step 6: AddTrustedRootCert
         let addRootResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addRootMsg)
         try commissioning.handleAddTrustedRootCertResponse(addRootResp.payload)
 
-        // Step 5b: AddNOC — records the fabric index the device assigned
+        // Step 6b: AddNOC — records the fabric index the device assigned
         let addNOCResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: addNOCMsg)
         var ctx7 = ctx6
         ctx7.deviceFabricIndex = try commissioning.handleNOCResponse(addNOCResp.payload)
         try commissioningFailureInjection?(.afterAddNOC)
 
-        // Step 6: ACL write
+        // Step 7: ACL write
         let aclResp = try await imRequest(
             sessionID: paseSessionID, opcode: .writeRequest, payload: commissioning.buildACLWrite()
         )
         try commissioning.handleACLWriteResponse(aclResp.payload)
         try commissioningFailureInjection?(.afterACLWrite)
 
-        // Step 7: CASE to the device on the new fabric. A real device
+        // Step 8: CASE to the device on the new fabric. A real device
         // (connectedhomeip) refuses CommissioningComplete over PASE with
         // InvalidAuthentication ("invalid security context").
         // Reserved until the session is cached (by the caller) or
@@ -918,7 +1011,7 @@ public actor MatterController {
         caseSession = established
         try commissioningFailureInjection?(.afterCASE)
 
-        // Step 8: CommissioningComplete over that CASE session
+        // Step 9: CommissioningComplete over that CASE session
         let completeMsg = commissioning.buildCommissioningComplete()
         completeSent = true
         let completeResp = try await imRequest(
@@ -930,6 +1023,78 @@ public actor MatterController {
         return (device, established)
     }
 
+
+    /// Commissioning step 4, over the PASE session: read the device's Basic Information
+    /// VendorID and ProductID, fetch its DAC and PAI, request its attestation, verify it at the
+    /// current time, and apply the result (approving a failure only for
+    /// `approvingUnverifiedDevice`).
+    ///
+    /// - Throws: `ControllerError.commissioningFailed` if Basic Information cannot be read or the
+    ///   PASE session supplied no attestation challenge;
+    ///   `attestationValidationFailed` if the CertificateChain or Attestation response is missing
+    ///   its fields, or the attestation elements exceed 900 bytes;
+    ///   `attestationFailed` if verification fails and the failure is not approved;
+    ///   `attestationApprovalRefused` if the approved failure's DAC key cannot be read.
+    ///   Interaction Model transport and status errors propagate.
+    private func attestDevice(
+        sessionID: UInt16,
+        context: CommissioningController.CommissioningContext,
+        approvingUnverifiedDevice: Data?
+    ) async throws -> CommissioningController.CommissioningContext {
+        guard let challenge = context.attestationChallenge else {
+            throw ControllerError.commissioningFailed("No attestation challenge from the PASE session")
+        }
+        let vendorResp = try await imRequest(
+            sessionID: sessionID, opcode: .readRequest,
+            payload: commissioning.buildReadBasicInformation(BasicInformationCluster.Attribute.vendorID)
+        )
+        let vendorID = try commissioning.handleBasicInformationResponse(vendorResp.payload, name: "VendorID")
+        let productResp = try await imRequest(
+            sessionID: sessionID, opcode: .readRequest,
+            payload: commissioning.buildReadBasicInformation(BasicInformationCluster.Attribute.productID)
+        )
+        let productID = try commissioning.handleBasicInformationResponse(productResp.payload, name: "ProductID")
+
+        let dacResp = try await imRequest(
+            sessionID: sessionID, opcode: .invokeRequest,
+            payload: commissioning.buildCertificateChainRequest(certificateType: 1)
+        )
+        let dac = try commissioning.handleCertificateChainResponse(dacResp.payload)
+        let paiResp = try await imRequest(
+            sessionID: sessionID, opcode: .invokeRequest,
+            payload: commissioning.buildCertificateChainRequest(certificateType: 2)
+        )
+        let pai = try commissioning.handleCertificateChainResponse(paiResp.payload)
+
+        let (attestationMsg, nonce) = commissioning.buildAttestationRequest()
+        let attestationResp = try await imRequest(sessionID: sessionID, opcode: .invokeRequest, payload: attestationMsg)
+        let (elements, signature) = try commissioning.handleAttestationResponse(attestationResp.payload)
+
+        // Wall time: certificate validity is judged against the real clock.
+        let result = await attestationVerifier.verify(
+            dac: dac, pai: pai,
+            attestationElements: elements, attestationSignature: signature,
+            attestationChallenge: challenge, sentNonce: nonce,
+            basicInformation: (vendorID, productID),
+            now: Date()
+        )
+        var reported = context
+        reported.basicInformationVendorID = vendorID
+        reported.basicInformationProductID = productID
+        let attested = try commissioning.applyAttestationResult(
+            result, approvingUnverifiedDevice: approvingUnverifiedDevice,
+            approvedAt: Date(), context: reported
+        )
+        switch attested.attestation {
+        case .verified(let paaSubject, _, _)?:
+            logger.info("Device attestation verified (PAA \(paaSubject))")
+        case .overridden(_, let reason, _)?:
+            logger.notice("Device attestation failed (\(reason.rawValue)); commissioning continues on the caller's approval of this DAC")
+        case nil:
+            break
+        }
+        return attested
+    }
 
     // MARK: - Session Management
 
@@ -1199,16 +1364,19 @@ public actor MatterController {
     /// No-op if no store was configured.
     private func saveState() async {
         guard let store else { return }
-        let state = StoredControllerState(
+        do {
+            try await store.save(await currentState())
+        } catch {
+            logger.warning("Failed to persist controller state: \(error)")
+        }
+    }
+
+    private func currentState() async -> StoredControllerState {
+        StoredControllerState(
             identity: fabricManager.toStoredIdentity(),
             devices: await registry.toStoredDevices(),
             nextNodeID: await fabricManager.nextNodeID
         )
-        do {
-            try await store.save(state)
-        } catch {
-            logger.warning("Failed to persist controller state: \(error)")
-        }
     }
 
     // MARK: - Private Helpers

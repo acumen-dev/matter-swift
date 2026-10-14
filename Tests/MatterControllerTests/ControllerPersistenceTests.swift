@@ -89,7 +89,7 @@ struct ControllerPersistenceTests {
     // MARK: - DeviceRegistry Stored-State Roundtrip
 
     @Test("DeviceRegistry export and restore roundtrip")
-    func deviceRegistryRoundtrip() async {
+    func deviceRegistryRoundtrip() async throws {
         let registry1 = DeviceRegistry()
         let device1 = CommissionedDevice(
             nodeID: NodeID(rawValue: 10),
@@ -114,7 +114,7 @@ struct ControllerPersistenceTests {
         #expect(stored.count == 2)
 
         // Restore
-        let registry2 = DeviceRegistry(storedDevices: stored)
+        let registry2 = try DeviceRegistry(storedDevices: stored)
 
         let d1 = await registry2.device(for: NodeID(rawValue: 10))
         #expect(d1 != nil)
@@ -183,7 +183,7 @@ struct ControllerPersistenceTests {
         #expect(nextNode.rawValue == 3)
 
         // Reconstruct registry from loaded state
-        let registry2 = DeviceRegistry(storedDevices: loaded!.devices)
+        let registry2 = try DeviceRegistry(storedDevices: loaded!.devices)
         let d = await registry2.device(for: nodeID)
         #expect(d?.operationalHost == "10.0.0.1")
     }

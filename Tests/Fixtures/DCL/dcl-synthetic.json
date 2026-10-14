@@ -1,0 +1,82 @@
+{
+ "note": "SYNTHETIC. Not recorded from the DCL. Hand-built entries exercising what the live DCL does not currently serve: a P-384 root, a non-self-signed certificate (the public CHIP development PAI), a NULL-parameter ECDSA algorithm (a real PAA re-encoded), a certificate that is not DER, a PAA whose subject carries a PID, a nonzero vid that disagrees with the certificate, and a listing subject containing '/' and '+' (valid certificate). Listing subjects and key identifiers are invented.",
+ "entries": [
+  {
+   "label": "p384",
+   "subject": "c3ludGhldGljLXAzODQ=",
+   "subjectKeyId": "11:22:33:44",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB3jCCAWSgAwIBAgIUGRoC1U6iOwC1DCvrjD5Ku9JYcf4wCgYIKoZIzj0EAwIw\nHjEcMBoGA1UEAwwTU3ludGhldGljIFAtMzg0IFBBQTAeFw0yNjEwMTQwNDUxMDda\nFw0zNjEwMTEwNDUxMDdaMB4xHDAaBgNVBAMME1N5bnRoZXRpYyBQLTM4NCBQQUEw\ndjAQBgcqhkjOPQIBBgUrgQQAIgNiAATDT1Os37JNN8flrwH1LTdbdDiLBsro7CXL\nFK7cfg3QnH228YnynglvyFE1wX8eUCjDD+KN8EkOsugtBlgXzl6w4BUmyY6MJGLN\nzN18zs0t+e69IgRMtg0l/8+kk0clhg6jYzBhMB0GA1UdDgQWBBTufh8/vvQ8kiaz\nN/1toqqodE4QDTAfBgNVHSMEGDAWgBTufh8/vvQ8kiazN/1toqqodE4QDTAPBgNV\nHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAgNoADBlAjEA\npY3KNDcpv/9HhjIF0UHHmYZY2udvO5TodFnsdyqJ4U8IYhqW4YAGisErtzFesTuJ\nAjAzkMUixttlc6MGitg+EYbPnMDZX2TAKP7x3vKyW4S09V++JgQBvGx3E+hg3YIS\nXiA=\n-----END CERTIFICATE-----\n",
+     "vid": 0
+    }
+   ]
+  },
+  {
+   "label": "not-self-signed",
+   "subject": "c3ludGhldGljLXBhaQ==",
+   "subjectKeyId": "11:22:33:55",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMIIByzCCAXGgAwIBAgIIVq2CIq2UW2QwCgYIKoZIzj0EAwIwMDEYMBYGA1UEAwwP\nTWF0dGVyIFRlc3QgUEFBMRQwEgYKKwYBBAGConwCAQwERkZGMTAgFw0yMjAyMDUw\nMDAwMDBaGA85OTk5MTIzMTIzNTk1OVowPTElMCMGA1UEAwwcTWF0dGVyIERldiBQ\nQUkgMHhGRkYxIG5vIFBJRDEUMBIGCisGAQQBgqJ8AgEMBEZGRjEwWTATBgcqhkjO\nPQIBBggqhkjOPQMBBwNCAARBmpMVwhc+DIyHbQPM/JRIUmR/f+xeUIL0BZko7KiU\nxZQVEwmsYx5MsDOSr2hLC6+35ls7gWLC9Sv5MbjneqqCo2YwZDASBgNVHRMBAf8E\nCDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUY1QOR/ZLHDjROISk\nYtFsGV2P+zwwHwYDVR0jBBgwFoAUav0idx9RH+y/FkGXZxDc3DGhcX4wCgYIKoZI\nzj0EAwIDSAAwRQIhALLvJ/Sa6bUPuR7qyUxNC9u415KcbLiPrOUpNo0SBUwMAiBl\nXckrhr2QmIKmxiF3uCXX0F7b58Ivn+pxIg5+pwP4kQ==\n-----END CERTIFICATE-----\n",
+     "vid": 0
+    }
+   ]
+  },
+  {
+   "label": "null-parameter",
+   "subject": "c3ludGhldGljLW51bGw=",
+   "subjectKeyId": "11:22:33:66",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB4DCCAYSgAwIBAgIUVyXsUE9uwOsz3WIzCwpjyxHpuRowDAYIKoZIzj0EAwIF\nADA5MSEwHwYDVQQDDBhMZWdyYW5kIEdyb3VwIE1hdHRlciBQQUExFDASBgorBgEE\nAYKifAIBDAQxMDIxMCAXDTIyMTAxMTE4NDMyM1oYDzIwNzkwNjA1MjM1OTU5WjA5\nMSEwHwYDVQQDDBhMZWdyYW5kIEdyb3VwIE1hdHRlciBQQUExFDASBgorBgEEAYKi\nfAIBDAQxMDIxMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3F/witVNRIxkgLWY\n7+k14S8nGJGL6W5mYwLJ0zNZnglNbPm573pPUduxOaufwEKcfPvPATd3XC7G0R9K\nhNxanKNmMGQwEgYDVR0TAQH/BAgwBgEB/wIBATAOBgNVHQ8BAf8EBAMCAQYwHwYD\nVR0jBBgwFoAUC1EHvN4NMEHWJokYyn16koZCofEwHQYDVR0OBBYEFAtRB7zeDTBB\n1iaJGMp9epKGQqHxMAwGCCqGSM49BAMCBQADSAAwRQIgF+OlZX7APkoIpn0j265t\nxBUa1esjggRnMjkGl1mfQucCIQDbpAKT5D54vABBLWQV3E5WoUQSGKHIT6MXhu3V\n0DmStA==\n-----END CERTIFICATE-----\n",
+     "vid": 0
+    }
+   ]
+  },
+  {
+   "label": "not-der",
+   "subject": "c3ludGhldGljLWdhcmJhZ2U=",
+   "subjectKeyId": "11:22:33:77",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMAMBAQA=\n-----END CERTIFICATE-----\n",
+     "vid": 0
+    }
+   ]
+  },
+  {
+   "label": "pid-in-subject",
+   "subject": "c3ludGhldGljLXBpZA==",
+   "subjectKeyId": "11:22:33:88",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB5jCCAYugAwIBAgIUC8cprAy7FxWEKwZYlIq9/KcnElkwCgYIKoZIzj0EAwIw\nTzEhMB8GA1UEAwwYU3ludGhldGljIFBBQSB3aXRoIGEgUElEMRQwEgYKKwYBBAGC\nonwCAQwERkZGMTEUMBIGCisGAQQBgqJ8AgIMBDgwMDAwHhcNMjYxMDE0MDQ1MTA3\nWhcNMzYxMDExMDQ1MTA3WjBPMSEwHwYDVQQDDBhTeW50aGV0aWMgUEFBIHdpdGgg\nYSBQSUQxFDASBgorBgEEAYKifAIBDARGRkYxMRQwEgYKKwYBBAGConwCAgwEODAw\nMDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPuB5Qut2GJtLJbZQuuCYRA2bbqa\nAFOdJLGZxL69hTmUBWkIiktSRY4i6IdMni+RFlUCX1TTdxG50tnHWSJT1nSjRTBD\nMBIGA1UdEwEB/wQIMAYBAf8CAQEwDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBT6\nwLxzsji25rcFuokhKIYcrDii3jAKBggqhkjOPQQDAgNJADBGAiEAiYle2HXql4Mo\nC5/eGRIVg/fxZ879TXJdVqUtBo2boioCIQDM9txNH/7Z6MjUXP5qZzyg6PU7dBP3\n5sGPo8m3pgwcrg==\n-----END CERTIFICATE-----\n",
+     "vid": 0
+    }
+   ]
+  },
+  {
+   "label": "vid-mismatch",
+   "subject": "c3ludGhldGljLXZpZA==",
+   "subjectKeyId": "11:22:33:99",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMIIB4zCCAYqgAwIBAgIUPqEhcfoGwW/yt/qRsBs+jf7MklswCgYIKoZIzj0EAwIw\nPTElMCMGA1UEAwwcSUtFQSBvZiBTd2VkZW4gTWF0dGVyIFBBQSBHMTEUMBIGCisG\nAQQBgqJ8AgEMBDExN0MwIBcNMjQwMjE0MTQ1ODMzWhgPMjA5OTAxMjYxNDU4MzJa\nMD0xJTAjBgNVBAMMHElLRUEgb2YgU3dlZGVuIE1hdHRlciBQQUEgRzExFDASBgor\nBgEEAYKifAIBDAQxMTdDMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6/PMOZHP\nVJqqJbBLzK6Q5+9kjTEnjCnJ6Ba9+/3kCQPRZmiZnXYHB0Z0cUYmenTFXPlGfUCp\nblSOtmL48AtPF6NmMGQwEgYDVR0TAQH/BAgwBgEB/wIBATAfBgNVHSMEGDAWgBRr\nMYz86Zkg1zKPX0NtXqMyuLddmjAdBgNVHQ4EFgQUazGM/OmZINcyj19DbV6jMri3\nXZowDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMCA0cAMEQCIETlgc4Us5SE7gPJ\nTY9W4D9Fh27DGjtosGP/l99EWrmYAiAXFqbpGtFV1FAx2GxDNa5zYssd4ZpLoewg\nrJdUrJOP/g==\n-----END CERTIFICATE-----\n",
+     "vid": 4477
+    }
+   ]
+  },
+  {
+   "label": "slash-and-plus",
+   "subject": "a+b/c+d/e==",
+   "subjectKeyId": "AB:CD:EF:01",
+   "certs": [
+    {
+     "pemCert": "-----BEGIN CERTIFICATE-----\nMIIByzCCAXGgAwIBAgIUe3w51hygpwHd6Tlxj2adk6IF5pswCgYIKoZIzj0EAwIw\nMjEaMBgGA1UEAwwRRmVpdCBFbGVjdHJpYyBQQUExFDASBgorBgEEAYKifAIBDAQx\nNDIzMCAXDTIzMDcyMTA1MzM1MFoYDzgzMjMwOTA3MDUzMzUwWjAyMRowGAYDVQQD\nDBFGZWl0IEVsZWN0cmljIFBBQTEUMBIGCisGAQQBgqJ8AgEMBDE0MjMwWTATBgcq\nhkjOPQIBBggqhkjOPQMBBwNCAAQT516150jQlChLACUsk9Y+KWG6i53J9UFXF8hS\nQeD91fdRMagNnT9fvq67FaQxw+I8ZJlhr0S6dmWcJ2mg/l+io2MwYTAPBgNVHRMB\nAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUBp6Gv3HbUvnfPOp9\n5CkMn1uZaPEwHwYDVR0jBBgwFoAUBp6Gv3HbUvnfPOp95CkMn1uZaPEwCgYIKoZI\nzj0EAwIDSAAwRQIgL85qVK45czuhx53cqICB+NUVZTnyx5n+Yxc1hjZjrt4CIQDQ\n+vG34+tSW9Yu870l08ArF9MDmh2slLXKEOlXKXZ4Ew==\n-----END CERTIFICATE-----\n",
+     "vid": 0
+    }
+   ]
+  }
+ ]
+}

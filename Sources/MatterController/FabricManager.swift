@@ -40,7 +40,8 @@ public actor FabricManager {
     /// The vendor ID for this controller.
     public nonisolated let vendorID: VendorID
 
-    /// The IPK epoch key (default: 16 bytes of zeros per Matter spec).
+    /// The IPK epoch key. A fresh identity gets 16 random bytes; a restored identity keeps
+    /// its stored key exactly, since the fabrics already commissioned depend on it.
     public nonisolated let ipkEpochKey: Data
 
     /// The root CA signing key.
@@ -61,14 +62,15 @@ public actor FabricManager {
     ///   - controllerNodeID: Node ID for this controller.
     ///   - vendorID: Vendor ID for NOC issuance.
     ///   - fabricIndex: Fabric index (default: 1).
-    ///   - ipkEpochKey: IPK epoch key (default: 16 bytes of zeros).
+    ///   - ipkEpochKey: IPK epoch key (default: 16 random bytes; an all-zero key is the
+    ///     well-known value every Matter implementation knows).
     public init(
         rootKey: P256.Signing.PrivateKey,
         fabricID: FabricID,
         controllerNodeID: NodeID,
         vendorID: VendorID,
         fabricIndex: FabricIndex = FabricIndex(rawValue: 1),
-        ipkEpochKey: Data = Data(repeating: 0, count: 16)
+        ipkEpochKey: Data = FabricManager.randomIPKEpochKey()
     ) throws {
         self.rootKey = rootKey
         self.vendorID = vendorID
@@ -102,6 +104,11 @@ public actor FabricManager {
 
         // Start allocating node IDs after the controller's own ID
         self.nextNodeIDValue = controllerNodeID.rawValue + 1
+    }
+
+    /// 16 random bytes from the system CSPRNG, for a fresh fabric's IPK epoch key.
+    public static func randomIPKEpochKey() -> Data {
+        Data(SymmetricKey(size: .bits128).withUnsafeBytes { Array($0) })
     }
 
     /// Restore a fabric manager from persisted state.

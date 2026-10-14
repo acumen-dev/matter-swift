@@ -276,7 +276,8 @@ struct LoopbackTests {
             discovery: StubDiscovery(),
             configuration: .init(
                 fabricID: FabricID(rawValue: 1),
-                rootKey: P256.Signing.PrivateKey()
+                rootKey: P256.Signing.PrivateKey(),
+                attestationTrustStore: try LinkAttestation.trustStore()
             )
         )
 
@@ -326,6 +327,7 @@ struct LoopbackTests {
     ) {
         let bridge = MatterBridge()
         bridge.addDimmableLight(name: "Test Light")
+        bridge.commissioningState.attestationCredentials = try LinkAttestation.credentials()
 
         let transport = LoopbackTransport()
         let discovery = StubDiscovery()

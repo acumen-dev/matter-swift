@@ -19,11 +19,13 @@ import MatterProtocol
 /// 1. PASE session establishment (PBKDFParamRequest → Pake3)
 /// 2. ArmFailSafe
 /// 3. LocationCapability read → SetRegulatoryConfig
-/// 4. CSRRequest → generate NOC
-/// 5. AddTrustedRootCert + AddNOC
-/// 6. ACL write (grant controller admin access)
-/// 7. CASE session to the device on the new fabric (driven by the caller)
-/// 8. CommissioningComplete, over that CASE session
+/// 4. Device attestation: Basic Information VendorID/ProductID reads,
+///    CertificateChainRequest (DAC, PAI), AttestationRequest, verification
+/// 5. CSRRequest → generate NOC
+/// 6. AddTrustedRootCert + AddNOC
+/// 7. ACL write (grant controller admin access)
+/// 8. CASE session to the device on the new fabric (driven by the caller)
+/// 9. CommissioningComplete, over that CASE session
 ///
 /// ```swift
 /// let cc = CommissioningController(fabricManager: mgr)
@@ -71,6 +73,23 @@ public struct CommissioningController: Sendable {
         /// Attestation challenge from the PASE session keys (16 bytes).
         /// Used to verify the attestation signature in the AttestationResponse.
         public var attestationChallenge: Data?
+
+        /// The DAC's public key, set once attestation has verified or its failure was
+        /// approved. The CSRResponse's attestation signature is checked against it.
+        public var dacPublicKey: P256.Signing.PublicKey?
+
+        /// The VendorID the device reports in Basic Information, which becomes the commissioned
+        /// device's `vendorID`. On a verified attestation the Certification Declaration lists
+        /// it; on the override path it is the device's unverified claim. A white-label product's
+        /// DAC may name another vendor (the OEM's); the DAC's identifiers stay in
+        /// ``attestation``.
+        public var basicInformationVendorID: UInt16?
+
+        /// The ProductID the device reports in Basic Information; as ``basicInformationVendorID``.
+        public var basicInformationProductID: UInt16?
+
+        /// How the device passed attestation.
+        public var attestation: DeviceAttestationRecord?
 
         public init() {}
     }
@@ -277,7 +296,109 @@ public struct CommissioningController: Sendable {
         }
     }
 
-    // MARK: - Step 6: CSR Request
+    // MARK: - Step 6: Device Attestation
+
+    /// Build a read of a Basic Information attribute on the root endpoint (VendorID 0x0002,
+    /// ProductID 0x0004), which attestation compares with the Certification Declaration.
+    public func buildReadBasicInformation(_ attribute: AttributeID) -> Data {
+        IMClient.readAttributeRequest(
+            endpointID: .root,
+            clusterID: BasicInformationCluster.id,
+            attributeID: attribute
+        )
+    }
+
+    /// The 16-bit value of a Basic Information VendorID or ProductID read response.
+    ///
+    /// - Parameter name: names the attribute in the error.
+    /// - Throws: `ControllerError.commissioningFailed("Basic Information <name>: …")` if the read
+    ///   failed or the value is not a 16-bit unsigned integer.
+    public func handleBasicInformationResponse(_ response: Data, name: String) throws -> UInt16 {
+        let value: TLVElement
+        do {
+            value = try IMClient.parseReadResponse(response)
+        } catch {
+            throw ControllerError.commissioningFailed("Basic Information \(name): \(error)")
+        }
+        guard let raw = value.uintValue, let narrowed = UInt16(exactly: raw) else {
+            throw ControllerError.commissioningFailed("Basic Information \(name): unexpected value \(value)")
+        }
+        return narrowed
+    }
+
+    /// The largest attestation elements or NOCSR elements a device may send: the spec's
+    /// `RESP_MAX`, 900 bytes (`kMaxResponseLength` in connectedhomeip v1.4.0.0).
+    public static let maxResponseElementsLength = 900
+
+    /// The attestation elements (tag 0) and attestation signature (tag 1) of an
+    /// `AttestationResponse`, unverified.
+    ///
+    /// Elements longer than ``maxResponseElementsLength`` are refused here, before the
+    /// verifier sees them, so the bound is a hard stop rather than an `AttestationFailure`
+    /// an approval could override.
+    ///
+    /// - Throws: `ControllerError.attestationValidationFailed` if either field is missing or the
+    ///   elements exceed ``maxResponseElementsLength``.
+    public func handleAttestationResponse(_ response: Data) throws -> (elements: Data, signature: Data) {
+        let responseElement = try IMClient.parseInvokeResponse(response)
+        guard let element = responseElement,
+              case .structure(let fields) = element,
+              let elements = fields.first(where: { $0.tag == .contextSpecific(0) })?.value.dataValue,
+              let signature = fields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue else {
+            throw ControllerError.attestationValidationFailed("AttestationResponse missing its elements or signature")
+        }
+        guard elements.count <= Self.maxResponseElementsLength else {
+            throw ControllerError.attestationValidationFailed(
+                "AttestationResponse elements are \(elements.count) bytes, over the \(Self.maxResponseElementsLength)-byte limit")
+        }
+        return (elements, signature)
+    }
+
+    /// Apply the verifier's result.
+    ///
+    /// A verified attestation is recorded as such. A failure is approved iff its
+    /// `dacFingerprint` is non-nil and equals `approvingUnverifiedDevice` exactly, and the
+    /// failure carries the DAC's public key; whatever the reason, as connectedhomeip lets its
+    /// delegate continue on any attestation failure (CHIPDeviceController.cpp:1301-1340,
+    /// v1.4.0.0). It is then recorded as overridden at `approvedAt`, and commissioning carries
+    /// on with that key: the CSRResponse must still be signed with it, which re-proves the
+    /// device holds the DAC's private key. That re-proof is why a nonce-mismatch or
+    /// attestation-signature failure can be approved at all.
+    ///
+    /// `result` must be the one `DeviceAttestationVerifier.verify` returned for the DAC, PAI and
+    /// attestation elements this session received: the binding of an approval to a DAC key, and
+    /// of the CSRResponse check to that key, is only as good as that provenance.
+    ///
+    /// - Throws: `ControllerError.attestationFailed` with the verifier's failure when nothing
+    ///   approves it; `ControllerError.attestationApprovalRefused` when the approval names this
+    ///   DAC but the failure carries no readable key to bind it to.
+    public func applyAttestationResult(
+        _ result: AttestationResult,
+        approvingUnverifiedDevice approval: Data?,
+        approvedAt: Date,
+        context: CommissioningContext
+    ) throws -> CommissioningContext {
+        var ctx = context
+        switch result {
+        case .verified(let verified):
+            ctx.dacPublicKey = verified.dacPublicKey
+            ctx.attestation = .verified(
+                paaSubject: verified.paaSubject, vendorID: verified.vendorID, productID: verified.productID)
+        case .failed(let failure):
+            guard let fingerprint = failure.dacFingerprint, let approval, approval == fingerprint else {
+                throw ControllerError.attestationFailed(failure)
+            }
+            guard let key = failure.dacPublicKey else {
+                throw ControllerError.attestationApprovalRefused(
+                    failure, "the DAC's public key cannot be read, so the device cannot be bound to it")
+            }
+            ctx.dacPublicKey = key
+            ctx.attestation = .overridden(dacFingerprint: fingerprint, reason: failure.reason, approvedAt: approvedAt)
+        }
+        return ctx
+    }
+
+    // MARK: - Step 7: CSR Request
 
     /// Build a CSRRequest invoke request.
     ///
@@ -304,8 +425,12 @@ public struct CommissioningController: Sendable {
     /// - Tag 1: NOCSR (the CSR itself, DER-encoded PKCS#10)
     /// - Tag 2: CSRNonce (echo of our nonce)
     ///
-    /// The echoed CSRNonce must equal `expectedNonce`, and the CSR's self-signature
-    /// must verify; the device key is read from its SubjectPublicKeyInfo.
+    /// The NOCSRElements must be at most ``maxResponseElementsLength`` bytes and decode as TLV.
+    /// The echoed CSRNonce must equal `expectedNonce`, the attestation signature over
+    /// `nocsrElements || attestationChallenge` must verify with `context.dacPublicKey` (set by
+    /// ``applyAttestationResult(_:approvingUnverifiedDevice:approvedAt:context:)``, on the
+    /// approval path too), and the CSR's self-signature must verify; the device key is read
+    /// from its SubjectPublicKeyInfo.
     ///
     /// - Parameters:
     ///   - deviceNodeID: The operational node ID the caller allocated for the
@@ -325,9 +450,17 @@ public struct CommissioningController: Sendable {
         }
 
         let csrResp = try OperationalCredentialsCluster.CSRResponse.fromTLVElement(element)
+        guard csrResp.nocsrElements.count <= Self.maxResponseElementsLength else {
+            throw ControllerError.invalidCSRResponse
+        }
 
         // Parse the NOCSRElements to extract the CSR
-        let (_, nocsrElement) = try TLVDecoder.decode(csrResp.nocsrElements)
+        let nocsrElement: TLVElement
+        do {
+            (_, nocsrElement) = try TLVDecoder.decode(csrResp.nocsrElements)
+        } catch {
+            throw ControllerError.invalidCSRResponse
+        }
         guard case .structure(let nocsrFields) = nocsrElement,
               let csrData = nocsrFields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue else {
             throw ControllerError.invalidCSRResponse
@@ -336,6 +469,16 @@ public struct CommissioningController: Sendable {
         guard let echoedNonce = nocsrFields.first(where: { $0.tag == .contextSpecific(2) })?.value.dataValue,
               echoedNonce == expectedNonce else {
             throw ControllerError.commissioningFailed("CSR nonce mismatch")
+        }
+
+        guard let dacPublicKey = context.dacPublicKey, let challenge = context.attestationChallenge else {
+            throw ControllerError.commissioningFailed("CSR attestation signature cannot be checked: no DAC key or attestation challenge")
+        }
+        guard DeviceAttestationVerifier.verifyNOCSRSignature(
+            nocsrElements: csrResp.nocsrElements, signature: csrResp.attestationSignature,
+            attestationChallenge: challenge, dacPublicKey: dacPublicKey
+        ) else {
+            throw ControllerError.commissioningFailed("CSR attestation signature invalid")
         }
 
         let publicKey: P256.Signing.PublicKey
@@ -393,7 +536,7 @@ public struct CommissioningController: Sendable {
         return (addRootCertMessage, addNOCMessage, ctx)
     }
 
-    // MARK: - Step 6b: Handle AddTrustedRootCert Response
+    // MARK: - Step 7b: Handle AddTrustedRootCert Response
 
     /// Check the AddTrustedRootCert response (a bare status).
     public func handleAddTrustedRootCertResponse(_ data: Data) throws {
@@ -404,7 +547,7 @@ public struct CommissioningController: Sendable {
         }
     }
 
-    // MARK: - Step 7: Handle NOC Response + ACL Write
+    // MARK: - Step 8: Handle NOC Response + ACL Write
 
     /// Check the AddNOC response and return the fabric index the device
     /// assigned (not the controller's own index).
@@ -467,7 +610,7 @@ public struct CommissioningController: Sendable {
         )
     }
 
-    // MARK: - Step 8: CommissioningComplete
+    // MARK: - Step 9: CommissioningComplete
 
     /// Build the CommissioningComplete invoke request.
     public func buildCommissioningComplete() -> Data {
@@ -478,7 +621,10 @@ public struct CommissioningController: Sendable {
         )
     }
 
-    /// Validate the CommissioningComplete response and produce a CommissionedDevice.
+    /// Validate the CommissioningComplete response and produce a CommissionedDevice, whose
+    /// vendor and product IDs are the context's Basic Information ones
+    /// (``CommissioningContext/basicInformationVendorID``) and whose attestation record is the
+    /// context's.
     public func handleCommissioningComplete(
         response: Data,
         context: CommissioningContext
@@ -501,16 +647,17 @@ public struct CommissioningController: Sendable {
         guard let fabricIndex = context.deviceFabricIndex else {
             throw ControllerError.commissioningFailed("No device fabric index recorded")
         }
-        let vendorID = fabricManager.vendorID
 
         return CommissionedDevice(
             nodeID: deviceNodeID,
             fabricIndex: fabricIndex,
-            vendorID: vendorID
+            vendorID: context.basicInformationVendorID.map(VendorID.init(rawValue:)),
+            productID: context.basicInformationProductID.map(ProductID.init(rawValue:)),
+            attestation: context.attestation
         )
     }
 
-    // MARK: - Attestation Validation
+    // MARK: - Attestation Requests
 
     /// Build a `CertificateChainRequest` invoke to retrieve the DAC from the device.
     ///
@@ -558,95 +705,5 @@ public struct CommissioningController: Sendable {
         }
 
         return certData
-    }
-
-    /// Validate an `AttestationResponse` against the sent nonce and PASE session attestation challenge.
-    ///
-    /// Performs:
-    /// 1. Parses `attestationElements` TLV — verifies the echoed nonce matches `sentNonce`.
-    /// 2. Verifies `attestationSignature` using the DAC public key:
-    ///    `ECDSA-SHA256(dacPublicKey, attestationElements || attestationChallenge)`.
-    ///
-    /// - Parameters:
-    ///   - response: TLV-encoded InvokeResponse containing the AttestationResponse.
-    ///   - sentNonce: The 32-byte nonce originally sent in the AttestationRequest.
-    ///   - attestationChallenge: 16-byte challenge from the PASE session keys.
-    ///   - dacPublicKey: The device's DAC public key (P-256) retrieved via CertificateChainRequest.
-    /// - Throws: `ControllerError.attestationValidationFailed` if any check fails.
-    public func validateAttestationResponse(
-        response: Data,
-        sentNonce: Data,
-        attestationChallenge: Data,
-        dacPublicKey: P256.Signing.PublicKey
-    ) throws {
-        let responseElement = try IMClient.parseInvokeResponse(response)
-
-        guard let element = responseElement,
-              case .structure(let fields) = element else {
-            throw ControllerError.attestationValidationFailed("AttestationResponse: missing or invalid response element")
-        }
-
-        // Field 0: attestationElements (octet string containing TLV)
-        guard let attestationElementsData = fields.first(where: { $0.tag == .contextSpecific(0) })?.value.dataValue else {
-            throw ControllerError.attestationValidationFailed("AttestationResponse: missing attestationElements (tag 0)")
-        }
-
-        // Field 1: attestationSignature (DER-encoded ECDSA signature, 64 bytes raw)
-        guard let sigData = fields.first(where: { $0.tag == .contextSpecific(1) })?.value.dataValue else {
-            throw ControllerError.attestationValidationFailed("AttestationResponse: missing attestationSignature (tag 1)")
-        }
-
-        // Decode attestationElements TLV and verify nonce echo (tag 2)
-        let (_, elementsElement) = try TLVDecoder.decode(attestationElementsData)
-        guard case .structure(let elemFields) = elementsElement else {
-            throw ControllerError.attestationValidationFailed("AttestationElements: expected TLV structure")
-        }
-
-        guard let echoedNonce = elemFields.first(where: { $0.tag == .contextSpecific(2) })?.value.dataValue else {
-            throw ControllerError.attestationValidationFailed("AttestationElements: missing nonce echo (tag 2)")
-        }
-
-        guard echoedNonce == sentNonce else {
-            throw ControllerError.attestationValidationFailed("AttestationElements: nonce mismatch — echoed nonce does not match sent nonce")
-        }
-
-        // Verify attestation signature: ECDSA-SHA256(dacKey, attestationElements || attestationChallenge)
-        // Per Matter spec §11.17.6.3 the signature is a 64-byte raw r‖s encoding.
-        // Accept both raw (64 bytes) and DER (variable) for compatibility.
-        let messageToVerify = attestationElementsData + attestationChallenge
-
-        do {
-            let sig: P256.Signing.ECDSASignature
-            if sigData.count == 64 {
-                sig = try P256.Signing.ECDSASignature(rawRepresentation: sigData)
-            } else {
-                sig = try P256.Signing.ECDSASignature(derRepresentation: sigData)
-            }
-            guard dacPublicKey.isValidSignature(sig, for: messageToVerify) else {
-                throw ControllerError.attestationValidationFailed("AttestationResponse: signature verification failed")
-            }
-        } catch let error as ControllerError {
-            throw error
-        } catch {
-            throw ControllerError.attestationValidationFailed("AttestationResponse: failed to parse signature — \(error)")
-        }
-    }
-
-    /// Extract the P-256 public key from a DER-encoded X.509 certificate.
-    ///
-    /// Searches for the uncompressed point marker (0x04) followed by 64 bytes
-    /// in the SubjectPublicKeyInfo structure of the certificate.
-    public func extractPublicKeyFromCertificate(_ derCert: Data) throws -> P256.Signing.PublicKey {
-        for i in 0..<derCert.count {
-            if derCert[derCert.startIndex + i] == 0x04 && i + 64 < derCert.count {
-                let pubKeyData = derCert[(derCert.startIndex + i)..<(derCert.startIndex + i + 65)]
-                do {
-                    return try P256.Signing.PublicKey(x963Representation: pubKeyData)
-                } catch {
-                    continue
-                }
-            }
-        }
-        throw ControllerError.attestationValidationFailed("Could not extract P-256 public key from DER certificate")
     }
 }

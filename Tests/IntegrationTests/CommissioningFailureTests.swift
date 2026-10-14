@@ -18,14 +18,14 @@ struct CommissioningFailureTests {
 
     struct InjectedFailure: Error {}
 
-    @Test("A failure after ArmFailSafe / CSR / AddNOC / the ACL write / CASE disarms the device, commits no fabric, and frees the node ID",
-          arguments: [CommissioningStep.afterArmFailSafe, .afterCSR, .afterAddNOC, .afterACLWrite, .afterCASE])
+    @Test("A failure after ArmFailSafe / attestation / CSR / AddNOC / the ACL write / CASE disarms the device, commits no fabric, and frees the node ID",
+          arguments: [CommissioningStep.afterArmFailSafe, .afterAttestation, .afterCSR, .afterAddNOC, .afterACLWrite, .afterCASE])
     fileprivate func failureDisarms(step: CommissioningStep) async throws {
         let link = FaultInjectingLink(seed: 21)
         let bridge = MatterBridge()
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
         let discovery = RecordingDiscovery()
-        let server = Self.makeServer(bridge: bridge, link: link, discovery: discovery)
+        let server = try Self.makeServer(bridge: bridge, link: link, discovery: discovery)
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: 10)
 
@@ -76,7 +76,7 @@ struct CommissioningFailureTests {
         let link = FaultInjectingLink(seed: 22)
         let bridge = MatterBridge()
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
-        let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
+        let server = try Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
         let state = bridge.commissioningState
@@ -109,13 +109,16 @@ struct CommissioningFailureTests {
         let link = FaultInjectingLink(seed: 23)
         let bridge = MatterBridge()
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
-        let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
+        let server = try Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
         let store = InMemoryControllerStore()
         let controller = try MatterController(
             transport: link.a,
             discovery: FaultyLinkDiscovery(),
-            configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: handshakeRetransmissions)),
+            configuration: .init(
+                fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: handshakeRetransmissions),
+                attestationTrustStore: try LinkAttestation.trustStore()
+            ),
             store: store
         )
         let state = bridge.commissioningState
@@ -146,7 +149,7 @@ struct CommissioningFailureTests {
         let link = FaultInjectingLink(seed: 24)
         let bridge = MatterBridge()
         _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
-        let server = Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
+        let server = try Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
         let state = bridge.commissioningState
@@ -181,8 +184,9 @@ struct CommissioningFailureTests {
 
     private static func makeServer(
         bridge: MatterBridge, link: FaultInjectingLink, discovery: some MatterDiscovery
-    ) -> MatterDeviceServer {
-        MatterDeviceServer(
+    ) throws -> MatterDeviceServer {
+        bridge.commissioningState.attestationCredentials = try LinkAttestation.credentials()
+        return MatterDeviceServer(
             bridge: bridge,
             transport: link.b,
             discovery: discovery,

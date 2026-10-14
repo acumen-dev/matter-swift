@@ -3,6 +3,7 @@
 
 import Foundation
 import MatterTypes
+import MatterCrypto
 
 /// Errors specific to the Matter controller module.
 public enum ControllerError: Error, Sendable, Equatable {
@@ -18,6 +19,12 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// Certificate chain validation failed.
     case chainValidationFailed
 
+    // MARK: - Persistence
+
+    /// Stored controller state is present but cannot be trusted (for example an unknown
+    /// attestation override reason). The state is not loaded.
+    case corruptStoredState(String)
+
     // MARK: - Commissioning
 
     /// PASE handshake failed.
@@ -32,8 +39,25 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// CSR response could not be parsed.
     case invalidCSRResponse
 
-    /// Device attestation validation failed (nonce mismatch, invalid signature, etc.).
+    /// A device attestation exchange could not be completed (for example a
+    /// CertificateChainResponse without a certificate).
     case attestationValidationFailed(String)
+
+    /// The device failed attestation. Nothing was committed on the device: its fail-safe was
+    /// disarmed and no node ID was consumed. A retry passing the failure's `dacFingerprint` as
+    /// `approvingUnverifiedDevice` commissions that device anyway, whatever the reason,
+    /// provided the failure carries the DAC's public key. The CSRResponse must then still be
+    /// signed with that key; this re-proof of key possession is the only reason a
+    /// nonce-mismatch or attestation-signature failure is approvable.
+    case attestationFailed(AttestationFailure)
+
+    /// The approval named this device's DAC, but it cannot be honoured (the message says why:
+    /// for example, the DAC's public key cannot be read, so nothing could bind the device to
+    /// it). Nothing was committed on the device, as for ``attestationFailed(_:)``.
+    case attestationApprovalRefused(AttestationFailure, String)
+
+    /// The attestation trust store could not be loaded when the controller was created.
+    case attestationTrustStoreUnavailable(String)
 
     // MARK: - Operational
 

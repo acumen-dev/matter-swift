@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+# refresh-trust-store
+# Copyright 2026 Monagle Pty Ltd
+#
+# Regenerate Sources/MatterCrypto/Resources/Attestation from public data:
+#   * every PAA the main-net DCL publishes, through the same REST endpoints that
+#     connectedhomeip v1.4.0.0 credentials/fetch_paa_certs_from_dcl.py uses
+#     (https://on.dcl.csa-iot.org/dcl/pki/root-certificates, then
+#      /dcl/pki/certificates/<subject>/<subjectKeyId>);
+#   * the CSA production CD signing certificates from connectedhomeip v1.4.0.0
+#     (the set Tests/Fixtures/Attestation/cd holds).
+#
+# A DCL certificate is kept only if it passes the rules the runtime applies:
+# AttestationTrustStore admission (self-signed P-256 CA with a SubjectKeyIdentifier) and
+# MatterAttestationPolicy.profileViolation(role: .paa). Anything else is left out and listed in
+# manifest.json under "excluded". The Swift BundledTrustStoreTests are the authority: if one
+# finds a bundled PAA that fails, fix this filter, not the test.
+#
+# DCLTrustStoreFetcher also excludes a certificate whose subject VID differs from its DCL
+# record's nonzero `vid`, or whose record `vid` is not 16-bit. Those are metadata rules about
+# the DCL record, not chain rules, and this script deliberately does not apply them. Nor does
+# it check that a subject VID is well formed: everyBundledPAAConforms runs assessPAA on every
+# bundled file, so a malformed VID fails that test before a release.
+#
+# Only public certificates are handled; file names derive from SKI and SHA-256 alone.
+# Standard library plus the openssl command line tool. Tests never run this.
+#
+# Usage: ./Tools/Attestation/refresh-trust-store
+
+import base64
+import datetime
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.parse
+import urllib.request
+
+DCL = "https://on.dcl.csa-iot.org"
+CHIP_VERSION = "v1.4.0.0"
+CHIP_COMMIT = "43aa98c2d30ee547c6b587b9de7bbb794f175ece"
+CHIP_RAW = "https://raw.githubusercontent.com/project-chip/connectedhomeip/" + CHIP_COMMIT
+CD_PATHS = ["credentials/development/cd-certs/CSA_Matter_CD_Signing_Key_00%d.cert.der" % n for n in range(1, 6)]
+# The CSA CD-signing CA is published as a DCL root but is not a PAA (upstream skips it too).
+CD_CA_SUBJECT = "MFIxDDAKBgNVBAoMA0NTQTEsMCoGA1UEAwwjTWF0dGVyIENlcnRpZmljYXRpb24gYW5kIFRlc3RpbmcgQ0ExFDASBgorBgEEAYKifAIBDARDNUEw"
+CD_CA_SKI = "97:E4:69:D0:C5:04:14:C2:6F:C7:01:F7:7E:94:77:39:09:8D:F6:A5"
+
+OID_ECDSA_SHA256 = "2a8648ce3d040302"
+OID_EC_PUBLIC_KEY = "2a8648ce3d0201"
+OID_P256 = "2a8648ce3d030107"
+OID_BASIC_CONSTRAINTS = "551d13"
+OID_KEY_USAGE = "551d0f"
+OID_SKI = "551d0e"
+OID_AKI = "551d23"
+# MatterAttestationPolicy.handledCriticalExtensions: basicConstraints, keyUsage,
+# extendedKeyUsage, subjectAlternativeName, certificatePolicies.
+HANDLED_CRITICAL = {OID_BASIC_CONSTRAINTS, OID_KEY_USAGE, "551d25", "551d11", "551d20"}
+OID_MATTER_PID = bytes.fromhex("2b0601040182a27c0202")
+
+PACKAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+OUT = os.path.join(PACKAGE_ROOT, "Sources", "MatterCrypto", "Resources", "Attestation")
+
+
+# MARK: - DER
+
+def tlv(data, pos=0):
+    """Returns (tag, value start, value end) of the element at pos."""
+    tag = data[pos]
+    length = data[pos + 1]
+    pos += 2
+    if length & 0x80:
+        count = length & 0x7F
+        length = int.from_bytes(data[pos:pos + count], "big")
+        pos += count
+    if pos + length > len(data):
+        raise ValueError("truncated DER")
+    return tag, pos, pos + length
+
+
+def children(data, start, end):
+    out = []
+    pos = start
+    while pos < end:
+        tag, s, e = tlv(data, pos)
+        out.append((tag, pos, s, e))
+        pos = e
+    return out
+
+
+def parse_certificate(der):
+    """Returns the fields the profile check needs, or raises."""
+    tag, s, e = tlv(der)
+    if tag != 0x30 or e != len(der):
+        raise ValueError("not a certificate")
+    top = children(der, s, e)
+    tbs, sigalg, sigbits = top[0], top[1], top[2]
+    fields = children(der, tbs[2], tbs[3])
+    idx = 0
+    version = 1
+    if fields[0][0] == 0xA0:
+        inner = children(der, fields[0][2], fields[0][3])
+        version = der[inner[0][2]] + 1
+        idx = 1
+    issuer = der[fields[idx + 2][1]:fields[idx + 2][3]]
+    subject = der[fields[idx + 4][1]:fields[idx + 4][3]]
+    spki = fields[idx + 5]
+    exts = []
+    for f in fields[idx + 6:]:
+        if f[0] == 0xA3:
+            seq = children(der, f[2], f[3])[0]
+            for ext in children(der, seq[2], seq[3]):
+                parts = children(der, ext[2], ext[3])
+                oid = der[parts[0][2]:parts[0][3]].hex()
+                critical = False
+                rest = parts[1:]
+                if rest[0][0] == 0x01:
+                    critical = der[rest[0][2]] != 0
+                    rest = rest[1:]
+                exts.append((oid, critical, der[rest[0][2]:rest[0][3]]))
+    spki_parts = children(der, spki[2], spki[3])
+    alg = children(der, spki_parts[0][2], spki_parts[0][3])
+    key_alg = der[alg[0][2]:alg[0][3]].hex()
+    curve = der[alg[1][2]:alg[1][3]].hex() if len(alg) > 1 and alg[1][0] == 0x06 else None
+    point = der[spki_parts[1][2] + 1:spki_parts[1][3]]
+    sig_alg_parts = children(der, sigalg[2], sigalg[3])
+    inner_alg = children(der, fields[idx + 1][2], fields[idx + 1][3])
+    return {
+        "sig_alg_has_parameters": len(sig_alg_parts) > 1 or len(inner_alg) > 1,
+        "version": version,
+        "issuer": issuer, "subject": subject,
+        "tbs": der[tbs[1]:tbs[3]],
+        "sig_alg": der[sig_alg_parts[0][2]:sig_alg_parts[0][3]].hex(),
+        "signature": der[sigbits[2] + 1:sigbits[3]],
+        "key_alg": key_alg, "curve": curve, "point": point,
+        "spki": der[spki[1]:spki[3]],
+        "extensions": exts,
+    }
+
+
+def dotted_oid(hex_oid):
+    """The dotted form of a DER OID body given as hex, as swift-certificates prints it."""
+    body = bytes.fromhex(hex_oid)
+    arcs, value = [], 0
+    for byte in body:
+        value = (value << 7) | (byte & 0x7F)
+        if not byte & 0x80:
+            arcs.append(value)
+            value = 0
+    first = min(arcs[0] // 40, 2)
+    return ".".join(str(n) for n in [first, arcs[0] - 40 * first] + arcs[1:])
+
+
+def ext_values(cert, oid):
+    return [(c, v) for (o, c, v) in cert["extensions"] if o == oid]
+
+
+def key_id(value, aki):
+    """The 20-byte key identifier of an SKI / AKI extension value, or None."""
+    try:
+        if aki:
+            seq = tlv(value)
+            for tag, _, s, e in children(value, seq[1], seq[2]):
+                if tag == 0x80:
+                    return value[s:e]
+            return None
+        tag, s, e = tlv(value)
+        return value[s:e] if tag == 0x04 else None
+    except (ValueError, IndexError):
+        return None
+
+
+def self_signature_valid(cert):
+    with tempfile.TemporaryDirectory() as tmp:
+        spki = os.path.join(tmp, "spki.der")
+        tbs = os.path.join(tmp, "tbs.bin")
+        sig = os.path.join(tmp, "sig.bin")
+        for path, data in ((spki, cert["spki"]), (tbs, cert["tbs"]), (sig, cert["signature"])):
+            with open(path, "wb") as f:
+                f.write(data)
+        result = subprocess.run(
+            ["openssl", "dgst", "-sha256", "-verify", spki, "-keyform", "DER", "-signature", sig, tbs],
+            capture_output=True)
+        return result.returncode == 0
+
+
+# MARK: - Rules (mirror AttestationTrustStore.validatePAA and MatterAttestationPolicy.profileViolation)
+
+def exclusion_reason(der):
+    """None if the certificate would load and conform as a PAA, otherwise why not."""
+    try:
+        cert = parse_certificate(der)
+    except (ValueError, IndexError):
+        return "does not parse as a certificate"
+    # swift-certificates rejects an ECDSA AlgorithmIdentifier that carries a NULL parameter
+    # (RFC 5758 requires it be absent), so the runtime store cannot load such a certificate.
+    if cert["sig_alg_has_parameters"]:
+        return "does not parse: the ECDSA signature algorithm carries parameters (RFC 5758 forbids them)"
+    # Admission.
+    if cert["key_alg"] != OID_EC_PUBLIC_KEY or cert["curve"] != OID_P256 or len(cert["point"]) != 65 \
+            or cert["point"][0] != 4:
+        return "does not have a P-256 key"
+    bc = ext_values(cert, OID_BASIC_CONSTRAINTS)
+    is_ca = False
+    path_len = None
+    if len(bc) == 1:
+        try:
+            tag, s, e = tlv(bc[0][1])
+            items = children(bc[0][1], s, e)
+            if items and items[0][0] == 0x01:
+                is_ca = bc[0][1][items[0][2]] != 0
+                rest = items[1:]
+                if rest and rest[0][0] == 0x02:
+                    path_len = int.from_bytes(bc[0][1][rest[0][2]:rest[0][3]], "big")
+        except (ValueError, IndexError):
+            return "basicConstraints is invalid"
+    if cert["issuer"] != cert["subject"] or not is_ca or not self_signature_valid(cert):
+        return "is not a self-signed CA"
+    skis = ext_values(cert, OID_SKI)
+    if not skis or not key_id(skis[0][1], False):
+        return "has no subjectKeyIdentifier"
+    # Profile, role .paa.
+    if cert["version"] != 3:
+        return "is not X.509 v3"
+    if cert["sig_alg"] != OID_ECDSA_SHA256:
+        return "is not signed with ecdsa-with-SHA256"
+    for oid in (OID_BASIC_CONSTRAINTS, OID_KEY_USAGE, OID_SKI, OID_AKI):
+        if len(ext_values(cert, oid)) > 1:
+            return "repeats an extension"
+    for oid, critical, _ in cert["extensions"]:
+        if critical and oid not in HANDLED_CRITICAL:
+            return "carries an unhandled critical extension %s" % dotted_oid(oid)
+    if not bc[0][0]:
+        return "basicConstraints is not critical or repeats"
+    if path_len not in (None, 1):
+        return "basicConstraints pathLength is wrong for a PAA"
+    ku = ext_values(cert, OID_KEY_USAGE)
+    if not ku:
+        return "has no keyUsage"
+    if not ku[0][0]:
+        return "keyUsage is not critical or repeats"
+    try:
+        tag, s, e = tlv(ku[0][1])
+        unused = ku[0][1][s]
+        bits = ku[0][1][s + 1:e]
+        value = int.from_bytes(bits.ljust(2, b"\0")[:2], "big")
+        # Bit 0 is the most significant bit of the first byte (digitalSignature).
+        mask = lambda n: (value >> (15 - n)) & 1
+        key_cert_sign, crl_sign = mask(5), mask(6)
+        others = any(mask(n) for n in (1, 2, 3, 4, 7, 8))
+    except (ValueError, IndexError):
+        return "keyUsage is invalid"
+    if not (key_cert_sign and crl_sign) or others:
+        return "keyUsage is not keyCertSign and cRLSign"
+    if skis[0][0] or len(key_id(skis[0][1], False)) != 20:
+        return "subjectKeyIdentifier is critical or not 20 bytes"
+    # Runtime rule (MatterAttestationPolicy): a PAA's subject carries no PID, either as the Matter
+    # attribute or as an "Mpid:" common-name tag. This byte search is deliberately a superset.
+    if OID_MATTER_PID in cert["subject"] or b"Mpid:" in cert["subject"]:
+        return "carries a PID"
+    akis = ext_values(cert, OID_AKI)
+    if akis and (akis[0][0] or key_id(akis[0][1], True) is None or len(key_id(akis[0][1], True)) != 20):
+        return "authorityKeyIdentifier is critical or not 20 bytes"
+    return None
+
+
+def subject_ski(der):
+    cert = parse_certificate(der)
+    return key_id(ext_values(cert, OID_SKI)[0][1], False)
+
+
+# MARK: - Network
+
+def get(url):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        return response.read()
+
+
+def get_json(url):
+    return json.loads(get(url))
+
+
+def pem_to_der(pem):
+    lines = [l.strip() for l in pem.strip().splitlines() if l.strip() and not l.startswith("-----")]
+    return base64.b64decode("".join(lines))
+
+
+def subject_text(der):
+    result = subprocess.run(["openssl", "x509", "-inform", "DER", "-noout", "-subject", "-nameopt", "RFC2253"],
+                            input=der, capture_output=True)
+    return result.stdout.decode("utf-8", "replace").strip().removeprefix("subject=").strip() or "(unreadable)"
+
+
+def file_name(der):
+    digest = hashlib.sha256(der).hexdigest()
+    try:
+        ski = subject_ski(der).hex().upper()
+    except (ValueError, IndexError, AttributeError):
+        ski = "NOSKI"
+    return "%s-%s.der" % (ski, digest[:16]), digest
+
+
+# MARK: - Main
+
+def main():
+    for tool in ("openssl",):
+        if shutil.which(tool) is None:
+            sys.exit("error: %s is required" % tool)
+
+    listing = get_json(DCL + "/dcl/pki/root-certificates")["approvedRootCertificates"]["certs"]
+    paas, excluded = {}, []
+    for root in listing:
+        if root["subject"] == CD_CA_SUBJECT and root["subjectKeyId"] == CD_CA_SKI:
+            continue
+        url = "%s/dcl/pki/certificates/%s/%s" % (
+            DCL, urllib.parse.quote(root["subject"], safe=""), urllib.parse.quote(root["subjectKeyId"], safe=""))
+        for entry in get_json(url)["approvedCertificates"]["certs"]:
+            der = pem_to_der(entry["pemCert"])
+            reason = exclusion_reason(der)
+            name, digest = file_name(der)
+            if reason is None:
+                paas[digest] = (name, der)
+            else:
+                excluded.append({"subject": subject_text(der), "sha256": digest, "reason": reason})
+
+    cds = {}
+    for path in CD_PATHS:
+        der = get("%s/%s" % (CHIP_RAW, path))
+        name, digest = file_name(der)
+        cds[digest] = (name, der)
+
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    # Staged beside OUT so the swap is a same-volume rename.
+    staging = tempfile.mkdtemp(prefix=".attestation-staging-", dir=os.path.dirname(OUT))
+    aside = None
+    try:
+        manifest = {
+            "snapshotDate": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+            "dclEndpoint": DCL + "/dcl/pki/root-certificates",
+            "connectedhomeipVersion": CHIP_VERSION,
+            "paa": [], "cd": [],
+            "excluded": sorted(excluded, key=lambda e: e["sha256"]),
+        }
+        for directory, items, key in (("paa", paas, "paa"), ("cd", cds, "cd")):
+            os.makedirs(os.path.join(staging, directory))
+            for digest, (name, der) in sorted(items.items(), key=lambda kv: kv[1][0]):
+                with open(os.path.join(staging, directory, name), "wb") as f:
+                    f.write(der)
+                manifest[key].append({"file": "%s/%s" % (directory, name), "sha256": digest})
+        with open(os.path.join(staging, "manifest.json"), "w") as f:
+            json.dump(manifest, f, indent=2, sort_keys=False)
+            f.write("\n")
+        os.chmod(staging, 0o755)
+        if os.path.exists(OUT):
+            aside = OUT + ".old-%d" % os.getpid()
+            os.replace(OUT, aside)
+        os.replace(staging, OUT)
+        if aside:
+            shutil.rmtree(aside, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    print("snapshot %s: %d PAAs, %d CD signing certificates, %d excluded"
+          % (manifest["snapshotDate"], len(manifest["paa"]), len(manifest["cd"]), len(excluded)))
+    for item in manifest["excluded"]:
+        print("  excluded %s: %s" % (item["subject"], item["reason"]))
+
+
+if __name__ == "__main__":
+    main()

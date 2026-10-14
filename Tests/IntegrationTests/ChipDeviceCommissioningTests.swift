@@ -14,6 +14,7 @@ import MatterTypes
 import MatterModel
 import MatterProtocol
 import MatterTransport
+import MatterTestSupport
 @testable import MatterController
 
 // MARK: - ChipDeviceCommissioningTests
@@ -264,7 +265,10 @@ struct ChipDeviceCommissioningTests {
             controller = try MatterController(
                 transport: transport,
                 discovery: StubDiscovery(),
-                configuration: .init(fabricID: FabricID(rawValue: 1), rootKey: P256.Signing.PrivateKey(), mrp: Self.controllerMRP)
+                configuration: .init(
+                    fabricID: FabricID(rawValue: 1), rootKey: P256.Signing.PrivateKey(), mrp: Self.controllerMRP,
+                    attestationTrustStore: try TestAttestation.chipDevelopmentTrustStore()
+                )
             )
         } catch {
             await transport.close()
