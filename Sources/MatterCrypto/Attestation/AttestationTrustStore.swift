@@ -43,7 +43,7 @@ public struct CDSigningKey: Sendable, Hashable {
         } catch {
             throw AttestationTrustStoreError.notACertificate(label)
         }
-        guard let ski = try? certificate.extensions.subjectKeyIdentifier else {
+        guard let ski = try? certificate.extensions.subjectKeyIdentifier, !ski.keyIdentifier.isEmpty else {
             throw AttestationTrustStoreError.missingSubjectKeyIdentifier(label)
         }
         guard let key = P256.Signing.PublicKey(certificate.publicKey) else {
@@ -76,6 +76,12 @@ public enum AttestationTrustStoreError: Error, Sendable, Equatable {
     case missingSubjectKeyIdentifier(String)
     /// The bundled trust data could not be read (Task 5).
     case bundleCorrupt(String)
+    /// A directory swap was interrupted and restoring the previous store failed; the message
+    /// names where the previous store now is.
+    case recoveryFailed(String)
+    /// The new store is in place, but the set-aside previous store at the named path could not
+    /// be removed.
+    case setAsideNotRemoved(String)
 }
 
 // MARK: - AttestationTrustStore
@@ -93,35 +99,55 @@ public struct AttestationTrustStore: Sendable {
 
     public let provenance: TrustStoreProvenance
 
-    /// Builds a store from DER-encoded PAAs, validating each.
+    /// Builds a store from DER-encoded PAAs, validating each. Byte-identical certificates
+    /// collapse to one; distinct certificates sharing a SubjectKeyIdentifier are all kept.
     public init(paas: [Data], cdSigningKeys: [CDSigningKey], provenance: TrustStoreProvenance) throws {
-        let certificates = try paas.enumerated().map { index, der in
-            try Self.parseDER(der, label: String(index))
+        var loaded: [Certificate] = []
+        for (index, der) in paas.enumerated() {
+            loaded.append(try Self.parseDER(der, label: String(index)))
         }
-        self.paas = certificates
+        self.paas = try Self.deduplicated(loaded)
         self.cdSigningKeys = cdSigningKeys
         self.provenance = provenance
     }
 
     /// Loads every `*.der` and `*.pem` in `directory` as a PAA (the chip-tool
-    /// `--paa-trust-store-path` layout), in file-name order. Other files are ignored.
+    /// `--paa-trust-store-path` layout), in file-name order. Other files are ignored, and a
+    /// certificate present as both `.der` and `.pem` loads once.
+    ///
+    /// Loading is strict: one invalid or unreadable `.der` or `.pem` makes the whole directory
+    /// unloadable, naming the file. chip-tool skips such files; this deliberately does not.
+    ///
+    /// If an interrupted ``write(to:)`` left the directory absent with exactly one
+    /// `<directory>.old-*` sibling, that previous store is restored first.
     ///
     /// `cdSigningKeys` has no default until the bundled CSA keys exist (Task 5).
     public init(directory: URL, cdSigningKeys: [CDSigningKey], provenance: TrustStoreProvenance? = nil) throws {
+        try self.init(
+            directory: directory, cdSigningKeys: cdSigningKeys, provenance: provenance,
+            fileOps: FoundationAttestationFileOps())
+    }
+
+    init(
+        directory: URL, cdSigningKeys: [CDSigningKey], provenance: TrustStoreProvenance?,
+        fileOps: any AttestationFileOps
+    ) throws {
+        try Self.recoverStrandedStore(at: directory, fileOps: fileOps)
         let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
-        var certificates: [Certificate] = []
+        var loaded: [Certificate] = []
         for name in names {
             let lowered = name.lowercased()
             let isDER = lowered.hasSuffix(".der")
             guard isDER || lowered.hasSuffix(".pem") else { continue }
-            let data = try Data(contentsOf: directory.appendingPathComponent(name))
-            if isDER {
-                certificates.append(try Self.parseDER(data, label: name))
-            } else {
-                certificates.append(try Self.parsePEM(data, label: name))
+            let data: Data
+            do {
+                data = try Data(contentsOf: directory.appendingPathComponent(name))
+            } catch {
+                throw AttestationTrustStoreError.notACertificate(name)
             }
+            loaded.append(isDER ? try Self.parseDER(data, label: name) : try Self.parsePEM(data, label: name))
         }
-        self.paas = certificates
+        self.paas = try Self.deduplicated(loaded)
         self.cdSigningKeys = cdSigningKeys
         self.provenance = provenance ?? TrustStoreProvenance(source: "directory")
     }
@@ -151,15 +177,16 @@ public struct AttestationTrustStore: Sendable {
         return try validatePAA(certificate, label: label)
     }
 
+    /// Key type is checked before the signature so a non-P-256 root reports `unsupportedKey`.
     private static func validatePAA(_ certificate: Certificate, label: String) throws -> Certificate {
+        guard P256.Signing.PublicKey(certificate.publicKey) != nil else {
+            throw AttestationTrustStoreError.unsupportedKey(label)
+        }
         guard certificate.issuer == certificate.subject,
               certificate.publicKey.isValidSignature(certificate.signature, for: certificate),
               case .isCertificateAuthority? = try? certificate.extensions.basicConstraints
         else {
             throw AttestationTrustStoreError.notASelfSignedCA(label)
-        }
-        guard P256.Signing.PublicKey(certificate.publicKey) != nil else {
-            throw AttestationTrustStoreError.unsupportedKey(label)
         }
         guard let ski = try? certificate.extensions.subjectKeyIdentifier, !ski.keyIdentifier.isEmpty else {
             throw AttestationTrustStoreError.missingSubjectKeyIdentifier(label)
@@ -167,18 +194,41 @@ public struct AttestationTrustStore: Sendable {
         return certificate
     }
 
+    private static func derBytes(_ certificate: Certificate) throws -> [UInt8] {
+        var serializer = DER.Serializer()
+        try serializer.serialize(certificate)
+        return serializer.serializedBytes
+    }
+
+    /// Collapses byte-identical certificates, keeping first-seen order.
+    private static func deduplicated(_ certificates: [Certificate]) throws -> [Certificate] {
+        var seen = Set<[UInt8]>()
+        var result: [Certificate] = []
+        for certificate in certificates where seen.insert(try derBytes(certificate)).inserted {
+            result.append(certificate)
+        }
+        return result
+    }
+
     // MARK: - Writing
 
     /// Replaces the directory's contents without ever exposing a mix of old and new files.
     ///
-    /// Each PAA is written as `<SKI hex>.der` into a sibling `<directory>.tmp-<uuid>`. If
+    /// Each PAA is written as `<SKI hex>-<first 8 bytes of SHA-256 hex>.der` into a sibling
+    /// `<directory>.tmp-<uuid>`, so certificates sharing a key identifier coexist. If
     /// `directory` already exists it is renamed aside (`<directory>.old-<uuid>`), the new
     /// directory is renamed into place, and the old one is removed. A failure at any step
     /// removes the temporary directory and restores the original, so a reader observes the old
     /// contents or the new, never a blend. Directory replacement uses two POSIX renames rather
     /// than `FileManager.replaceItemAt`, whose behaviour for directories differs between
-    /// Darwin and swift-corelibs-foundation; there is a brief window between the renames in
-    /// which `directory` does not exist.
+    /// Darwin and swift-corelibs-foundation.
+    ///
+    /// Between the renames `directory` does not exist. A crash there strands the previous store
+    /// as `<directory>.old-*`; the next ``init(directory:cdSigningKeys:provenance:)`` or
+    /// `write(to:)` restores it when it is the only such sibling. If that restore fails,
+    /// ``AttestationTrustStoreError/recoveryFailed(_:)`` names where the previous store is.
+    /// If the new store is in place but the set-aside copy cannot be removed,
+    /// ``AttestationTrustStoreError/setAsideNotRemoved(_:)`` is thrown with its path.
     ///
     /// Only the PAAs are persisted. CD signing keys and provenance belong to the consumer.
     public func write(to directory: URL) throws {
@@ -186,6 +236,7 @@ public struct AttestationTrustStore: Sendable {
     }
 
     func write(to directory: URL, fileOps: any AttestationFileOps) throws {
+        try Self.recoverStrandedStore(at: directory, fileOps: fileOps)
         let parent = directory.deletingLastPathComponent()
         let name = directory.lastPathComponent
         let token = UUID().uuidString
@@ -195,10 +246,10 @@ public struct AttestationTrustStore: Sendable {
         do {
             try fileOps.createDirectory(at: staging)
             for certificate in paas {
-                var serializer = DER.Serializer()
-                try serializer.serialize(certificate)
-                let ski = try Self.hex(certificate.extensions.subjectKeyIdentifier?.keyIdentifier ?? [])
-                try fileOps.write(Data(serializer.serializedBytes), to: staging.appendingPathComponent("\(ski).der"))
+                let der = try Self.derBytes(certificate)
+                let ski = Self.hex(try certificate.extensions.subjectKeyIdentifier?.keyIdentifier ?? [])
+                let digest = Self.hex(SHA256.hash(data: der).prefix(8))
+                try fileOps.write(Data(der), to: staging.appendingPathComponent("\(ski)-\(digest).der"))
             }
         } catch {
             try? fileOps.removeItem(at: staging)
@@ -219,7 +270,31 @@ public struct AttestationTrustStore: Sendable {
             try? fileOps.removeItem(at: staging)
             throw error
         }
-        if hadExisting { try? fileOps.removeItem(at: aside) }
+        if hadExisting {
+            do {
+                try fileOps.removeItem(at: aside)
+            } catch {
+                throw AttestationTrustStoreError.setAsideNotRemoved(aside.path)
+            }
+        }
+    }
+
+    /// Restores a store stranded by an interrupted swap: `directory` absent and exactly one
+    /// `<directory>.old-*` sibling.
+    private static func recoverStrandedStore(at directory: URL, fileOps: any AttestationFileOps) throws {
+        guard !fileOps.fileExists(at: directory) else { return }
+        let parent = directory.deletingLastPathComponent()
+        let prefix = directory.lastPathComponent + ".old-"
+        guard let siblings = try? fileOps.contentsOfDirectory(at: parent) else { return }
+        let stranded = siblings.filter { $0.hasPrefix(prefix) }
+        guard stranded.count == 1, let name = stranded.first else { return }
+        let source = parent.appendingPathComponent(name, isDirectory: true)
+        do {
+            try fileOps.moveItem(at: source, to: directory)
+        } catch {
+            throw AttestationTrustStoreError.recoveryFailed(
+                "previous store remains at \(source.path); restoring it to \(directory.path) failed: \(error)")
+        }
     }
 
     private static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
@@ -228,41 +303,64 @@ public struct AttestationTrustStore: Sendable {
 
     // MARK: - Diff
 
-    /// What changed going from `other` (old) to `self` (new), keyed by SubjectKeyIdentifier.
+    /// What changed going from `other` (old) to `self` (new).
+    ///
+    /// Certificates are identified by SubjectKeyIdentifier and SHA-256 of their DER, so a store
+    /// may hold several certificates for one key identifier. `added` and `removed` list
+    /// individual certificates; `changed` lists, once per key identifier present on both sides,
+    /// the new side's certificate when the two certificate sets differ.
     public func diff(from other: AttestationTrustStore) -> TrustStoreDiff {
         let newIndex = Self.index(paas)
         let oldIndex = Self.index(other.paas)
+        let newKeys = Set(newIndex.map(\.identity))
+        let oldKeys = Set(oldIndex.map(\.identity))
 
         var result = TrustStoreDiff()
-        for (ski, entry) in newIndex.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
-            if let previous = oldIndex[ski] {
-                if previous.der != entry.der { result.changed.append(entry.entry) }
-            } else {
-                result.added.append(entry.entry)
+        for item in newIndex where !oldKeys.contains(item.identity) { result.added.append(item.entry) }
+        for item in oldIndex where !newKeys.contains(item.identity) { result.removed.append(item.entry) }
+
+        let newSKIs = Set(newIndex.map(\.identity.ski))
+        let oldSKIs = Set(oldIndex.map(\.identity.ski))
+        for ski in newSKIs.intersection(oldSKIs).sorted(by: { $0.lexicographicallyPrecedes($1) }) {
+            let newSet = Set(newIndex.filter { $0.identity.ski == ski }.map(\.identity))
+            let oldSet = Set(oldIndex.filter { $0.identity.ski == ski }.map(\.identity))
+            if newSet != oldSet, let item = newIndex.first(where: { $0.identity.ski == ski }) {
+                result.changed.append(item.entry)
             }
-        }
-        for (ski, entry) in oldIndex.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) where newIndex[ski] == nil {
-            result.removed.append(entry.entry)
         }
         return result
     }
 
-    private static func index(_ certificates: [Certificate]) -> [Data: (der: [UInt8], entry: TrustStoreDiff.Entry)] {
-        var index: [Data: (der: [UInt8], entry: TrustStoreDiff.Entry)] = [:]
+    private struct Identity: Hashable {
+        let ski: Data
+        let digest: Data
+    }
+
+    private struct IndexedCertificate {
+        let identity: Identity
+        let entry: TrustStoreDiff.Entry
+    }
+
+    /// Entries sorted by (SKI, digest) for stable output.
+    private static func index(_ certificates: [Certificate]) -> [IndexedCertificate] {
+        var items: [IndexedCertificate] = []
         for certificate in certificates {
-            guard let ski = try? certificate.extensions.subjectKeyIdentifier else { continue }
-            var serializer = DER.Serializer()
-            guard (try? serializer.serialize(certificate)) != nil else { continue }
+            guard let ski = try? certificate.extensions.subjectKeyIdentifier,
+                  let der = try? derBytes(certificate)
+            else { continue }
             let identifier = Data(ski.keyIdentifier)
-            index[identifier] = (
-                serializer.serializedBytes,
-                TrustStoreDiff.Entry(
+            items.append(IndexedCertificate(
+                identity: Identity(ski: identifier, digest: Data(SHA256.hash(data: der))),
+                entry: TrustStoreDiff.Entry(
                     subject: String(describing: certificate.subject),
-                    vendorID: MatterCertificateAttributes.vendorID(in: certificate.subject),
-                    subjectKeyIdentifier: identifier)
-            )
+                    vendorID: (try? MatterCertificateAttributes.identifiers(in: certificate.subject))?.vendorID,
+                    subjectKeyIdentifier: identifier)))
         }
-        return index
+        return items.sorted {
+            $0.identity.ski == $1.identity.ski
+                ? $0.identity.digest.lexicographicallyPrecedes($1.identity.digest)
+                : $0.identity.ski.lexicographicallyPrecedes($1.identity.ski)
+        }
     }
 }
 
@@ -273,6 +371,7 @@ protocol AttestationFileOps: Sendable {
     func createDirectory(at url: URL) throws
     func write(_ data: Data, to url: URL) throws
     func fileExists(at url: URL) -> Bool
+    func contentsOfDirectory(at url: URL) throws -> [String]
     func moveItem(at source: URL, to destination: URL) throws
     func removeItem(at url: URL) throws
 }
@@ -284,6 +383,9 @@ struct FoundationAttestationFileOps: AttestationFileOps {
     }
     func write(_ data: Data, to url: URL) throws { try data.write(to: url, options: .atomic) }
     func fileExists(at url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+    func contentsOfDirectory(at url: URL) throws -> [String] {
+        try FileManager.default.contentsOfDirectory(atPath: url.path)
+    }
     func moveItem(at source: URL, to destination: URL) throws {
         try FileManager.default.moveItem(at: source, to: destination)
     }

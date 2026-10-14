@@ -9,9 +9,16 @@ import X509
 
 /// Reads the Matter vendor and product identifiers from a certificate's distinguished name.
 ///
-/// Matter carries them as dedicated subject attributes (a 4-hex-digit UTF8String under
-/// 1.3.6.1.4.1.37244.2.1 and .2.2). The specification also allows a legacy form inside the
-/// common name, for example `Mvid:FFF1 Mpid:8000`. Both are read; the dedicated attribute wins.
+/// The semantics follow connectedhomeip (`ExtractVIDPIDFromX509Cert` and
+/// `Find16BitUpperCaseHexAfterPrefix`):
+///
+/// - Matter carries the ids as dedicated subject attributes, a UTF8String of exactly four
+///   uppercase hex digits under 1.3.6.1.4.1.37244.2.1 (VID) and .2.2 (PID).
+/// - If any Matter attribute is present, the common name is ignored for both ids.
+/// - Otherwise the legacy form is read from the common name: the substring `Mvid:` or
+///   `Mpid:` anywhere, followed by exactly four uppercase hex digits; anything may follow.
+/// - A malformed value, a prefix without four uppercase hex digits after it, or a repeated
+///   attribute makes the name invalid, which is distinct from the ids being absent.
 enum MatterCertificateAttributes {
 
     /// Matter vendor ID subject attribute.
@@ -20,48 +27,72 @@ enum MatterCertificateAttributes {
     /// Matter product ID subject attribute.
     static let productIDOID: ASN1ObjectIdentifier = [1, 3, 6, 1, 4, 1, 37244, 2, 2]
 
-    static func vendorID(in name: DistinguishedName) -> UInt16? {
-        identifier(in: name, oid: vendorIDOID, legacyPrefix: "Mvid:")
+    /// Why a distinguished name's Matter identifiers are invalid.
+    enum Failure: Error, Equatable {
+        case malformedValue(String)
+        case duplicate(String)
     }
 
-    static func productID(in name: DistinguishedName) -> UInt16? {
-        identifier(in: name, oid: productIDOID, legacyPrefix: "Mpid:")
+    /// The VID and PID carried by `name`; `nil` for an id that is absent. Throws when an id is
+    /// present but malformed or repeated.
+    static func identifiers(in name: DistinguishedName) throws -> (vendorID: UInt16?, productID: UInt16?) {
+        var vendorID: UInt16?
+        var productID: UInt16?
+        var sawMatterAttribute = false
+
+        for rdn in name {
+            for attribute in rdn {
+                if attribute.type == vendorIDOID {
+                    sawMatterAttribute = true
+                    guard vendorID == nil else { throw Failure.duplicate("VID") }
+                    vendorID = try exactHex16(attribute.value, what: "VID")
+                } else if attribute.type == productIDOID {
+                    sawMatterAttribute = true
+                    guard productID == nil else { throw Failure.duplicate("PID") }
+                    productID = try exactHex16(attribute.value, what: "PID")
+                }
+            }
+        }
+        if sawMatterAttribute { return (vendorID, productID) }
+
+        for rdn in name {
+            for attribute in rdn where attribute.type == .RDNAttributeType.commonName {
+                guard let text = String(attribute.value) else { continue }
+                if let value = try hexAfterPrefix("Mvid:", in: text, what: "VID") {
+                    guard vendorID == nil else { throw Failure.duplicate("VID") }
+                    vendorID = value
+                }
+                if let value = try hexAfterPrefix("Mpid:", in: text, what: "PID") {
+                    guard productID == nil else { throw Failure.duplicate("PID") }
+                    productID = value
+                }
+            }
+        }
+        return (vendorID, productID)
     }
 
     // MARK: - Parsing
 
-    private static func identifier(
-        in name: DistinguishedName, oid: ASN1ObjectIdentifier, legacyPrefix: String
-    ) -> UInt16? {
-        for rdn in name {
-            for attribute in rdn where attribute.type == oid {
-                if let text = String(attribute.value), let value = parseHex16(text) {
-                    return value
-                }
-            }
+    private static func exactHex16(_ value: RelativeDistinguishedName.Attribute.Value, what: String) throws -> UInt16 {
+        guard let text = String(value), let parsed = parseHex16(Substring(text)), text.utf8.count == 4 else {
+            throw Failure.malformedValue(what)
         }
-        for rdn in name {
-            for attribute in rdn where attribute.type == .RDNAttributeType.commonName {
-                guard let text = String(attribute.value) else { continue }
-                for token in text.split(whereSeparator: { $0 == " " || $0 == "," }) where token.hasPrefix(legacyPrefix) {
-                    if let value = parseHex16(String(token.dropFirst(legacyPrefix.count))) {
-                        return value
-                    }
-                }
-            }
-        }
-        return nil
+        return parsed
     }
 
-    /// Exactly four uppercase hex digits, as Matter requires.
-    private static func parseHex16(_ text: String) -> UInt16? {
-        guard text.utf8.count == 4, text.utf8.allSatisfy({ $0.isASCIIHexDigit }) else { return nil }
+    /// Finds `prefix` (the first occurrence) and requires four uppercase hex digits after it.
+    private static func hexAfterPrefix(_ prefix: String, in text: String, what: String) throws -> UInt16? {
+        guard let range = text.range(of: prefix) else { return nil }
+        let rest = text[range.upperBound...]
+        guard rest.utf8.count >= 4, let parsed = parseHex16(rest.prefix(4)) else {
+            throw Failure.malformedValue(what)
+        }
+        return parsed
+    }
+
+    private static func parseHex16(_ text: Substring) -> UInt16? {
+        guard text.utf8.count == 4, text.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x46) })
+        else { return nil }
         return UInt16(text, radix: 16)
-    }
-}
-
-private extension UInt8 {
-    var isASCIIHexDigit: Bool {
-        (0x30...0x39).contains(self) || (0x41...0x46).contains(self)
     }
 }
