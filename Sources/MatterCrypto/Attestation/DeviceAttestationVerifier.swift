@@ -9,7 +9,8 @@ import X509
 // MARK: - DeviceAttestationVerifier
 
 /// Verifies a Matter device's attestation: the DAC → PAI → PAA chain against a trust store,
-/// the VID/PID rules, the echoed nonce, and the DAC's signature over the attestation elements.
+/// the VID/PID rules, the echoed nonce, the DAC's signature over the attestation elements, and
+/// the Certification Declaration.
 ///
 /// The chain is validated with swift-certificates' `Verifier`, which checks each issuer's
 /// signature, under ``MatterAttestationPolicy`` alone (profile, VID/PID and connectedhomeip's
@@ -24,18 +25,16 @@ public struct DeviceAttestationVerifier: Sendable {
 
     /// Verifies an attestation.
     ///
-    /// The Certification Declaration inside the attestation elements is not yet checked.
-    ///
     /// - Parameter basicInformation: the VendorID and ProductID the device reports in its Basic
-    ///   Information cluster. connectedhomeip compares them only with the Certification
-    ///   Declaration (CD vendor_id == VID, PID in product_id_array), never with the DAC: a CD
-    ///   with dac_origin fields legitimately names a DAC vendor other than the product's. They
-    ///   are therefore consumed by the CD check and not compared with the DAC here.
+    ///   Information cluster. As in connectedhomeip, they are compared only with the
+    ///   Certification Declaration (CD vendor_id == VID, PID in product_id_array), never with
+    ///   the DAC: a CD with dac_origin fields legitimately names a DAC vendor other than the
+    ///   product's.
     public func verify(
         dac: Data, pai: Data,
         attestationElements: Data, attestationSignature: Data,
         attestationChallenge: Data, sentNonce: Data,
-        basicInformation: (vendorID: UInt16, productID: UInt16)? = nil,
+        basicInformation: (vendorID: UInt16, productID: UInt16),
         now: Date
     ) async -> AttestationResult {
         // 1. Parse.
@@ -84,7 +83,13 @@ public struct DeviceAttestationVerifier: Sendable {
             return Self.failed(.attestationSignatureInvalid, fingerprint, "the attestation signature does not verify with the DAC key")
         }
 
-        // 6. The Certification Declaration (and with it `basicInformation`) is not checked yet.
+        // 6. Certification Declaration.
+        if let (reason, detail) = checkCertificationDeclaration(
+            elements.certificationDeclaration, basicInformation: basicInformation,
+            dacVendorID: vendorID, dacProductID: productID, pai: paiCertificate, paa: paa
+        ) {
+            return Self.failed(reason, fingerprint, detail)
+        }
 
         return .verified(VerifiedAttestation(
             vendorID: vendorID, productID: productID,
@@ -100,6 +105,87 @@ public struct DeviceAttestationVerifier: Sendable {
         dacPublicKey: P256.Signing.PublicKey
     ) -> Bool {
         isValidSignature(signature, over: nocsrElements + attestationChallenge, by: dacPublicKey)
+    }
+
+    // MARK: - Certification Declaration
+
+    /// The CD's signature, then connectedhomeip v1.4.0.0
+    /// `DefaultDACVerifier::ValidateCertificateDeclarationPayload` rule for rule (line numbers
+    /// in src/credentials/attestation_verifier/DefaultDeviceAttestationVerifier.cpp). Upstream's
+    /// vendor-ID, product-ID and authorized-PAA failures all give `.cdVidPidNotListed`. `nil`
+    /// when the CD passes.
+    ///
+    /// Upstream also refuses the test CD signing key unless test keys are enabled (:477-480);
+    /// here the trust store alone decides which CD signing keys are trusted.
+    private func checkCertificationDeclaration(
+        _ cmsDER: Data, basicInformation: (vendorID: UInt16, productID: UInt16),
+        dacVendorID: UInt16, dacProductID: UInt16, pai: Certificate, paa: Certificate
+    ) -> (AttestationFailureReason, String)? {
+        let cd: CertificationDeclaration
+        do {
+            cd = try CertificationDeclaration(cmsDER: cmsDER)
+        } catch {
+            return (.malformed, "the Certification Declaration is malformed: \(error)")
+        }
+        switch cd.verifySignature(cmsDER: cmsDER, keys: trustStore.cdSigningKeys) {
+        case .valid:
+            break
+        case .unknownSigningKey:
+            return (.cdUnknownSigningKey, "the trust store has no CD signing key with the CD signer's key identifier")
+        case .invalidSignature:
+            return (.cdSignatureInvalid, "the Certification Declaration signature does not verify")
+        }
+
+        // :505 (kAttestationElementsMalformed). security_level, security_information and
+        // version_number are not interpreted by commissioners (:502-503).
+        guard cd.formatVersion == 1, cd.certificationType < 3 else {
+            return (.malformed, "the CD has format_version \(cd.formatVersion) or certification_type \(cd.certificationType)")
+        }
+        // :512 and :517: the Basic Information VID and PID.
+        guard cd.vendorID == basicInformation.vendorID else {
+            return (.cdVidPidNotListed, "the CD vendor_id is not the Basic Information VendorID")
+        }
+        guard cd.productIDs.contains(basicInformation.productID) else {
+            return (.cdVidPidNotListed, "the CD product_id_array does not list the Basic Information ProductID")
+        }
+
+        // The PAI's ids; the chain stage has already required a valid PAI VID. A PAI PID of 0
+        // counts as absent, as upstream's `paiProductId != 0`.
+        guard let paiIDs = try? MatterCertificateAttributes.identifiers(in: pai.subject),
+              let paiVendorID = paiIDs.vendorID
+        else {
+            return (.malformed, "the PAI's VID could not be read")
+        }
+        let paiProductID = paiIDs.productID ?? 0
+
+        if let originVendorID = cd.dacOriginVendorID, let originProductID = cd.dacOriginProductID {
+            // :524-539
+            guard dacVendorID == originVendorID, paiVendorID == originVendorID else {
+                return (.cdVidPidNotListed, "the DAC or PAI VID is not the CD dac_origin_vendor_id")
+            }
+            guard dacProductID == originProductID, paiProductID == 0 || paiProductID == originProductID else {
+                return (.cdVidPidNotListed, "the DAC or PAI PID is not the CD dac_origin_product_id")
+            }
+        } else {
+            // :545-560
+            guard dacVendorID == cd.vendorID, paiVendorID == cd.vendorID else {
+                return (.cdVidPidNotListed, "the DAC or PAI VID is not the CD vendor_id")
+            }
+            guard cd.productIDs.contains(dacProductID),
+                  paiProductID == 0 || cd.productIDs.contains(paiProductID)
+            else {
+                return (.cdVidPidNotListed, "the CD product_id_array does not list the DAC or PAI PID")
+            }
+        }
+
+        // :563-568 (kCertificationDeclarationInvalidPAA).
+        if let authorizedPAAs = cd.authorizedPAAs {
+            let paaSKI = MatterAttestationPolicy.subjectKeyID(of: paa).map { Data($0) }
+            guard let paaSKI, authorizedPAAs.contains(paaSKI) else {
+                return (.cdVidPidNotListed, "the CD authorized_paa_list does not include the PAA's subject key identifier")
+            }
+        }
+        return nil
     }
 
     // MARK: - Helpers

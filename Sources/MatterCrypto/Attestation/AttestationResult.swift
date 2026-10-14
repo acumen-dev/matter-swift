@@ -20,14 +20,17 @@ public enum AttestationFailureReason: String, Sendable, Codable, CaseIterable {
     case cdSignatureInvalid
     /// The Certification Declaration is signed by a key the trust store does not hold.
     case cdUnknownSigningKey
-    /// The Certification Declaration does not list the device's VID/PID.
+    /// The Certification Declaration does not authorise this device: it does not list the
+    /// Basic Information VID/PID, the DAC and PAI VID/PID (or its DAC origin names others), or
+    /// its authorized PAA list omits the PAA.
     case cdVidPidNotListed
     /// The attestation elements are not signed by the DAC key.
     case attestationSignatureInvalid
     /// The attestation elements do not echo the nonce the commissioner sent.
     case nonceMismatch
-    /// A certificate or the attestation elements could not be parsed, or a certificate breaks
-    /// the Matter attestation certificate profile.
+    /// A certificate, the attestation elements or the Certification Declaration could not be
+    /// parsed, a certificate breaks the Matter attestation certificate profile, or the CD has an
+    /// unsupported format version or certification type.
     case malformed
 }
 

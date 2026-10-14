@@ -79,6 +79,7 @@ copy "$A/Matter-Development-DAC-FFF1-8000-Cert.der" dev/Matter-Development-DAC-F
 copy "$A/Matter-Development-DAC-FFF1-8000-Key.der" dev/Matter-Development-DAC-FFF1-8000-Key.der
 copy "$A/Matter-Development-PAI-FFF1-noPID-Cert.der" dev/Matter-Development-PAI-FFF1-noPID-Cert.der
 copy credentials/development/paa-root-certs/Chip-Test-PAA-FFF1-Cert.der dev/Chip-Test-PAA-FFF1-Cert.der
+copy credentials/development/paa-root-certs/Chip-Test-PAA-NoVID-Cert.der dev/Chip-Test-PAA-NoVID-Cert.der
 
 copy credentials/development/commissioner_dut/struct_dac_cert_version_v3/cd.der cd/Test-CD-FFF1-8000.der
 copy credentials/development/cd-certs/Chip-Test-CD-Cert.der cd/Chip-Test-CD-Cert.der
@@ -162,6 +163,9 @@ Regenerate with \`Tools/Attestation/fetch-chip-fixtures.sh\`; do not edit by han
   example apps (the script checks this). The PAA is \`Chip-Test-PAA-FFF1-Cert.der\` from
   \`paa-root-certs/\`; \`credentials/development/attestation/Chip-Development-PAA-Cert.der\`
   is a different PAA and does not issue the FFF1 PAI.
+- \`dev/Chip-Test-PAA-NoVID-Cert.der\`: a test PAA without a VID. It issues the PAI of the
+  commissioner DUT vector \`struct_cd_origin_pid_vid_correct\` (VID 0xFFF2), whose CD names a
+  DAC origin other than the product's VID.
 - \`cd/Test-CD-FFF1-8000.der\`: VID 0xFFF1, PID 0x8000, signed by the "Matter Test CD
   Signing Authority" (\`cd/Chip-Test-CD-Cert.der\`, key \`cd/Chip-Test-CD-Signing-Key.pem\`).
   Taken from the commissioner DUT success case \`struct_dac_cert_version_v3\`.

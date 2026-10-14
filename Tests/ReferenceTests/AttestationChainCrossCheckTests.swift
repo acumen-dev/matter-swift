@@ -27,7 +27,12 @@ struct AttestationChainCrossCheckTests {
     ]
 
     /// Whether `verify` accepted the DAC → PAI → PAA chain.
-    private static func chainVerdict(dac: Data, pai: Data, key: Data, cd: Data, store: AttestationTrustStore) async -> (Bool, String) {
+    ///
+    /// Every case presents the test CD (FFF1/8000, signed by the test CD key, which `store`
+    /// holds) instead of its own, so a CD the verifier rejects as malformed cannot be mistaken
+    /// for a chain failure; a vector for another VID/PID then fails after the chain stage.
+    private static func chainVerdict(dac: Data, pai: Data, key: Data, store: AttestationTrustStore) async -> (Bool, String) {
+        let cd = (try? AttestationFixtures.testCD) ?? Data()
         let elements = TLVEncoder.encode(.structure([
             .init(tag: .contextSpecific(1), value: .octetString(cd)),
             .init(tag: .contextSpecific(2), value: .octetString(nonce)),
@@ -38,7 +43,8 @@ struct AttestationChainCrossCheckTests {
         let result = await DeviceAttestationVerifier(trustStore: store).verify(
             dac: dac, pai: pai,
             attestationElements: elements, attestationSignature: signature,
-            attestationChallenge: challenge, sentNonce: nonce, now: Date()
+            attestationChallenge: challenge, sentNonce: nonce,
+            basicInformation: (vendorID: 0xFFF1, productID: 0x8000), now: Date()
         )
         switch result {
         case .verified:
@@ -55,24 +61,24 @@ struct AttestationChainCrossCheckTests {
             return
         }
         let paa = try AttestationFixtures.testPAA
+        let cdKey = try CDSigningKey(certificateDER: AttestationFixtures.testCDSigningCert)
         let store = try AttestationTrustStore(
-            paas: [paa], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit")
+            paas: [paa], cdSigningKeys: [cdKey], provenance: TrustStoreProvenance(source: "explicit")
         )
 
-        var cases: [(name: String, dac: Data, pai: Data, key: Data, cd: Data)] = [(
+        var cases: [(name: String, dac: Data, pai: Data, key: Data)] = [(
             "dev", try AttestationFixtures.devDAC, try AttestationFixtures.devPAI,
-            try P256.Signing.PrivateKey(derRepresentation: AttestationFixtures.devDACPrivateKey).rawRepresentation,
-            try AttestationFixtures.testCD
+            try P256.Signing.PrivateKey(derRepresentation: AttestationFixtures.devDACPrivateKey).rawRepresentation
         )]
         for (name, vector) in try AttestationFixtures.negativeCases {
-            cases.append((name, vector.dacCert, vector.paiCert, vector.dacPrivateKey, vector.certificationDeclaration))
+            cases.append((name, vector.dacCert, vector.paiCert, vector.dacPrivateKey))
         }
 
         var agreed = 0
         var chipCertValid = 0
         for item in cases {
             let chipCert = try runner.validateAttestationChain(dac: item.dac, pai: item.pai, paa: paa)
-            let (ours, outcome) = await Self.chainVerdict(dac: item.dac, pai: item.pai, key: item.key, cd: item.cd, store: store)
+            let (ours, outcome) = await Self.chainVerdict(dac: item.dac, pai: item.pai, key: item.key, store: store)
             #expect(chipCert.succeeded == ours,
                     "\(item.name): chip-cert \(chipCert.succeeded ? "valid" : "invalid"), verifier \(outcome); \(chipCert.stderr)")
             if chipCert.succeeded == ours { agreed += 1 }
@@ -108,12 +114,13 @@ struct AttestationChainCrossCheckTests {
             ("PAI signed by another key", try chain(paiSigner: P256.Signing.PrivateKey()), false),
             ("DAC signed by another key", try chain(dacSigner: P256.Signing.PrivateKey()), false),
         ]
+        let cdKey = try CDSigningKey(certificateDER: AttestationFixtures.testCDSigningCert)
         for item in cases {
             let store = try AttestationTrustStore(
-                paas: [item.chain.paa], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit"))
+                paas: [item.chain.paa], cdSigningKeys: [cdKey], provenance: TrustStoreProvenance(source: "explicit"))
             let chipCert = try runner.validateAttestationChain(dac: item.chain.dac, pai: item.chain.pai, paa: item.chain.paa)
             let (ours, outcome) = await Self.chainVerdict(
-                dac: item.chain.dac, pai: item.chain.pai, key: item.chain.dacKey.rawRepresentation, cd: Data(), store: store)
+                dac: item.chain.dac, pai: item.chain.pai, key: item.chain.dacKey.rawRepresentation, store: store)
             #expect(chipCert.succeeded == item.valid, "\(item.name): chip-cert exit \(chipCert.exitCode) \(chipCert.stderr)")
             #expect(ours == item.valid, "\(item.name): verifier \(outcome)")
             print("SYNTHETIC-CROSS-CHECK \(item.name): chip-cert exit \(chipCert.exitCode), verifier \(outcome)")

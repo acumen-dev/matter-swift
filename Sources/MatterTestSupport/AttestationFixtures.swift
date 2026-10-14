@@ -44,6 +44,12 @@ public enum AttestationFixtures {
         get throws { try load("dev/Chip-Test-PAA-FFF1-Cert.der") }
     }
 
+    /// The test PAA without a VID (DER, self-signed). It issues the PAI of the commissioner DUT
+    /// vector `struct_cd_origin_pid_vid_correct`.
+    public static var testPAANoVID: Data {
+        get throws { try load("dev/Chip-Test-PAA-NoVID-Cert.der") }
+    }
+
     // MARK: - Certification Declarations
 
     /// A test Certification Declaration (CMS SignedData, DER) for VID 0xFFF1 / PID 0x8000,

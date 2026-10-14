@@ -15,15 +15,11 @@ import MatterTestSupport
 enum ExpectedAttestation: Sendable, Equatable, CustomStringConvertible {
     case verified
     case failed(AttestationFailureReason)
-    /// The chain and VID/PID rules pass; upstream rejects the vector later, at the
-    /// Certification Declaration stage (Task 4). `verify` must not fail before that stage.
-    case failsOnlyAtCD
 
     var description: String {
         switch self {
         case .verified: "verified"
         case .failed(let reason): reason.rawValue
-        case .failsOnlyAtCD: "chain passes; CD stage fails"
         }
     }
 }
@@ -37,8 +33,8 @@ struct ChainVector: Sendable, CustomTestStringConvertible {
 }
 
 /// Every commissioner DUT vector whose outcome concerns the DAC/PAI/PAA chain or the VID/PID
-/// rules, with the reason `verify` must give. The `struct_cd_*` vectors belong to the
-/// Certification Declaration check and are excluded here.
+/// rules, with the reason `verify` must give. The `struct_cd_*` vectors are tabled in
+/// CertificationDeclarationTests.swift.
 ///
 /// Classification (mirrors connectedhomeip v1.4.0.0 `DefaultDACVerifier`):
 /// - a certificate swift-certificates cannot parse (SHA-1, secp256k1), a VID/PID attribute that
@@ -49,8 +45,11 @@ struct ChainVector: Sendable, CustomTestStringConvertible {
 /// - a PAI no trusted PAA issued: upstream `kPaaNotFound` → `.untrustedRoot`.
 ///
 /// `struct_{dac,pai}_subject_pid_mismatch` have a valid chain (DAC PID 0x8001, PAI without a
-/// PID); upstream rejects them in `ValidateCertificateDeclarationPayload`: the DAC PID is not
-/// in the CD (dac), or the Basic Information PID 0x8000 is not in the CD (pai).
+/// PID); upstream rejects them in `ValidateCertificateDeclarationPayload`
+/// (DefaultDeviceAttestationVerifier.cpp, v1.4.0.0): the dac vector's CD lists 0x8000, so the
+/// DAC PID is not in it (:552, `kCertificationDeclarationInvalidProductId`); the pai vector's
+/// CD lists 0x8001, so the Basic Information PID 0x8000 is not in it (:517, same code). Both
+/// give `.cdVidPidNotListed`.
 let chainVectorTable: [ChainVector] = [
     .init(name: "invalid_paa", expected: .failed(.untrustedRoot)),
 
@@ -81,7 +80,7 @@ let chainVectorTable: [ChainVector] = [
     .init(name: "struct_dac_sig_algo_ecdsa_with_sha256", expected: .verified),
     .init(name: "struct_dac_sig_curve_prime256v1", expected: .verified),
     .init(name: "struct_dac_sig_curve_secp256k1", expected: .failed(.malformed)),
-    .init(name: "struct_dac_subject_pid_mismatch", expected: .failsOnlyAtCD),
+    .init(name: "struct_dac_subject_pid_mismatch", expected: .failed(.cdVidPidNotListed)),
     .init(name: "struct_dac_subject_vid_mismatch", expected: .failed(.vidPidMismatch)),
     .init(name: "struct_dac_valid_in_future", expected: .failed(.certificateExpired)),
     .init(name: "struct_dac_valid_in_past", expected: .failed(.certificateExpired)),
@@ -132,7 +131,7 @@ let chainVectorTable: [ChainVector] = [
     .init(name: "struct_pai_sig_algo_ecdsa_with_sha256", expected: .verified),
     .init(name: "struct_pai_sig_curve_prime256v1", expected: .verified),
     .init(name: "struct_pai_sig_curve_secp256k1", expected: .failed(.malformed)),
-    .init(name: "struct_pai_subject_pid_mismatch", expected: .failsOnlyAtCD),
+    .init(name: "struct_pai_subject_pid_mismatch", expected: .failed(.cdVidPidNotListed)),
     .init(name: "struct_pai_subject_vid_mismatch", expected: .failed(.vidPidMismatch)),
     .init(name: "struct_pai_valid_in_future", expected: .failed(.certificateExpired)),
     .init(name: "struct_pai_valid_in_past", expected: .failed(.certificateExpired)),
@@ -173,10 +172,13 @@ struct DeviceAttestationVerifierTests {
     /// they test rather than on the DAC-at-now rule.
     private static let now = SyntheticAttestationChain.date(2024, month: 7, day: 1)
 
+    /// The Basic Information the dev device (and the synthetic chain) reports.
+    private static let devBasicInformation: (vendorID: UInt16, productID: UInt16) = (0xFFF1, 0x8000)
+
     private static func trustStore(paas: [Data]? = nil) throws -> AttestationTrustStore {
         try AttestationTrustStore(
             paas: paas ?? [AttestationFixtures.testPAA],
-            cdSigningKeys: [],
+            cdSigningKeys: [CDSigningKey(certificateDER: AttestationFixtures.testCDSigningCert)],
             provenance: TrustStoreProvenance(source: "explicit")
         )
     }
@@ -216,7 +218,7 @@ struct DeviceAttestationVerifierTests {
             pai: try pai ?? AttestationFixtures.devPAI,
             attestationElements: elements, attestationSignature: signature,
             attestationChallenge: challenge, sentNonce: sentNonce,
-            now: now
+            basicInformation: devBasicInformation, now: now
         )
     }
 
@@ -248,7 +250,8 @@ struct DeviceAttestationVerifierTests {
         let result = await DeviceAttestationVerifier(trustStore: try Self.trustStore()).verify(
             dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
             attestationElements: elements, attestationSignature: signature,
-            attestationChallenge: Self.challenge, sentNonce: Self.nonce, now: Self.now
+            attestationChallenge: Self.challenge, sentNonce: Self.nonce,
+            basicInformation: Self.devBasicInformation, now: Self.now
         )
         #expect(Self.failure(result)?.reason == .attestationSignatureInvalid)
     }
@@ -323,7 +326,8 @@ struct DeviceAttestationVerifierTests {
             dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
             attestationElements: elements,
             attestationSignature: try Self.sign(elements, with: Self.devKey()),
-            attestationChallenge: Self.challenge, sentNonce: Self.nonce, now: Self.now
+            attestationChallenge: Self.challenge, sentNonce: Self.nonce,
+            basicInformation: Self.devBasicInformation, now: Self.now
         )
         #expect(Self.failure(result)?.reason == .malformed)
     }
@@ -337,7 +341,8 @@ struct DeviceAttestationVerifierTests {
             dac: foreign.dacCertificate, pai: try AttestationFixtures.devPAI,
             attestationElements: elements,
             attestationSignature: try Self.sign(elements, with: foreign.dacPrivateKey),
-            attestationChallenge: Self.challenge, sentNonce: Self.nonce, now: Self.now
+            attestationChallenge: Self.challenge, sentNonce: Self.nonce,
+            basicInformation: Self.devBasicInformation, now: Self.now
         )
         #expect(Self.failure(result)?.reason == .chainInvalid)
     }
@@ -378,7 +383,7 @@ struct DeviceAttestationVerifierTests {
         let vector = try #require(vectors.first(where: { $0.name == row.name })?.vector)
         let result = await Self.verify(vector: vector, store: try Self.trustStore())
         switch (row.expected, result) {
-        case (.verified, .verified), (.failsOnlyAtCD, .verified):
+        case (.verified, .verified):
             break
         case (.failed(let reason), .failed(let failure)):
             #expect(failure.reason == reason, "\(row.name): \(failure.detail)")
@@ -386,9 +391,6 @@ struct DeviceAttestationVerifierTests {
                 // At the fixed `now` the DAC is valid; the PAI-at-issuance rule must be what fails.
                 #expect(failure.detail.contains("PAI is valid"), "\(row.name): \(failure.detail)")
             }
-        case (.failsOnlyAtCD, .failed(let failure)):
-            let cdReasons: Set<AttestationFailureReason> = [.cdSignatureInvalid, .cdUnknownSigningKey, .cdVidPidNotListed]
-            #expect(cdReasons.contains(failure.reason), "\(row.name): \(failure.reason) \(failure.detail)")
         default:
             Issue.record("\(row.name): expected \(row.expected), got \(result)")
         }
@@ -404,44 +406,6 @@ struct DeviceAttestationVerifierTests {
         #expect(tabled.count == names.count)
     }
 
-    @Test("CD vectors run without crashing (their CD is Task 4's)")
-    func cdVectorsRun() async throws {
-        let store = try Self.trustStore()
-        var outcomes: [String: [String]] = [:]
-        for (name, vector) in try AttestationFixtures.negativeCases where name.hasPrefix("struct_cd_") {
-            let result = await Self.verify(vector: vector, store: store)
-            let key: String
-            switch result {
-            case .verified: key = "verified"
-            case .failed(let failure): key = failure.reason.rawValue
-            }
-            outcomes[key, default: []].append(name)
-        }
-        #expect(outcomes.values.map(\.count).reduce(0, +) > 0)
-    }
-
-    // MARK: - Basic Information
-
-    /// Task 3 guarantees only that `basicInformation` has no effect before the CD stage;
-    /// connectedhomeip compares it with the CD alone (Task 4).
-    @Test("basicInformation does not change the chain-stage result")
-    func basicInformationHasNoChainStageEffect() async throws {
-        let elements = Self.elements(cd: try AttestationFixtures.testCD, nonce: Self.nonce)
-        let signature = try Self.sign(elements, with: Self.devKey())
-        let verifier = DeviceAttestationVerifier(trustStore: try Self.trustStore())
-        var results: [AttestationResult] = []
-        for info: (vendorID: UInt16, productID: UInt16)? in [nil, (0xFFF1, 0x8000), (0xFFF2, 0x8001)] {
-            results.append(await verifier.verify(
-                dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
-                attestationElements: elements, attestationSignature: signature,
-                attestationChallenge: Self.challenge, sentNonce: Self.nonce,
-                basicInformation: info, now: Self.now
-            ))
-        }
-        #expect(results[1] == results[0])
-        #expect(results[2] == results[0])
-    }
-
     // MARK: - Attestation elements
 
     private static func verifyElements(_ fields: [TLVElement.TLVField]) async throws -> AttestationResult {
@@ -449,7 +413,8 @@ struct DeviceAttestationVerifierTests {
         return await DeviceAttestationVerifier(trustStore: try trustStore()).verify(
             dac: try AttestationFixtures.devDAC, pai: try AttestationFixtures.devPAI,
             attestationElements: elements, attestationSignature: try sign(elements, with: devKey()),
-            attestationChallenge: challenge, sentNonce: nonce, now: now
+            attestationChallenge: challenge, sentNonce: nonce,
+            basicInformation: devBasicInformation, now: now
         )
     }
 
@@ -516,12 +481,16 @@ struct DeviceAttestationVerifierTests {
 
     private static func verify(_ chain: SyntheticAttestationChain, now: Date = syntheticNow) async throws -> AttestationResult {
         let store = try AttestationTrustStore(
-            paas: [chain.paa], cdSigningKeys: [], provenance: TrustStoreProvenance(source: "explicit"))
-        let elements = Self.elements(cd: Data(), nonce: Self.nonce)
+            paas: [chain.paa],
+            cdSigningKeys: [CDSigningKey(certificateDER: AttestationFixtures.testCDSigningCert)],
+            provenance: TrustStoreProvenance(source: "explicit"))
+        // The synthetic DAC is FFF1/8000, which the test CD lists.
+        let elements = Self.elements(cd: try AttestationFixtures.testCD, nonce: Self.nonce)
         return await DeviceAttestationVerifier(trustStore: store).verify(
             dac: chain.dac, pai: chain.pai,
             attestationElements: elements, attestationSignature: try Self.sign(elements, with: chain.dacKey),
-            attestationChallenge: Self.challenge, sentNonce: Self.nonce, now: now
+            attestationChallenge: Self.challenge, sentNonce: Self.nonce,
+            basicInformation: Self.devBasicInformation, now: now
         )
     }
 

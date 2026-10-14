@@ -17,6 +17,9 @@ Regenerate with `Tools/Attestation/fetch-chip-fixtures.sh`; do not edit by hand.
   example apps (the script checks this). The PAA is `Chip-Test-PAA-FFF1-Cert.der` from
   `paa-root-certs/`; `credentials/development/attestation/Chip-Development-PAA-Cert.der`
   is a different PAA and does not issue the FFF1 PAI.
+- `dev/Chip-Test-PAA-NoVID-Cert.der`: a test PAA without a VID. It issues the PAI of the
+  commissioner DUT vector `struct_cd_origin_pid_vid_correct` (VID 0xFFF2), whose CD names a
+  DAC origin other than the product's VID.
 - `cd/Test-CD-FFF1-8000.der`: VID 0xFFF1, PID 0x8000, signed by the "Matter Test CD
   Signing Authority" (`cd/Chip-Test-CD-Cert.der`, key `cd/Chip-Test-CD-Signing-Key.pem`).
   Taken from the commissioner DUT success case `struct_dac_cert_version_v3`.
@@ -964,6 +967,7 @@ Regenerate with `Tools/Attestation/fetch-chip-fixtures.sh`; do not edit by hand.
 | `commissioner_dut/struct_pai_vidpid_fallback_encoding_19/pai-Key.der` | `credentials/development/commissioner_dut/struct_pai_vidpid_fallback_encoding_19/pai-Key.der` | `3bc647b3092f1b16ac999b14fc15d058e1cfcaa7a03d9c54645f8df9ac260cfe` |
 | `commissioner_dut/struct_pai_vidpid_fallback_encoding_19/test_case_vector.json` | `credentials/development/commissioner_dut/struct_pai_vidpid_fallback_encoding_19/test_case_vector.json` | `eb03832f6fe04403540a7398ff3157a0146bee6979cb205f652c7224b16e95cb` |
 | `dev/Chip-Test-PAA-FFF1-Cert.der` | `credentials/development/paa-root-certs/Chip-Test-PAA-FFF1-Cert.der` | `369eef40616645e5bd3e1bc9db70815d6cf93e9a611973ac20c9cd14c8d60c37` |
+| `dev/Chip-Test-PAA-NoVID-Cert.der` | `credentials/development/paa-root-certs/Chip-Test-PAA-NoVID-Cert.der` | `178632f8f235c0fa6a820de1d4c9b69568e2d16b7c2912b22f056136df75babc` |
 | `dev/Matter-Development-DAC-FFF1-8000-Cert.der` | `credentials/development/attestation/Matter-Development-DAC-FFF1-8000-Cert.der` | `c8a61ea163c0c5074475d8a6a996a41f402bd84864c8079f25feda74805ee172` |
 | `dev/Matter-Development-DAC-FFF1-8000-Key.der` | `credentials/development/attestation/Matter-Development-DAC-FFF1-8000-Key.der` | `4e31c0a525397511782a64f6c856069686bc190f83e7aa9c887fef01b446502c` |
 | `dev/Matter-Development-PAI-FFF1-noPID-Cert.der` | `credentials/development/attestation/Matter-Development-PAI-FFF1-noPID-Cert.der` | `45d12d97d9a9f8ba1d65109907b9c0c47faf8b6735d88e7b59f81ec868658564` |

@@ -45,6 +45,22 @@ struct AttestationFixtureTests {
         #expect(paa.issuer == paa.subject)
     }
 
+    @Test("the NoVID test PAA is self-issued, has no VID, and issues struct_cd_origin_pid_vid_correct's PAI")
+    func noVIDPAAIssuesOriginVectorPAI() throws {
+        let paa = try Certificate(derEncoded: Array(AttestationFixtures.testPAANoVID))
+        let vector = try #require(try AttestationFixtures.negativeCases.first { $0.name == "struct_cd_origin_pid_vid_correct" }?.vector)
+        let pai = try Certificate(derEncoded: Array(vector.paiCert))
+        let vidOID: ASN1ObjectIdentifier = [1, 3, 6, 1, 4, 1, 37244, 2, 1]
+
+        #expect(paa.issuer == paa.subject)
+        #expect(!paa.subject.contains { rdn in rdn.contains { $0.type == vidOID } })
+        #expect(pai.issuer == paa.subject)
+        let paaSKI = try #require(try paa.extensions.subjectKeyIdentifier?.keyIdentifier)
+        let paiAKI = try #require(try pai.extensions.authorityKeyIdentifier?.keyIdentifier)
+        #expect(Array(paaSKI) == Array(paiAKI))
+        #expect(paa.publicKey.isValidSignature(pai.signature, for: pai))
+    }
+
     @Test("dev DAC private key matches the DAC's public key")
     func dacPrivateKeyMatches() throws {
         let dac = try Certificate(derEncoded: Array(AttestationFixtures.devDAC))
