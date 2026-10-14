@@ -199,6 +199,7 @@ let package = Package(
                 "MatterCrypto",
                 "MatterTestSupport",
                 .product(name: "X509", package: "swift-certificates"),
+                .product(name: "SwiftASN1", package: "swift-asn1"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),

@@ -25,6 +25,7 @@
 import Testing
 import Foundation
 import Crypto
+import SwiftASN1
 import X509
 import MatterTestSupport
 
@@ -54,12 +55,26 @@ struct AttestationFixtureTests {
 
     // MARK: - Certification Declarations
 
-    @Test("CDs load as DER SEQUENCEs")
+    @Test("CDs are single DER SEQUENCEs whose length header covers every byte")
     func cdsLoad() throws {
         for cd in [try AttestationFixtures.testCD, try AttestationFixtures.exampleCD] {
-            #expect(cd.first == 0x30)
-            #expect(cd.count > 100)
+            let bytes = Array(cd)
+            #expect(bytes.first == 0x30)
+            let declared = try #require(Self.derTotalLength(bytes))
+            #expect(declared == bytes.count)
         }
+    }
+
+    @Test("the test CD is signed by the test CD signing cert, the example CD by CSA key 001")
+    func cdSignerKeyIdentifiers() throws {
+        let testCert = try Certificate(derEncoded: Array(AttestationFixtures.testCDSigningCert))
+        let key001 = try Certificate(derEncoded: Array(AttestationFixtures.productionCDSigningCerts[0]))
+        let testSKID = try #require(try testCert.extensions.subjectKeyIdentifier?.keyIdentifier)
+        let key001SKID = try #require(try key001.extensions.subjectKeyIdentifier?.keyIdentifier)
+
+        #expect(try Self.signerKeyIdentifier(AttestationFixtures.testCD) == Array(testSKID))
+        #expect(try Self.signerKeyIdentifier(AttestationFixtures.exampleCD) == Array(key001SKID))
+        #expect(Array(testSKID) != Array(key001SKID))
     }
 
     @Test("CD signing certificates parse, and the test CD signing key matches its certificate")
@@ -75,6 +90,41 @@ struct AttestationFixtureTests {
         for der in production {
             _ = try Certificate(derEncoded: Array(der))
         }
+    }
+
+    // MARK: - Helpers
+
+    /// Header plus content length of the outermost DER element, or nil if the header is malformed.
+    static func derTotalLength(_ bytes: [UInt8]) -> Int? {
+        guard bytes.count >= 2 else { return nil }
+        let first = Int(bytes[1])
+        if first < 0x80 { return 2 + first }
+        let count = first & 0x7F
+        guard count > 0, count <= 4, bytes.count >= 2 + count else { return nil }
+        let length = bytes[2..<(2 + count)].reduce(0) { $0 << 8 | Int($1) }
+        return 2 + count + length
+    }
+
+    /// The `subjectKeyIdentifier` naming the only signer of a CMS SignedData ContentInfo.
+    static func signerKeyIdentifier(_ cd: Data) throws -> [UInt8]? {
+        // ContentInfo ::= SEQUENCE { contentType, [0] EXPLICIT SignedData }
+        guard case .constructed(let contentInfo) = try DER.parse(Array(cd)).content,
+              let explicit = Array(contentInfo).last,
+              case .constructed(let wrapped) = explicit.content,
+              let signedData = Array(wrapped).first,
+              case .constructed(let fields) = signedData.content,
+              // signerInfos is the last field of SignedData.
+              let signerInfos = Array(fields).last,
+              case .constructed(let infos) = signerInfos.content,
+              Array(infos).count == 1,
+              case .constructed(let signerInfo) = Array(infos)[0].content
+        else { return nil }
+        // SignerInfo ::= SEQUENCE { version, sid, ... }; sid is [0] IMPLICIT SubjectKeyIdentifier.
+        let sid = Array(signerInfo)[1]
+        guard sid.identifier == ASN1Identifier(tagWithNumber: 0, tagClass: .contextSpecific),
+              case .primitive(let keyIdentifier) = sid.content
+        else { return nil }
+        return Array(keyIdentifier)
     }
 
     // MARK: - Commissioner DUT Vectors

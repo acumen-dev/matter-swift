@@ -35,14 +35,17 @@ CHIP="$WORK/connectedhomeip"
 # MARK: - Sparse checkout
 
 echo "Cloning connectedhomeip $TAG (sparse)..."
-git clone --quiet --depth 1 --branch "$TAG" --filter=blob:none --sparse "$REPO_URL" "$CHIP" 2>/dev/null
+git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" --filter=blob:none --sparse \
+    "$REPO_URL" "$CHIP" \
+    || { echo "error: could not clone $REPO_URL at $TAG" >&2; exit 1; }
 git -C "$CHIP" sparse-checkout set --no-cone \
     /credentials/development/attestation/ \
     /credentials/development/paa-root-certs/ \
     /credentials/development/cd-certs/ \
     /credentials/development/commissioner_dut/ \
     /credentials/test/certification-declaration/ \
-    /src/credentials/examples/
+    /src/credentials/examples/ \
+    /NOTICE
 HEAD_COMMIT="$(git -C "$CHIP" rev-parse HEAD)"
 if [ "$HEAD_COMMIT" != "$COMMIT" ]; then
     echo "error: $TAG resolved to $HEAD_COMMIT, expected $COMMIT" >&2
@@ -142,12 +145,18 @@ verify_cd "$OUT/cd/Example-CD-FFF1.der" "$OUT/cd/CSA_Matter_CD_Signing_Key_001.c
     cat <<EOF
 # Attestation fixture sources
 
-Copied byte for byte from [connectedhomeip]($REPO_URL) tag \`$TAG\`
+Taken from [connectedhomeip]($REPO_URL) tag \`$TAG\`
 (commit \`$COMMIT\`), Apache-2.0; see \`NOTICE\` at the package root.
+Every file is a byte-for-byte copy of its upstream file, except \`cd/Example-CD-FFF1.der\`,
+which holds the bytes of a C array in an upstream source file.
 Regenerate with \`Tools/Attestation/fetch-chip-fixtures.sh\`; do not edit by hand.
 
 ## Notes
 
+- The private keys here (\`dev/*-Key.der\`, \`cd/Chip-Test-CD-Signing-Key.pem\`, and the
+  \`*-Key.der\` and \`paa-Key.pem\` files under \`commissioner_dut/\`) are public test keys
+  published upstream for development and certification testing. They are not secrets and
+  protect nothing.
 - \`dev/\`: the development chain for VID 0xFFF1 / PID 0x8000. The DAC and PAI are the
   ones \`src/credentials/examples/ExampleDACs.cpp\` and \`ExamplePAI.cpp\` compile into the
   example apps (the script checks this). The PAA is \`Chip-Test-PAA-FFF1-Cert.der\` from
@@ -171,7 +180,28 @@ Regenerate with \`Tools/Attestation/fetch-chip-fixtures.sh\`; do not edit by han
 | Fixture | Upstream path | SHA-256 |
 |---|---|---|
 EOF
-    sort "$ROWS"
+    LC_ALL=C sort "$ROWS"
 } > "$OUT/SOURCES.md"
+
+# MARK: - NOTICE
+
+# Apache-2.0 section 4(d): carry upstream's NOTICE. Everything from the heading down is
+# regenerated; anything above it is left alone.
+NOTICE_FILE="$PACKAGE_ROOT/NOTICE"
+HEADING="connectedhomeip ($TAG)"
+if [ -f "$NOTICE_FILE" ] && grep -qxF "$HEADING" "$NOTICE_FILE"; then
+    KEEP="$(grep -nxF "$HEADING" "$NOTICE_FILE" | head -1 | cut -d: -f1)"
+    head -n "$((KEEP - 1))" "$NOTICE_FILE" > "$WORK/NOTICE"
+else
+    cp "$NOTICE_FILE" "$WORK/NOTICE" 2>/dev/null || : > "$WORK/NOTICE"
+    echo >> "$WORK/NOTICE"
+fi
+{
+    cat "$WORK/NOTICE"
+    echo "$HEADING"
+    echo "$(printf '%*s' ${#HEADING} '' | tr ' ' '-')"
+    echo
+    cat "$CHIP/NOTICE"
+} > "$NOTICE_FILE"
 
 echo "Wrote $(wc -l < "$ROWS" | tr -d ' ') fixtures to $OUT"

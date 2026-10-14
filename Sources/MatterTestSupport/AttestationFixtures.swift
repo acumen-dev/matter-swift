@@ -84,6 +84,7 @@ public enum AttestationFixtures {
     /// ``NegativeCaseVector/isSuccessCase``.
     public static var negativeCases: [(name: String, vector: NegativeCaseVector)] {
         get throws {
+            try requireDirectory()
             let root = directory.appendingPathComponent("commissioner_dut")
             let names = try FileManager.default.contentsOfDirectory(atPath: root.path)
                 .filter { !$0.hasPrefix(".") }
@@ -99,7 +100,33 @@ public enum AttestationFixtures {
     // MARK: - Loading
 
     private static func load(_ relativePath: String) throws -> Data {
-        try Data(contentsOf: directory.appendingPathComponent(relativePath))
+        try requireDirectory()
+        return try Data(contentsOf: directory.appendingPathComponent(relativePath))
+    }
+
+    private static func requireDirectory() throws {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue
+        else {
+            throw AttestationFixtureError.missingDirectory(directory.path)
+        }
+    }
+}
+
+// MARK: - AttestationFixtureError
+
+/// Why an attestation fixture could not be loaded.
+public enum AttestationFixtureError: Error, CustomStringConvertible {
+
+    /// The fixture directory does not exist.
+    case missingDirectory(String)
+
+    public var description: String {
+        switch self {
+        case .missingDirectory(let path):
+            "attestation fixtures not found at \(path); run Tools/Attestation/fetch-chip-fixtures.sh"
+        }
     }
 }
 

@@ -1,11 +1,17 @@
 # Attestation fixture sources
 
-Copied byte for byte from [connectedhomeip](https://github.com/project-chip/connectedhomeip.git) tag `v1.4.0.0`
+Taken from [connectedhomeip](https://github.com/project-chip/connectedhomeip.git) tag `v1.4.0.0`
 (commit `43aa98c2d30ee547c6b587b9de7bbb794f175ece`), Apache-2.0; see `NOTICE` at the package root.
+Every file is a byte-for-byte copy of its upstream file, except `cd/Example-CD-FFF1.der`,
+which holds the bytes of a C array in an upstream source file.
 Regenerate with `Tools/Attestation/fetch-chip-fixtures.sh`; do not edit by hand.
 
 ## Notes
 
+- The private keys here (`dev/*-Key.der`, `cd/Chip-Test-CD-Signing-Key.pem`, and the
+  `*-Key.der` and `paa-Key.pem` files under `commissioner_dut/`) are public test keys
+  published upstream for development and certification testing. They are not secrets and
+  protect nothing.
 - `dev/`: the development chain for VID 0xFFF1 / PID 0x8000. The DAC and PAI are the
   ones `src/credentials/examples/ExampleDACs.cpp` and `ExamplePAI.cpp` compile into the
   example apps (the script checks this). The PAA is `Chip-Test-PAA-FFF1-Cert.der` from
