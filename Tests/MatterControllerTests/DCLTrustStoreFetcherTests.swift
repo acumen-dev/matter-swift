@@ -99,7 +99,7 @@ private enum DCLFixtures {
         return responses
     }
 
-    /// The recorded roots that are PAAs the fetcher should keep (everything but the NXP PAA).
+    /// The recorded leaf whose body contains `text`; fails the test if there is none.
     static func recordedLeaf(containing text: String) throws -> Leaf {
         try #require(try recordedLeaves().first { $0.text.contains(text) })
     }

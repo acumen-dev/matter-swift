@@ -29,6 +29,8 @@ Regenerate with `Tools/Attestation/fetch-chip-fixtures.sh`; do not edit by hand.
 - `cd/CSA_Matter_CD_Signing_Key_00{1..5}.cert.der`: the CSA CD signing certificates. With
   the test CD signing key, these are the six keys `gCdSigningKeys` in
   `src/credentials/attestation_verifier/DefaultDeviceAttestationVerifier.cpp` trusts.
+- `Tests/Fixtures/DCL/dcl-synthetic.json` embeds a copy of the dev PAI
+  (`dev/Matter-Development-PAI-FFF1-noPID-Cert.der`, SHA-256 `45d12d97...`); keep them in step.
 - `commissioner_dut/`: every vector directory. Each file is copied except a `.pem` whose
   `.der` sibling is copied. The set holds both success and failure cases
   (`is_success_case`).

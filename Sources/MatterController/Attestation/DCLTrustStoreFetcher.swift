@@ -40,6 +40,9 @@ public enum DCLFetchError: Error, Sendable, Equatable {
     case malformedResponse(String)
     /// No certificate survived validation.
     case noRoots
+    /// The trust store refused a certificate set that every member had passed assessment for.
+    /// This is a bug in swift-matter; the message is the store's own.
+    case internalInconsistency(String)
 }
 
 // MARK: - DCLTrustStoreFetcher
@@ -125,17 +128,9 @@ public struct DCLTrustStoreFetcher: Sendable {
                 paas: accepted, cdSigningKeys: current.cdSigningKeys, provenance: provenance)
         } catch {
             // Each certificate passed assessment alone, so the store refusing the set is our bug.
+            // Retrying certificate by certificate could not recover: the refusal is of the set.
             assertionFailure("an assessed certificate set was refused by the store: \(error)")
-            let kept = accepted.filter {
-                (try? AttestationTrustStore(paas: [$0], cdSigningKeys: [], provenance: provenance)) != nil
-            }
-            excluded.append("internal: the store refused the assessed set (\(error)); retrying certificate by certificate")
-            guard !kept.isEmpty, let retry = try? AttestationTrustStore(
-                paas: kept, cdSigningKeys: current.cdSigningKeys, provenance: provenance)
-            else { throw DCLFetchError.noRoots }
-            var diff = retry.diff(from: current)
-            diff.excluded = excluded
-            return (retry, diff)
+            throw DCLFetchError.internalInconsistency("\(error)")
         }
         var diff = candidate.diff(from: current)
         diff.excluded = excluded

@@ -1,5 +1,5 @@
 {
- "note": "Recorded from the main-net DCL (https://on.dcl.csa-iot.org) with read-only GETs on 2026-10-14, trimmed to eight roots. Bodies are unmodified. The first root is the CSA CD-signing CA: it is listed but, as in the refresh script, never fetched, so it has no leaf here. Records for TP-Link, Legrand and Feit carry vid 0 although their subjects name a VID (the protobuf default). The PuzL Labs record ends its PEM with a stray space after the final newline. The NXP PAA is the live certificate whose ECDSA AlgorithmIdentifier carries a NULL parameter.",
+ "note": "Recorded from the main-net DCL (https://on.dcl.csa-iot.org) with read-only GETs on 2026-10-14, trimmed to eight roots. The leaf bodies are unmodified; the root-certificates listing body omits the `schemaVersion` field the DCL sends. The first root is the CSA CD-signing CA: it is listed but, as in the refresh script, never fetched, so it has no leaf here. Records for TP-Link, Legrand and Feit carry vid 0 although their subjects name a VID (the protobuf default). The PuzL Labs record ends its PEM with a stray space after the final newline. The NXP PAA is the live certificate whose ECDSA AlgorithmIdentifier carries a NULL parameter.",
  "root-certificates": {
   "approvedRootCertificates": {
    "certs": [

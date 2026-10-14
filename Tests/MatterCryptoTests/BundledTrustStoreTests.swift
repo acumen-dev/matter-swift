@@ -4,6 +4,8 @@
 import Foundation
 import Testing
 import Crypto
+import SwiftASN1
+import X509
 @testable import MatterCrypto
 import MatterTestSupport
 
@@ -73,6 +75,10 @@ struct BundledTrustStoreTests {
         for certificate in store.paas {
             let violation = MatterAttestationPolicy.profileViolation(certificate, role: .paa)
             #expect(violation == nil, "\(certificate.subject): \(violation ?? "")")
+            var serializer = DER.Serializer()
+            try serializer.serialize(certificate)
+            let assessment = AttestationTrustStore.assessPAA(Data(serializer.serializedBytes))
+            #expect(assessment.rejection == nil, "\(certificate.subject): \(assessment.rejection ?? "")")
         }
     }
 
