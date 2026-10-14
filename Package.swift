@@ -197,6 +197,7 @@ let package = Package(
             name: "MatterCryptoTests",
             dependencies: [
                 "MatterCrypto",
+                "MatterTypes",
                 "MatterTestSupport",
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
@@ -262,6 +263,7 @@ let package = Package(
                 "MatterDevice",
                 "MatterTypes",
                 "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Tests/ReferenceTests"
         ),
