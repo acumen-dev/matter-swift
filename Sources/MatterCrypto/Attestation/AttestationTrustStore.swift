@@ -63,6 +63,20 @@ public struct CDSigningKey: Sendable, Hashable {
     }
 }
 
+// MARK: - TrustStoreWriteOutcome
+
+/// The result of a completed ``AttestationTrustStore/write(to:)``. The new store is in place.
+public struct TrustStoreWriteOutcome: Sendable, Equatable {
+
+    /// A set-aside copy of the previous store that could not be removed, if any. It is pruned
+    /// by the next write; the caller may also delete it.
+    public let leftoverPath: URL?
+
+    public init(leftoverPath: URL?) {
+        self.leftoverPath = leftoverPath
+    }
+}
+
 // MARK: - AttestationTrustStoreError
 
 public enum AttestationTrustStoreError: Error, Sendable, Equatable {
@@ -76,12 +90,9 @@ public enum AttestationTrustStoreError: Error, Sendable, Equatable {
     case missingSubjectKeyIdentifier(String)
     /// The bundled trust data could not be read (Task 5).
     case bundleCorrupt(String)
-    /// A directory swap was interrupted and restoring the previous store failed; the message
-    /// names where the previous store now is.
+    /// A directory swap was interrupted and the previous store could not be restored, or
+    /// several stranded copies make the right one ambiguous; the message names where they are.
     case recoveryFailed(String)
-    /// The new store is in place, but the set-aside previous store at the named path could not
-    /// be removed.
-    case setAsideNotRemoved(String)
 }
 
 // MARK: - AttestationTrustStore
@@ -120,6 +131,8 @@ public struct AttestationTrustStore: Sendable {
     ///
     /// If an interrupted ``write(to:)`` left the directory absent with exactly one
     /// `<directory>.old-*` sibling, that previous store is restored first.
+    ///
+    /// Assumes no concurrent writer of `directory`.
     ///
     /// `cdSigningKeys` has no default until the bundled CSA keys exist (Task 5).
     public init(directory: URL, cdSigningKeys: [CDSigningKey], provenance: TrustStoreProvenance? = nil) throws {
@@ -217,28 +230,41 @@ public struct AttestationTrustStore: Sendable {
     /// Each PAA is written as `<SKI hex>-<first 8 bytes of SHA-256 hex>.der` into a sibling
     /// `<directory>.tmp-<uuid>`, so certificates sharing a key identifier coexist. If
     /// `directory` already exists it is renamed aside (`<directory>.old-<uuid>`), the new
-    /// directory is renamed into place, and the old one is removed. A failure at any step
-    /// removes the temporary directory and restores the original, so a reader observes the old
-    /// contents or the new, never a blend. Directory replacement uses two POSIX renames rather
-    /// than `FileManager.replaceItemAt`, whose behaviour for directories differs between
-    /// Darwin and swift-corelibs-foundation.
+    /// directory is renamed into place, and the old one is removed. A failure before the
+    /// swap-in succeeds removes the temporary directory and restores the original, so a reader
+    /// observes the old contents or the new, never a blend. Directory replacement uses two POSIX
+    /// renames rather than `FileManager.replaceItemAt`, whose behaviour for directories differs
+    /// between Darwin and swift-corelibs-foundation.
+    ///
+    /// Once the swap-in has succeeded this method does not throw: removing the set-aside copy
+    /// is best effort, and a copy that could not be removed is reported in the returned
+    /// ``TrustStoreWriteOutcome``. When `directory` exists, every stale `<directory>.old-*`
+    /// sibling is pruned (best effort) at the start of the next write.
     ///
     /// Between the renames `directory` does not exist. A crash there strands the previous store
     /// as `<directory>.old-*`; the next ``init(directory:cdSigningKeys:provenance:)`` or
-    /// `write(to:)` restores it when it is the only such sibling. If that restore fails,
-    /// ``AttestationTrustStoreError/recoveryFailed(_:)`` names where the previous store is.
-    /// If the new store is in place but the set-aside copy cannot be removed,
-    /// ``AttestationTrustStoreError/setAsideNotRemoved(_:)`` is thrown with its path.
+    /// `write(to:)` restores it when it is the only such sibling. If that restore fails, or
+    /// several stranded siblings exist, ``AttestationTrustStoreError/recoveryFailed(_:)`` names
+    /// where they are. If both the swap-in and the rollback fail it names the set-aside copy.
     ///
-    /// Only the PAAs are persisted. CD signing keys and provenance belong to the consumer.
-    public func write(to directory: URL) throws {
+    /// Assumes a single writer and no concurrent reader of `directory`; it is not safe against
+    /// either. Only the PAAs are persisted. CD signing keys and provenance belong to the consumer.
+    @discardableResult
+    public func write(to directory: URL) throws -> TrustStoreWriteOutcome {
         try write(to: directory, fileOps: FoundationAttestationFileOps())
     }
 
-    func write(to directory: URL, fileOps: any AttestationFileOps) throws {
+    @discardableResult
+    func write(to directory: URL, fileOps: any AttestationFileOps) throws -> TrustStoreWriteOutcome {
         try Self.recoverStrandedStore(at: directory, fileOps: fileOps)
         let parent = directory.deletingLastPathComponent()
         let name = directory.lastPathComponent
+        if fileOps.fileExists(at: directory) {
+            // Stale set-asides from earlier writes would defeat single-sibling recovery.
+            for sibling in Self.strandedSiblings(of: directory, fileOps: fileOps) {
+                try? fileOps.removeItem(at: sibling)
+            }
+        }
         let token = UUID().uuidString
         let staging = parent.appendingPathComponent("\(name).tmp-\(token)", isDirectory: true)
         let aside = parent.appendingPathComponent("\(name).old-\(token)", isDirectory: true)
@@ -266,29 +292,46 @@ public struct AttestationTrustStore: Sendable {
         do {
             try fileOps.moveItem(at: staging, to: directory)
         } catch {
-            if hadExisting { try? fileOps.moveItem(at: aside, to: directory) }
             try? fileOps.removeItem(at: staging)
+            if hadExisting {
+                do {
+                    try fileOps.moveItem(at: aside, to: directory)
+                } catch let rollbackError {
+                    throw AttestationTrustStoreError.recoveryFailed(
+                        "previous store remains at \(aside.path); swap-in failed (\(error)) and restoring it to "
+                        + "\(directory.path) failed (\(rollbackError))")
+                }
+            }
             throw error
         }
-        if hadExisting {
-            do {
-                try fileOps.removeItem(at: aside)
-            } catch {
-                throw AttestationTrustStoreError.setAsideNotRemoved(aside.path)
-            }
+        guard hadExisting else { return TrustStoreWriteOutcome(leftoverPath: nil) }
+        do {
+            try fileOps.removeItem(at: aside)
+            return TrustStoreWriteOutcome(leftoverPath: nil)
+        } catch {
+            return TrustStoreWriteOutcome(leftoverPath: aside)
         }
     }
 
-    /// Restores a store stranded by an interrupted swap: `directory` absent and exactly one
-    /// `<directory>.old-*` sibling.
-    private static func recoverStrandedStore(at directory: URL, fileOps: any AttestationFileOps) throws {
-        guard !fileOps.fileExists(at: directory) else { return }
+    private static func strandedSiblings(of directory: URL, fileOps: any AttestationFileOps) -> [URL] {
         let parent = directory.deletingLastPathComponent()
         let prefix = directory.lastPathComponent + ".old-"
-        guard let siblings = try? fileOps.contentsOfDirectory(at: parent) else { return }
-        let stranded = siblings.filter { $0.hasPrefix(prefix) }
-        guard stranded.count == 1, let name = stranded.first else { return }
-        let source = parent.appendingPathComponent(name, isDirectory: true)
+        guard let siblings = try? fileOps.contentsOfDirectory(at: parent) else { return [] }
+        return siblings.filter { $0.hasPrefix(prefix) }.sorted()
+            .map { parent.appendingPathComponent($0, isDirectory: true) }
+    }
+
+    /// Restores a store stranded by an interrupted swap: `directory` absent and exactly one
+    /// `<directory>.old-*` sibling. Several siblings are ambiguous and throw.
+    private static func recoverStrandedStore(at directory: URL, fileOps: any AttestationFileOps) throws {
+        guard !fileOps.fileExists(at: directory) else { return }
+        let stranded = strandedSiblings(of: directory, fileOps: fileOps)
+        if stranded.count > 1 {
+            throw AttestationTrustStoreError.recoveryFailed(
+                "\(directory.path) is missing and \(stranded.count) stranded previous stores exist, so none was "
+                + "restored: \(stranded.map(\.path).joined(separator: ", "))")
+        }
+        guard let source = stranded.first else { return }
         do {
             try fileOps.moveItem(at: source, to: directory)
         } catch {
@@ -308,7 +351,9 @@ public struct AttestationTrustStore: Sendable {
     /// Certificates are identified by SubjectKeyIdentifier and SHA-256 of their DER, so a store
     /// may hold several certificates for one key identifier. `added` and `removed` list
     /// individual certificates; `changed` lists, once per key identifier present on both sides,
-    /// the new side's certificate when the two certificate sets differ.
+    /// the symmetric difference's entry when the two certificate sets differ: a certificate new
+    /// to this store if there is one, otherwise one removed from it. Entries carry the
+    /// certificate's SHA-256 and expiry so otherwise identical subjects stay distinguishable.
     public func diff(from other: AttestationTrustStore) -> TrustStoreDiff {
         let newIndex = Self.index(paas)
         let oldIndex = Self.index(other.paas)
@@ -324,9 +369,10 @@ public struct AttestationTrustStore: Sendable {
         for ski in newSKIs.intersection(oldSKIs).sorted(by: { $0.lexicographicallyPrecedes($1) }) {
             let newSet = Set(newIndex.filter { $0.identity.ski == ski }.map(\.identity))
             let oldSet = Set(oldIndex.filter { $0.identity.ski == ski }.map(\.identity))
-            if newSet != oldSet, let item = newIndex.first(where: { $0.identity.ski == ski }) {
-                result.changed.append(item.entry)
-            }
+            guard newSet != oldSet else { continue }
+            let pick = newIndex.first { $0.identity.ski == ski && !oldSet.contains($0.identity) }
+                ?? oldIndex.first { $0.identity.ski == ski && !newSet.contains($0.identity) }
+            if let pick { result.changed.append(pick.entry) }
         }
         return result
     }
@@ -349,12 +395,15 @@ public struct AttestationTrustStore: Sendable {
                   let der = try? derBytes(certificate)
             else { continue }
             let identifier = Data(ski.keyIdentifier)
+            let digest = Data(SHA256.hash(data: der))
             items.append(IndexedCertificate(
-                identity: Identity(ski: identifier, digest: Data(SHA256.hash(data: der))),
+                identity: Identity(ski: identifier, digest: digest),
                 entry: TrustStoreDiff.Entry(
                     subject: String(describing: certificate.subject),
                     vendorID: (try? MatterCertificateAttributes.identifiers(in: certificate.subject))?.vendorID,
-                    subjectKeyIdentifier: identifier)))
+                    subjectKeyIdentifier: identifier,
+                    sha256: digest,
+                    notValidAfter: certificate.notValidAfter)))
         }
         return items.sorted {
             $0.identity.ski == $1.identity.ski

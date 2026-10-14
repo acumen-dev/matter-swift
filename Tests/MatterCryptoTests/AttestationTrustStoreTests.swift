@@ -393,7 +393,13 @@ struct AttestationTrustStoreTests {
         // Strand the old store: the swap-in (move 2) and the rollback (move 3) both fail.
         let new = try Self.store(paas: [Self.makePAA(commonName: "New")])
         let fileOps = FailingFileOps(failOnMoveNumbers: [2, 3])
-        #expect(throws: InjectedFailure.self) { try new.write(to: target, fileOps: fileOps) }
+        do {
+            try new.write(to: target, fileOps: fileOps)
+            Issue.record("expected recoveryFailed")
+        } catch AttestationTrustStoreError.recoveryFailed(let message) {
+            // Swap-in and rollback both failed: the message names the set-aside copy.
+            #expect(message.contains(".old-"))
+        }
         #expect(!FileManager.default.fileExists(atPath: target.path))
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 1)
 
@@ -410,7 +416,7 @@ struct AttestationTrustStoreTests {
         let target = root.appendingPathComponent("paa", isDirectory: true)
         try Self.store(paas: [AttestationFixtures.testPAA]).write(to: target)
         let stranding = FailingFileOps(failOnMoveNumbers: [2, 3])
-        #expect(throws: InjectedFailure.self) {
+        #expect(throws: AttestationTrustStoreError.self) {
             try Self.store(paas: [Self.makePAA(commonName: "Lost")]).write(to: target, fileOps: stranding)
         }
 
@@ -453,27 +459,42 @@ struct AttestationTrustStoreTests {
             try FileManager.default.createDirectory(
                 at: root.appendingPathComponent("paa.old-\(suffix)"), withIntermediateDirectories: false)
         }
-        #expect(throws: (any Error).self) {
-            try AttestationTrustStore(directory: target, cdSigningKeys: [])
+        do {
+            _ = try AttestationTrustStore(directory: target, cdSigningKeys: [])
+            Issue.record("expected recoveryFailed")
+        } catch AttestationTrustStoreError.recoveryFailed(let message) {
+            #expect(message.contains("paa.old-a"))
+            #expect(message.contains("paa.old-b"))
         }
         #expect(!FileManager.default.fileExists(atPath: target.path))
+        // write(to:) refuses too, rather than guessing.
+        #expect(throws: AttestationTrustStoreError.self) {
+            try Self.store(paas: [AttestationFixtures.testPAA]).write(to: target)
+        }
     }
 
-    @Test("a set-aside copy that cannot be removed is reported with its path")
-    func setAsideNotRemoved() throws {
+    @Test("a set-aside copy that cannot be removed does not fail the write and is pruned next time")
+    func setAsideLeftoverIsReportedAndPruned() throws {
         let root = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
         let target = root.appendingPathComponent("paa", isDirectory: true)
         try Self.store(paas: [AttestationFixtures.testPAA]).write(to: target)
-        let fileOps = FailingFileOps(failRemovals: true)
-        do {
-            try Self.store(paas: [Self.makePAA(commonName: "New")]).write(to: target, fileOps: fileOps)
-            Issue.record("expected setAsideNotRemoved")
-        } catch AttestationTrustStoreError.setAsideNotRemoved(let path) {
-            #expect(path.contains(".old-"))
-        }
+
+        let outcome = try Self.store(paas: [Self.makePAA(commonName: "New")])
+            .write(to: target, fileOps: FailingFileOps(failRemovals: true))
+        let leftover = try #require(outcome.leftoverPath)
+        #expect(leftover.lastPathComponent.contains(".old-"))
+        #expect(FileManager.default.fileExists(atPath: leftover.path))
         // The new store is in place.
         #expect(try AttestationTrustStore(directory: target, cdSigningKeys: []).paas.count == 1)
+
+        // Another leftover accumulates, then a normal write prunes all of them.
+        _ = try Self.store(paas: [Self.makePAA(commonName: "Newer")])
+            .write(to: target, fileOps: FailingFileOps(failRemovals: true))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).count == 3)
+        let clean = try Self.store(paas: [AttestationFixtures.testPAA]).write(to: target)
+        #expect(clean.leftoverPath == nil)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["paa"])
     }
 
     // MARK: - Diff
@@ -516,6 +537,50 @@ struct AttestationTrustStoreTests {
         #expect(diff.removed.first?.subject.contains("Reissued v1") == true)
         #expect(diff.changed.count == 1)
         #expect(!diff.isEmpty)
+    }
+
+    @Test("a same-subject re-issue yields distinguishable entries and names the right certificate")
+    func diffSameSubjectReissue() throws {
+        let key = P256.Signing.PrivateKey()
+        let name = try DistinguishedName { CommonName("Reissued Root") }
+        func issue(serial: UInt8, validUntil: TimeInterval) throws -> Data {
+            let privateKey = Certificate.PrivateKey(key)
+            let certificate = try Certificate(
+                version: .v3,
+                serialNumber: Certificate.SerialNumber(bytes: [serial]),
+                publicKey: privateKey.publicKey,
+                notValidBefore: Date(timeIntervalSince1970: 1_700_000_000),
+                notValidAfter: Date(timeIntervalSince1970: validUntil),
+                issuer: name, subject: name,
+                signatureAlgorithm: .ecdsaWithSHA256,
+                extensions: try Certificate.Extensions {
+                    Critical(BasicConstraints.isCertificateAuthority(maxPathLength: nil))
+                    SubjectKeyIdentifier(hash: privateKey.publicKey)
+                },
+                issuerPrivateKey: privateKey)
+            var serializer = DER.Serializer()
+            try serializer.serialize(certificate)
+            return Data(serializer.serializedBytes)
+        }
+        let old = try issue(serial: 1, validUntil: 3_000_000_000)
+        let new = try issue(serial: 2, validUntil: 4_000_000_000)
+        let unchanged = try issue(serial: 3, validUntil: 3_500_000_000)
+
+        let diff = try Self.store(paas: [unchanged, new]).diff(from: Self.store(paas: [unchanged, old]))
+        let added = try #require(diff.added.first)
+        let removed = try #require(diff.removed.first)
+        let changed = try #require(diff.changed.first)
+        #expect(diff.added.count == 1 && diff.removed.count == 1 && diff.changed.count == 1)
+        #expect(added.subject == removed.subject)
+        #expect(added.sha256 != removed.sha256)
+        #expect(added.notValidAfter != removed.notValidAfter)
+        // `changed` names the certificate new to the store, never the unchanged one.
+        #expect(changed == added)
+        #expect(changed.notValidAfter == Date(timeIntervalSince1970: 4_000_000_000))
+
+        // A pure removal of one of two names the removed certificate.
+        let shrink = try Self.store(paas: [unchanged]).diff(from: Self.store(paas: [unchanged, old]))
+        #expect(shrink.changed.first == shrink.removed.first)
     }
 
     @Test("diff of a store against itself is empty")
@@ -578,6 +643,48 @@ struct AttestationTrustStoreTests {
             #expect(throws: MatterCertificateAttributes.Failure.self, "\(cn)") {
                 try MatterCertificateAttributes.identifiers(in: DistinguishedName { CommonName(cn) })
             }
+        }
+    }
+
+    @Test("upstream edges: CN errors surface even with Matter attributes, first valid prefix wins")
+    func upstreamEdges() throws {
+        func cn(_ text: String) -> RelativeDistinguishedName { Self.rdn(.RDNAttributeType.commonName, text) }
+        func ids(_ rdns: [RelativeDistinguishedName]) throws -> (vendorID: UInt16?, productID: UInt16?) {
+            try MatterCertificateAttributes.identifiers(in: DistinguishedName(rdns))
+        }
+        let vid = Self.rdn(MatterCertificateAttributes.vendorIDOID, "FFF1")
+
+        // A malformed CN is an error even though the Matter attribute would win.
+        #expect(throws: MatterCertificateAttributes.Failure.self) { try ids([vid, cn("Mvid:fff1")]) }
+
+        // The first occurrence with valid hex wins over an earlier invalid one.
+        let first = try ids([cn("Mvid:XYZ1 Mvid:FFF1")])
+        #expect(first.vendorID == 0xFFF1)
+        let second = try ids([cn("Mvid:FFF1 Mvid:FFF2")])
+        #expect(second.vendorID == 0xFFF1)
+
+        // Only the first CN that yields an id is used; later ones are not even parsed.
+        let firstCN = try ids([cn("Mvid:FFF1"), cn("Mvid:FFF2 Mpid:00B1"), cn("Mvid:bad")])
+        #expect(firstCN.vendorID == 0xFFF1 && firstCN.productID == nil)
+        // A CN yielding no id does not count, so the next one is used.
+        let skipped = try ids([cn("Plain name"), cn("Mpid:00B1")])
+        #expect(skipped.vendorID == nil && skipped.productID == 0x00B1)
+
+        // The CN is truncated to 64 bytes before searching.
+        let filler = String(repeating: "a", count: 64)
+        let beyond = try ids([cn(filler + "Mvid:FFF1")])
+        #expect(beyond.vendorID == nil)
+        let atEdge = try ids([cn(String(repeating: "a", count: 55) + "Mvid:FFF1")])  // value ends at byte 64
+        #expect(atEdge.vendorID == 0xFFF1)
+        // A prefix whose digits are cut off by the truncation is an error.
+        #expect(throws: MatterCertificateAttributes.Failure.self) {
+            try ids([cn(String(repeating: "a", count: 56) + "Mvid:FFF1")])
+        }
+
+        // An empty attribute is an error.
+        #expect(throws: MatterCertificateAttributes.Failure.self) { try ids([cn("")]) }
+        #expect(throws: MatterCertificateAttributes.Failure.self) {
+            try ids([Self.rdn(MatterCertificateAttributes.vendorIDOID, "")])
         }
     }
 

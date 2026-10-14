@@ -9,16 +9,17 @@ import X509
 
 /// Reads the Matter vendor and product identifiers from a certificate's distinguished name.
 ///
-/// The semantics follow connectedhomeip (`ExtractVIDPIDFromX509Cert` and
-/// `Find16BitUpperCaseHexAfterPrefix`):
+/// Mirrors connectedhomeip v1.4.0.0 `ExtractVIDPIDFromAttributeString` and
+/// `Find16BitUpperCaseHexAfterPrefix` (src/crypto/CHIPCryptoPAL.cpp), edge for edge:
 ///
-/// - Matter carries the ids as dedicated subject attributes, a UTF8String of exactly four
-///   uppercase hex digits under 1.3.6.1.4.1.37244.2.1 (VID) and .2.2 (PID).
-/// - If any Matter attribute is present, the common name is ignored for both ids.
-/// - Otherwise the legacy form is read from the common name: the substring `Mvid:` or
-///   `Mpid:` anywhere, followed by exactly four uppercase hex digits; anything may follow.
-/// - A malformed value, a prefix without four uppercase hex digits after it, or a repeated
-///   attribute makes the name invalid, which is distinct from the ids being absent.
+/// - Matter carries the ids as dedicated subject attributes, a value of exactly four uppercase
+///   hex digits under 1.3.6.1.4.1.37244.2.1 (VID) and .2.2 (PID); a repeat is an error.
+/// - Common names are parsed too, and a malformed one is an error even when Matter attributes
+///   are present. The CN ids are used only when no Matter attribute exists.
+/// - Only the first common name that yields an id is used. It is truncated to 64 bytes, then
+///   searched for `Mvid:` / `Mpid:` anywhere; the first occurrence followed by four uppercase
+///   hex digits wins. A prefix seen with no valid hex after any occurrence is an error.
+/// - An empty attribute value is an error.
 enum MatterCertificateAttributes {
 
     /// Matter vendor ID subject attribute.
@@ -33,66 +34,85 @@ enum MatterCertificateAttributes {
         case duplicate(String)
     }
 
-    /// The VID and PID carried by `name`; `nil` for an id that is absent. Throws when an id is
-    /// present but malformed or repeated.
+    /// The VID and PID carried by `name`; `nil` for an id that is absent. Throws when the name
+    /// is invalid under the rules above.
     static func identifiers(in name: DistinguishedName) throws -> (vendorID: UInt16?, productID: UInt16?) {
-        var vendorID: UInt16?
-        var productID: UInt16?
-        var sawMatterAttribute = false
+        var matterVID: UInt16?
+        var matterPID: UInt16?
+        var cnVID: UInt16?
+        var cnPID: UInt16?
+        var cnInitialized = false
 
         for rdn in name {
             for attribute in rdn {
-                if attribute.type == vendorIDOID {
-                    sawMatterAttribute = true
-                    guard vendorID == nil else { throw Failure.duplicate("VID") }
-                    vendorID = try exactHex16(attribute.value, what: "VID")
-                } else if attribute.type == productIDOID {
-                    sawMatterAttribute = true
-                    guard productID == nil else { throw Failure.duplicate("PID") }
-                    productID = try exactHex16(attribute.value, what: "PID")
+                let isVID = attribute.type == vendorIDOID
+                let isPID = attribute.type == productIDOID
+                let isCN = attribute.type == .RDNAttributeType.commonName
+                guard isVID || isPID || isCN else { continue }
+                guard let text = String(attribute.value) else {
+                    if isCN { continue }  // not a text string: nothing to search
+                    throw Failure.malformedValue(isVID ? "VID" : "PID")
                 }
-            }
-        }
-        if sawMatterAttribute { return (vendorID, productID) }
+                let bytes = Array(text.utf8)
+                guard !bytes.isEmpty else { throw Failure.malformedValue("empty attribute") }
 
-        for rdn in name {
-            for attribute in rdn where attribute.type == .RDNAttributeType.commonName {
-                guard let text = String(attribute.value) else { continue }
-                if let value = try hexAfterPrefix("Mvid:", in: text, what: "VID") {
-                    guard vendorID == nil else { throw Failure.duplicate("VID") }
-                    vendorID = value
-                }
-                if let value = try hexAfterPrefix("Mpid:", in: text, what: "PID") {
-                    guard productID == nil else { throw Failure.duplicate("PID") }
-                    productID = value
+                if isVID || isPID {
+                    let what = isVID ? "VID" : "PID"
+                    guard bytes.count == 4, let value = parseHex16(bytes[...]) else {
+                        throw Failure.malformedValue(what)
+                    }
+                    if isVID {
+                        guard matterVID == nil else { throw Failure.duplicate(what) }
+                        matterVID = value
+                    } else {
+                        guard matterPID == nil else { throw Failure.duplicate(what) }
+                        matterPID = value
+                    }
+                } else if !cnInitialized {
+                    let searched = bytes.prefix(maxCommonNameLength)
+                    if let value = try hexAfterPrefix(Array("Mvid:".utf8), in: searched, what: "VID") {
+                        cnVID = value
+                    }
+                    if let value = try hexAfterPrefix(Array("Mpid:".utf8), in: searched, what: "PID") {
+                        cnPID = value
+                    }
+                    cnInitialized = cnVID != nil || cnPID != nil
                 }
             }
         }
-        return (vendorID, productID)
+        if matterVID != nil || matterPID != nil { return (matterVID, matterPID) }
+        return (cnVID, cnPID)
     }
+
+    /// `kMax_CommonNameAttr_Length`: the CN is truncated to this many bytes before searching.
+    private static let maxCommonNameLength = 64
 
     // MARK: - Parsing
 
-    private static func exactHex16(_ value: RelativeDistinguishedName.Attribute.Value, what: String) throws -> UInt16 {
-        guard let text = String(value), let parsed = parseHex16(Substring(text)), text.utf8.count == 4 else {
-            throw Failure.malformedValue(what)
+    /// `Find16BitUpperCaseHexAfterPrefix`: scans for each occurrence of `prefix`; the first one
+    /// followed by four uppercase hex digits wins. Seeing the prefix with no valid value is an error.
+    private static func hexAfterPrefix(_ prefix: [UInt8], in buffer: ArraySlice<UInt8>, what: String) throws -> UInt16? {
+        var sawPrefix = false
+        var index = buffer.startIndex
+        while index < buffer.endIndex {
+            guard buffer.endIndex - index >= prefix.count else { break }
+            guard buffer[index..<index + prefix.count].elementsEqual(prefix) else {
+                index += 1
+                continue
+            }
+            sawPrefix = true
+            let valueStart = index + prefix.count
+            guard buffer.endIndex - valueStart >= 4 else { break }
+            if let value = parseHex16(buffer[valueStart..<valueStart + 4]) { return value }
+            index += 1
         }
-        return parsed
+        if sawPrefix { throw Failure.malformedValue(what) }
+        return nil
     }
 
-    /// Finds `prefix` (the first occurrence) and requires four uppercase hex digits after it.
-    private static func hexAfterPrefix(_ prefix: String, in text: String, what: String) throws -> UInt16? {
-        guard let range = text.range(of: prefix) else { return nil }
-        let rest = text[range.upperBound...]
-        guard rest.utf8.count >= 4, let parsed = parseHex16(rest.prefix(4)) else {
-            throw Failure.malformedValue(what)
-        }
-        return parsed
-    }
-
-    private static func parseHex16(_ text: Substring) -> UInt16? {
-        guard text.utf8.count == 4, text.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x46) })
+    private static func parseHex16(_ bytes: ArraySlice<UInt8>) -> UInt16? {
+        guard bytes.count == 4, bytes.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x46) })
         else { return nil }
-        return UInt16(text, radix: 16)
+        return UInt16(String(decoding: bytes, as: UTF8.self), radix: 16)
     }
 }
