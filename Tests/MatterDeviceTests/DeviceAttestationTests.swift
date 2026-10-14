@@ -296,6 +296,20 @@ struct TestCredentialsAttestationTests {
         }
     }
 
+    @Test("TestAttestation.trustStore(for:) throws when the credentials carry no CD signing certificate")
+    func trustStoreWithoutCDSigner() throws {
+        let full = try DeviceAttestationCredentials.testCredentials()
+        let bare = DeviceAttestationCredentials(
+            dacCertificate: full.dacCertificate,
+            dacPrivateKey: full.dacPrivateKey,
+            paiCertificate: full.paiCertificate,
+            paaCertificate: full.paaCertificate,
+            certificationDeclaration: full.certificationDeclaration)
+        #expect(throws: TestAttestationError.noCDSigningCertificate) {
+            try TestAttestation.trustStore(for: bare)
+        }
+    }
+
     @Test("a non-default VID and PID verify when Basic Information reports them")
     func customIdentifiers() async throws {
         let creds = try DeviceAttestationCredentials.testCredentials(vendorID: 0xFFF2, productID: 0x1234)

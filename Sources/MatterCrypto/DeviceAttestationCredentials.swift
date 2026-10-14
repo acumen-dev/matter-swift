@@ -8,8 +8,9 @@ import MatterTypes
 /// Device Attestation Credentials for a Matter device.
 ///
 /// Holds the Device Attestation Certificate (DAC), DAC private key,
-/// Product Attestation Intermediate certificate (PAI), and the
-/// Certification Declaration (CD).
+/// Product Attestation Intermediate certificate (PAI), the
+/// Certification Declaration (CD), and, for test credentials, the certificate of the
+/// dedicated key that signed the CD (``cdSigningCertificate``).
 ///
 /// During commissioning, the commissioner sends an AttestationRequest.
 /// The device responds with attestation elements (including the CD and nonce),
@@ -71,7 +72,9 @@ public struct DeviceAttestationCredentials: Sendable {
     ///
     /// Creates a full PAA → PAI → DAC certificate chain. All certificates
     /// include the mandatory Matter VID/PID OIDs in their Subject DNs per
-    /// Matter Core Specification §6.3.5.
+    /// Matter Core Specification §6.3.5. The Certification Declaration is signed by a
+    /// dedicated CD signing key, not a chain key; its certificate is returned in
+    /// ``cdSigningCertificate``, which a test trust store uses to trust the CD signer.
     ///
     /// - Warning: These credentials are for development and testing only.
     ///   Production devices must use credentials issued by the CSA.
