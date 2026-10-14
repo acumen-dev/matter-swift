@@ -335,18 +335,22 @@ public struct CommissioningController: Sendable {
         return (elements, signature)
     }
 
-    /// Apply the verifier's result for `dac`.
+    /// Apply the verifier's result.
     ///
-    /// A verified attestation is recorded as such. A failure is approved only when
-    /// `approvingUnverifiedDevice` equals its non-nil `dacFingerprint` and its reason is not
-    /// `.malformed`; it is then recorded as overridden at `approvedAt`, and commissioning carries
-    /// on with the key in the DAC (read unverified), against which the CSRResponse is still
-    /// checked. Otherwise the failure is thrown.
+    /// A verified attestation is recorded as such. A failure is approved iff its
+    /// `dacFingerprint` is non-nil and equals `approvingUnverifiedDevice` exactly, and the
+    /// failure carries the DAC's public key; whatever the reason, as connectedhomeip lets its
+    /// delegate continue on any attestation failure (CHIPDeviceController.cpp:1301-1340,
+    /// v1.4.0.0). It is then recorded as overridden at `approvedAt`, and commissioning carries
+    /// on with that key: the CSRResponse must still be signed with it, which re-proves the
+    /// device holds the DAC's private key. That re-proof is why a nonce-mismatch or
+    /// attestation-signature failure can be approved at all.
     ///
-    /// - Throws: `ControllerError.attestationFailed` with the verifier's failure.
+    /// - Throws: `ControllerError.attestationFailed` with the verifier's failure when nothing
+    ///   approves it; `ControllerError.attestationApprovalRefused` when the approval names this
+    ///   DAC but the failure carries no readable key to bind it to.
     public func applyAttestationResult(
         _ result: AttestationResult,
-        dac: Data,
         approvingUnverifiedDevice approval: Data?,
         approvedAt: Date,
         context: CommissioningContext
@@ -360,16 +364,16 @@ public struct CommissioningController: Sendable {
             ctx.attestation = .verified(
                 paaSubject: verified.paaSubject, vendorID: verified.vendorID, productID: verified.productID)
         case .failed(let failure):
-            guard failure.reason != .malformed,
-                  let fingerprint = failure.dacFingerprint,
-                  let approval, approval == fingerprint,
-                  let contents = DeviceAttestationVerifier.unverifiedDACContents(dac)
-            else {
+            guard let fingerprint = failure.dacFingerprint, let approval, approval == fingerprint else {
                 throw ControllerError.attestationFailed(failure)
             }
-            ctx.dacPublicKey = contents.publicKey
-            ctx.dacVendorID = contents.vendorID
-            ctx.dacProductID = contents.productID
+            guard let key = failure.dacPublicKey else {
+                throw ControllerError.attestationApprovalRefused(
+                    failure, "the DAC's public key cannot be read, so the device cannot be bound to it")
+            }
+            ctx.dacPublicKey = key
+            ctx.dacVendorID = failure.dacVendorID
+            ctx.dacProductID = failure.dacProductID
             ctx.attestation = .overridden(dacFingerprint: fingerprint, reason: failure.reason, approvedAt: approvedAt)
         }
         return ctx
@@ -404,7 +408,7 @@ public struct CommissioningController: Sendable {
     ///
     /// The echoed CSRNonce must equal `expectedNonce`, the attestation signature over
     /// `nocsrElements || attestationChallenge` must verify with `context.dacPublicKey` (set by
-    /// ``applyAttestationResult(_:dac:approvingUnverifiedDevice:approvedAt:context:)``, on the
+    /// ``applyAttestationResult(_:approvingUnverifiedDevice:approvedAt:context:)``, on the
     /// approval path too), and the CSR's self-signature must verify; the device key is read
     /// from its SubjectPublicKeyInfo.
     ///

@@ -45,9 +45,16 @@ public enum ControllerError: Error, Sendable, Equatable {
 
     /// The device failed attestation. Nothing was committed on the device: its fail-safe was
     /// disarmed and no node ID was consumed. A retry passing the failure's `dacFingerprint` as
-    /// `approvingUnverifiedDevice` commissions that device anyway, unless the reason is
-    /// `.malformed`.
+    /// `approvingUnverifiedDevice` commissions that device anyway, whatever the reason,
+    /// provided the failure carries the DAC's public key. The CSRResponse must then still be
+    /// signed with that key; this re-proof of key possession is the only reason a
+    /// nonce-mismatch or attestation-signature failure is approvable.
     case attestationFailed(AttestationFailure)
+
+    /// The approval named this device's DAC, but it cannot be honoured (the message says why:
+    /// for example, the DAC's public key cannot be read, so nothing could bind the device to
+    /// it). Nothing was committed on the device, as for ``attestationFailed(_:)``.
+    case attestationApprovalRefused(AttestationFailure, String)
 
     /// The attestation trust store could not be loaded when the controller was created.
     case attestationTrustStoreUnavailable(String)

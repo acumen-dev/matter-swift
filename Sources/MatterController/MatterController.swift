@@ -114,6 +114,12 @@ public actor MatterController {
         /// `AttestationTrustStore.bundledProduction()`, the DCL production PAAs and CSA CD
         /// signing keys bundled with MatterCrypto, loaded once when the controller is created.
         /// Nothing refreshes it: a consumer that wants a newer store passes one here.
+        ///
+        /// The nil default reads MatterCrypto's resource bundle through `Bundle.module`, which
+        /// **traps** if the bundle is not deployed next to the executable; only a present but
+        /// damaged bundle makes the controller's init throw
+        /// ``ControllerError/attestationTrustStoreUnavailable(_:)``. Deployments without the
+        /// bundle must pass a store.
         public var attestationTrustStore: AttestationTrustStore?
 
         public init(
@@ -200,6 +206,10 @@ public actor MatterController {
     ///   - configuration: Controller configuration.
     ///   - store: Optional controller store for persistence across restarts.
     ///   - logger: Logger instance (default: "matter.controller").
+    /// - Throws: ``ControllerError/attestationTrustStoreUnavailable(_:)`` if
+    ///   `configuration.attestationTrustStore` is nil and the bundled production store is
+    ///   damaged. If MatterCrypto's resource bundle is absent altogether, `Bundle.module` traps
+    ///   instead (see ``Configuration/attestationTrustStore``).
     public init(
         transport: any MatterUDPTransport,
         discovery: any MatterDiscovery,
@@ -246,6 +256,8 @@ public actor MatterController {
     ///   - stored: Previously persisted controller state.
     ///   - store: Controller store for ongoing persistence.
     ///   - logger: Logger instance (default: "matter.controller").
+    /// - Throws: as ``init(transport:discovery:configuration:store:logger:)`` for the trust
+    ///   store; `corruptStoredState` for untrustworthy stored state.
     public init(
         transport: any MatterUDPTransport,
         discovery: any MatterDiscovery,
@@ -679,11 +691,14 @@ public actor MatterController {
     /// A device that fails attestation is refused with
     /// `ControllerError.attestationFailed`, before anything is staged on it: the fail-safe is
     /// disarmed and no node ID is consumed. To commission it anyway, retry passing the
-    /// failure's `dacFingerprint` as `approvingUnverifiedDevice`: a failure whose
-    /// fingerprint equals it is approved and recorded as
-    /// ``DeviceAttestationRecord/overridden(dacFingerprint:reason:approvedAt:)``. A
-    /// `.malformed` failure cannot be approved, and approval does not skip the CSRResponse
-    /// check: a device that cannot sign with its DAC's key still fails.
+    /// failure's `dacFingerprint` as `approvingUnverifiedDevice`: a failure, whatever its
+    /// reason, whose fingerprint equals it exactly and which carries the DAC's public key is
+    /// approved and recorded as
+    /// ``DeviceAttestationRecord/overridden(dacFingerprint:reason:approvedAt:)``. Approval does
+    /// not skip the CSRResponse check: the CSR must be signed with that DAC key, so a device
+    /// that cannot sign with it still fails. That check re-proving key possession is the only
+    /// reason a nonce-mismatch or attestation-signature failure is approvable. A matching
+    /// approval whose DAC key cannot be read throws `attestationApprovalRefused`.
     ///
     /// Steps 2-7 run over the PASE session, registered with the message layer
     /// for their duration and unregistered on every exit path. The CASE
@@ -1059,7 +1074,7 @@ public actor MatterController {
             now: Date()
         )
         let attested = try commissioning.applyAttestationResult(
-            result, dac: dac, approvingUnverifiedDevice: approvingUnverifiedDevice,
+            result, approvingUnverifiedDevice: approvingUnverifiedDevice,
             approvedAt: Date(), context: context
         )
         switch attested.attestation {

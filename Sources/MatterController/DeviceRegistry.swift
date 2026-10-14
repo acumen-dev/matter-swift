@@ -57,10 +57,12 @@ public struct CommissionedDevice: Sendable, Codable, Equatable {
     /// The fabric index the device belongs to.
     public let fabricIndex: FabricIndex
 
-    /// The device's vendor ID (from Basic Information cluster).
+    /// The device's vendor ID, from its DAC. Verified only when ``attestation`` is
+    /// ``DeviceAttestationRecord/verified(paaSubject:vendorID:productID:)``; on the override
+    /// path it is the DAC's unverified claim, so consult ``attestation``.
     public let vendorID: VendorID?
 
-    /// The device's product ID (from Basic Information cluster).
+    /// The device's product ID, from its DAC; verified or not as ``vendorID``.
     public let productID: ProductID?
 
     /// Operational address — host (stored for Codable compatibility).

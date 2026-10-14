@@ -11,6 +11,8 @@ import MatterTransport
 @testable import MatterController
 import MatterDevice
 import MatterTestSupport
+import X509
+import SwiftASN1
 
 /// Commissioning verifies the device's attestation before anything is committed on it:
 /// a device that fails is left untouched (fail-safe disarmed, no fabric, no node ID used),
@@ -20,7 +22,11 @@ import MatterTestSupport
 struct AttestationCommissioningTests {
 
     /// Not the device server's defaults (0xFFF1/0x8000) nor the controller's own vendor
-    /// (`VendorID.test`, 0xFFF1), so the recorded identifiers can only have come from the DAC.
+    /// (`VendorID.test`, 0xFFF1), so the recorded identifiers are not the controller's. They
+    /// are also what the rig's Basic Information reports: with `testCredentials`' CD (one PID,
+    /// no dac_origin fields) Ruling 16a's CD checks require BI, CD and DAC to agree, so these
+    /// tests cannot tell DAC from BI. That the IDs come from the DAC is pinned at unit level
+    /// (CommissioningControllerTests: `applyAttestationResult`, `handleCommissioningComplete`).
     static let vendorID: UInt16 = 0xFFF2
     static let productID: UInt16 = 0x8001
 
@@ -257,25 +263,101 @@ struct AttestationCommissioningTests {
 
     // MARK: - Malformed
 
-    @Test("A malformed attestation cannot be approved, even by the DAC's own fingerprint")
-    func malformedCannotBeApproved() async throws {
-        let genuine = try Self.credentials()
-        // The PAI is not a certificate: the verifier fails `.malformed`, with the DAC's fingerprint.
-        let broken = DeviceAttestationCredentials(
+    /// Credentials whose PAI is not a certificate: the verifier fails `.malformed`, with the
+    /// DAC's fingerprint and key (as an NXP PAI whose AlgorithmIdentifier carries NULL would).
+    static func brokenPAI(_ genuine: DeviceAttestationCredentials, signingKey: P256.Signing.PrivateKey) -> DeviceAttestationCredentials {
+        DeviceAttestationCredentials(
             dacCertificate: genuine.dacCertificate,
-            dacPrivateKey: genuine.dacPrivateKey,
+            dacPrivateKey: signingKey,
             paiCertificate: Data([0x30, 0x00]),
             paaCertificate: genuine.paaCertificate,
             certificationDeclaration: genuine.certificationDeclaration,
             cdSigningCertificate: genuine.cdSigningCertificate
         )
+    }
+
+    @Test("A malformed attestation with a readable DAC key is approvable for that exact DAC")
+    func malformedIsApprovable() async throws {
+        let genuine = try Self.credentials()
         let fingerprint = Data(SHA256.hash(data: genuine.dacCertificate))
-        try await Self.withRig(seed: 96, credentials: broken, trustStore: try TestAttestation.trustStore(for: genuine)) { rig in
+        try await Self.withRig(
+            seed: 96, credentials: Self.brokenPAI(genuine, signingKey: genuine.dacPrivateKey),
+            trustStore: try TestAttestation.trustStore(for: genuine)
+        ) { rig in
             let expectedNodeID = await rig.controller.nextNodeID
             let start = Date()
-            let failure = try await Self.expectAttestationFailure(rig, approving: fingerprint)
+            let failure = try await Self.expectAttestationFailure(rig)
             #expect(failure.reason == .malformed)
             #expect(failure.dacFingerprint == fingerprint)
+            try await Self.expectUntouched(rig, nextNodeID: expectedNodeID, armedAfter: start)
+
+            await rig.server.openCommissioningWindow(timeout: 180)
+            let device = try await rig.controller.commission(
+                address: rig.link.b.address, setupCode: passcode, mrp: fast, approvingUnverifiedDevice: fingerprint)
+            guard case .overridden(let approved, let reason, _) = device.attestation else {
+                Issue.record("expected an overridden attestation record, got \(String(describing: device.attestation))")
+                return
+            }
+            #expect(approved == fingerprint && reason == .malformed)
+        }
+    }
+
+    @Test("An approved malformed attestation is still bound to the DAC key: a CSR signed by another key fails")
+    func approvedMalformedStillNOCSRBound() async throws {
+        let genuine = try Self.credentials()
+        let fingerprint = Data(SHA256.hash(data: genuine.dacCertificate))
+        try await Self.withRig(
+            seed: 98, credentials: Self.brokenPAI(genuine, signingKey: P256.Signing.PrivateKey()),
+            trustStore: try TestAttestation.trustStore(for: genuine)
+        ) { rig in
+            let expectedNodeID = await rig.controller.nextNodeID
+            let start = Date()
+            await #expect(throws: ControllerError.commissioningFailed("CSR attestation signature invalid")) {
+                _ = try await rig.controller.commission(
+                    address: rig.link.b.address, setupCode: passcode, mrp: fast, approvingUnverifiedDevice: fingerprint)
+            }
+            try await Self.expectUntouched(rig, nextNodeID: expectedNodeID, armedAfter: start)
+        }
+    }
+
+    // MARK: - Refused approval (Ruling 38)
+
+    @Test("Approving a DAC whose key cannot be read is refused, saying so, and leaves the device untouched")
+    func approvalWithoutKeyRefused() async throws {
+        let genuine = try Self.credentials()
+        // A P-384 DAC: it parses (so it has a fingerprint) but its key is not P-256.
+        let p384 = P384.Signing.PrivateKey()
+        let subject = try DistinguishedName { CommonName("P-384 DAC") }
+        let dacCertificate = try Certificate(
+            version: .v3, serialNumber: .init(), publicKey: .init(p384.publicKey),
+            notValidBefore: Date(timeIntervalSince1970: 1_640_995_200),
+            notValidAfter: Date(timeIntervalSince1970: 2_145_916_800),
+            issuer: subject, subject: subject, signatureAlgorithm: .ecdsaWithSHA384,
+            extensions: Certificate.Extensions(), issuerPrivateKey: .init(p384))
+        var serializer = DER.Serializer()
+        try serializer.serialize(dacCertificate)
+        let dac = Data(serializer.serializedBytes)
+        let creds = DeviceAttestationCredentials(
+            dacCertificate: dac,
+            dacPrivateKey: genuine.dacPrivateKey,
+            paiCertificate: genuine.paiCertificate,
+            paaCertificate: genuine.paaCertificate,
+            certificationDeclaration: genuine.certificationDeclaration,
+            cdSigningCertificate: genuine.cdSigningCertificate
+        )
+        let fingerprint = Data(SHA256.hash(data: dac))
+        try await Self.withRig(seed: 99, credentials: creds, trustStore: try TestAttestation.trustStore(for: genuine)) { rig in
+            let expectedNodeID = await rig.controller.nextNodeID
+            let start = Date()
+            do {
+                _ = try await rig.controller.commission(
+                    address: rig.link.b.address, setupCode: passcode, mrp: fast, approvingUnverifiedDevice: fingerprint)
+                Issue.record("commission should have refused the approval")
+            } catch ControllerError.attestationApprovalRefused(let failure, let why) {
+                #expect(failure.dacFingerprint == fingerprint)
+                #expect(failure.dacPublicKey == nil)
+                #expect(why.contains("public key"))
+            }
             try await Self.expectUntouched(rig, nextNodeID: expectedNodeID, armedAfter: start)
         }
     }

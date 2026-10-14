@@ -494,9 +494,16 @@ struct CommissioningControllerTests {
     // MARK: - Attestation
 
     private static let fingerprint = Data(repeating: 0xF1, count: 32)
+    private static let dacKeyOnFailure = P256.Signing.PrivateKey().publicKey
 
-    private func failed(_ reason: AttestationFailureReason, fingerprint: Data? = fingerprint) -> AttestationResult {
-        .failed(AttestationFailure(reason: reason, dacFingerprint: fingerprint, detail: "test"))
+    /// A failure as the verifier gives it once the DAC parsed: fingerprint, key and IDs.
+    private func failure(
+        _ reason: AttestationFailureReason, fingerprint: Data? = fingerprint,
+        key: P256.Signing.PublicKey? = dacKeyOnFailure
+    ) -> AttestationFailure {
+        AttestationFailure(
+            reason: reason, dacFingerprint: fingerprint, detail: "test",
+            dacPublicKey: key, dacVendorID: 0xFFF2, dacProductID: 0x8001)
     }
 
     @Test("Attestation: a verified result records the PAA and the DAC's VID/PID and key")
@@ -507,8 +514,7 @@ struct CommissioningControllerTests {
             vendorID: 0xFFF2, productID: 0x8001, paaSubject: "CN=Test PAA",
             dacFingerprint: Self.fingerprint, dacPublicKey: key)
         let ctx = try cc.applyAttestationResult(
-            .verified(verified), dac: Data(), approvingUnverifiedDevice: nil, approvedAt: Date(),
-            context: .init())
+            .verified(verified), approvingUnverifiedDevice: nil, approvedAt: Date(), context: .init())
         #expect(ctx.attestation == .verified(paaSubject: "CN=Test PAA", vendorID: 0xFFF2, productID: 0x8001))
         #expect(ctx.dacPublicKey?.x963Representation == key.x963Representation)
         #expect(ctx.dacVendorID == 0xFFF2 && ctx.dacProductID == 0x8001)
@@ -520,50 +526,49 @@ struct CommissioningControllerTests {
         var other = Self.fingerprint
         other[other.startIndex] ^= 0x01
         for approval in [nil, other] {
-            #expect(throws: ControllerError.attestationFailed(
-                AttestationFailure(reason: .untrustedRoot, dacFingerprint: Self.fingerprint, detail: "test"))) {
+            #expect(throws: ControllerError.attestationFailed(failure(.untrustedRoot))) {
                 _ = try cc.applyAttestationResult(
-                    failed(.untrustedRoot), dac: Data(), approvingUnverifiedDevice: approval, approvedAt: Date(),
+                    .failed(failure(.untrustedRoot)), approvingUnverifiedDevice: approval, approvedAt: Date(),
                     context: .init())
             }
         }
     }
 
-    @Test("Attestation: a malformed failure is never approved, with or without a fingerprint")
-    func malformedNeverApproved() throws {
+    @Test("Attestation: a failure without a fingerprint (unparseable DAC) is never approved")
+    func noFingerprintNeverApproved() throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
-        for fingerprint in [nil, Self.fingerprint] {
-            #expect(throws: ControllerError.attestationFailed(
-                AttestationFailure(reason: .malformed, dacFingerprint: fingerprint, detail: "test"))) {
-                _ = try cc.applyAttestationResult(
-                    failed(.malformed, fingerprint: fingerprint), dac: Data(),
-                    approvingUnverifiedDevice: Self.fingerprint, approvedAt: Date(), context: .init())
-            }
+        let unparsed = AttestationFailure(reason: .malformed, dacFingerprint: nil, detail: "test")
+        #expect(throws: ControllerError.attestationFailed(unparsed)) {
+            _ = try cc.applyAttestationResult(
+                .failed(unparsed), approvingUnverifiedDevice: Self.fingerprint, approvedAt: Date(), context: .init())
         }
     }
 
-    @Test("Attestation: an approved failure carries on with the DAC's own key and identifiers")
-    func approvedFailureUsesDAC() throws {
+    @Test("Attestation: any reason, malformed included, is approvable for the exact DAC, and stays bound to its key",
+          arguments: AttestationFailureReason.allCases)
+    func anyReasonApprovable(reason: AttestationFailureReason) throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
-        let creds = try DeviceAttestationCredentials.testCredentials(vendorID: 0xFFF2, productID: 0x8001)
-        let fingerprint = Data(SHA256.hash(data: creds.dacCertificate))
         let approvedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let ctx = try cc.applyAttestationResult(
-            failed(.untrustedRoot, fingerprint: fingerprint), dac: creds.dacCertificate,
-            approvingUnverifiedDevice: fingerprint, approvedAt: approvedAt, context: .init())
-        #expect(ctx.attestation == .overridden(dacFingerprint: fingerprint, reason: .untrustedRoot, approvedAt: approvedAt))
-        #expect(ctx.dacPublicKey?.x963Representation == creds.dacPrivateKey.publicKey.x963Representation)
+            .failed(failure(reason)), approvingUnverifiedDevice: Self.fingerprint, approvedAt: approvedAt,
+            context: .init())
+        #expect(ctx.attestation == .overridden(dacFingerprint: Self.fingerprint, reason: reason, approvedAt: approvedAt))
+        // The CSRResponse is checked against exactly this key.
+        #expect(ctx.dacPublicKey?.x963Representation == Self.dacKeyOnFailure.x963Representation)
         #expect(ctx.dacVendorID == 0xFFF2 && ctx.dacProductID == 0x8001)
     }
 
-    @Test("Attestation: an approved failure whose DAC key cannot be read is thrown")
+    @Test("Attestation: an approval of the exact DAC whose key cannot be read is refused, saying so")
     func approvedFailureWithoutDACKey() throws {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
-        #expect(throws: ControllerError.attestationFailed(
-            AttestationFailure(reason: .untrustedRoot, dacFingerprint: Self.fingerprint, detail: "test"))) {
+        let keyless = failure(.malformed, key: nil)
+        do {
             _ = try cc.applyAttestationResult(
-                failed(.untrustedRoot), dac: Data([0x30, 0x00]), approvingUnverifiedDevice: Self.fingerprint,
-                approvedAt: Date(), context: .init())
+                .failed(keyless), approvingUnverifiedDevice: Self.fingerprint, approvedAt: Date(), context: .init())
+            Issue.record("expected attestationApprovalRefused")
+        } catch ControllerError.attestationApprovalRefused(let refused, let why) {
+            #expect(refused == keyless)
+            #expect(why.contains("public key"))
         }
     }
 

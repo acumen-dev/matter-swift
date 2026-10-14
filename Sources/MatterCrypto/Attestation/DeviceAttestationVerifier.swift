@@ -41,10 +41,19 @@ public struct DeviceAttestationVerifier: Sendable {
         guard let dacCertificate = try? Certificate(derEncoded: Array(dac)) else {
             return Self.failed(.malformed, nil, "the DAC is not a parseable P-256 X.509 certificate")
         }
-        // 2. Fingerprint.
+        // 2. Fingerprint, and the DAC's key and identifiers as they stand (unverified), carried
+        //    by every failure from here on so a caller approving it has them from this parse.
         let fingerprint = Data(SHA256.hash(data: dac))
+        let unverifiedKey = P256.Signing.PublicKey(dacCertificate.publicKey)
+        let unverifiedIDs = try? MatterCertificateAttributes.identifiers(in: dacCertificate.subject)
+        func failed(_ reason: AttestationFailureReason, _ detail: String) -> AttestationResult {
+            .failed(AttestationFailure(
+                reason: reason, dacFingerprint: fingerprint, detail: detail,
+                dacPublicKey: unverifiedKey,
+                dacVendorID: unverifiedIDs?.vendorID, dacProductID: unverifiedIDs?.productID))
+        }
         guard let paiCertificate = try? Certificate(derEncoded: Array(pai)) else {
-            return Self.failed(.malformed, fingerprint, "the PAI is not a parseable P-256 X.509 certificate")
+            return failed(.malformed, "the PAI is not a parseable P-256 X.509 certificate")
         }
 
         // 3. Chain.
@@ -55,32 +64,32 @@ public struct DeviceAttestationVerifier: Sendable {
         switch await verifier.validate(leaf: dacCertificate, intermediates: CertificateStore([paiCertificate])) {
         case .validCertificate(let chain):
             guard let root = chain.last else {
-                return Self.failed(.chainInvalid, fingerprint, "empty validated chain")
+                return failed(.chainInvalid, "empty validated chain")
             }
             paa = root
         case .couldNotValidate(let failures):
             let (reason, detail) = classify(failures, dac: dacCertificate, pai: paiCertificate)
-            return Self.failed(reason, fingerprint, detail)
+            return failed(reason, detail)
         }
 
         guard let ids = try? MatterCertificateAttributes.identifiers(in: dacCertificate.subject),
               let vendorID = ids.vendorID, let productID = ids.productID,
               let dacPublicKey = P256.Signing.PublicKey(dacCertificate.publicKey)
         else {
-            return Self.failed(.malformed, fingerprint, "the DAC's VID, PID or key could not be read")
+            return failed(.malformed, "the DAC's VID, PID or key could not be read")
         }
 
         // 4. Attestation elements: {1: CD, 2: nonce, 3: timestamp}.
         guard let elements = AttestationElements(attestationElements) else {
-            return Self.failed(.malformed, fingerprint, "the attestation elements are not a well-formed structure with a CD, nonce and timestamp")
+            return failed(.malformed, "the attestation elements are not a well-formed structure with a CD, nonce and timestamp")
         }
         guard elements.nonce == sentNonce else {
-            return Self.failed(.nonceMismatch, fingerprint, "the attestation elements do not echo the nonce that was sent")
+            return failed(.nonceMismatch, "the attestation elements do not echo the nonce that was sent")
         }
 
         // 5. Signature.
         guard Self.isValidSignature(attestationSignature, over: attestationElements + attestationChallenge, by: dacPublicKey) else {
-            return Self.failed(.attestationSignatureInvalid, fingerprint, "the attestation signature does not verify with the DAC key")
+            return failed(.attestationSignatureInvalid, "the attestation signature does not verify with the DAC key")
         }
 
         // 6. Certification Declaration.
@@ -88,7 +97,7 @@ public struct DeviceAttestationVerifier: Sendable {
             elements.certificationDeclaration, basicInformation: basicInformation,
             dacVendorID: vendorID, dacProductID: productID, pai: paiCertificate, paa: paa
         ) {
-            return Self.failed(reason, fingerprint, detail)
+            return failed(reason, detail)
         }
 
         return .verified(VerifiedAttestation(
@@ -97,20 +106,6 @@ public struct DeviceAttestationVerifier: Sendable {
             dacFingerprint: fingerprint,
             dacPublicKey: dacPublicKey
         ))
-    }
-
-    /// The public key and subject VID/PID of a DAC, read without validating it: what a
-    /// commissioner that approved a failed attestation needs to carry on (the CSRResponse
-    /// signature check and the device's recorded identifiers). `nil` if the DAC does not parse
-    /// or its key is not P-256; a VID or PID is `nil` if the subject does not yield one.
-    public static func unverifiedDACContents(
-        _ dac: Data
-    ) -> (publicKey: P256.Signing.PublicKey, vendorID: UInt16?, productID: UInt16?)? {
-        guard let certificate = try? Certificate(derEncoded: Array(dac)),
-              let publicKey = P256.Signing.PublicKey(certificate.publicKey)
-        else { return nil }
-        let ids = try? MatterCertificateAttributes.identifiers(in: certificate.subject)
-        return (publicKey, ids?.vendorID, ids?.productID)
     }
 
     /// CSRResponse: the device signs nocsrElements || attestationChallenge with its DAC key.

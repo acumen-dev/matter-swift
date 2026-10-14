@@ -55,10 +55,38 @@ public struct AttestationFailure: Error, Sendable, Equatable {
     /// Human-readable; never contains key material.
     public let detail: String
 
-    public init(reason: AttestationFailureReason, dacFingerprint: Data?, detail: String) {
+    /// The public key in the DAC whose fingerprint is `dacFingerprint`, from the same parse;
+    /// **unverified**. `nil` if the DAC could not be parsed or its key is not P-256. A
+    /// commissioner that approves the failure binds the device to this key (the CSRResponse
+    /// must be signed with it).
+    public let dacPublicKey: P256.Signing.PublicKey?
+
+    /// The vendor ID in the DAC's subject; **unverified** (the chain may not have validated).
+    /// `nil` if the subject yields none. For showing a person deciding on an approval.
+    public let dacVendorID: UInt16?
+
+    /// The product ID in the DAC's subject; **unverified**, as ``dacVendorID``.
+    public let dacProductID: UInt16?
+
+    public init(
+        reason: AttestationFailureReason, dacFingerprint: Data?, detail: String,
+        dacPublicKey: P256.Signing.PublicKey? = nil, dacVendorID: UInt16? = nil, dacProductID: UInt16? = nil
+    ) {
         self.reason = reason
         self.dacFingerprint = dacFingerprint
         self.detail = detail
+        self.dacPublicKey = dacPublicKey
+        self.dacVendorID = dacVendorID
+        self.dacProductID = dacProductID
+    }
+
+    public static func == (lhs: AttestationFailure, rhs: AttestationFailure) -> Bool {
+        lhs.reason == rhs.reason
+            && lhs.dacFingerprint == rhs.dacFingerprint
+            && lhs.detail == rhs.detail
+            && lhs.dacPublicKey?.x963Representation == rhs.dacPublicKey?.x963Representation
+            && lhs.dacVendorID == rhs.dacVendorID
+            && lhs.dacProductID == rhs.dacProductID
     }
 }
 
