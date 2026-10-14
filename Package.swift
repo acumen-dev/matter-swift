@@ -36,7 +36,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
-        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
@@ -219,11 +219,18 @@ let package = Package(
         ),
         .testTarget(
             name: "MatterProtocolTests",
-            dependencies: ["MatterProtocol", "MatterCrypto", "MatterTransport", "MatterTestSupport"]
+            dependencies: [
+                "MatterProtocol", "MatterCrypto", "MatterTransport", "MatterTypes", "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
         ),
         .testTarget(
             name: "MatterDeviceTests",
-            dependencies: ["MatterDevice", "MatterCrypto", "MatterProtocol", "MatterTransport", "MatterTypes", "MatterTestSupport"]
+            dependencies: [
+                "MatterDevice", "MatterCrypto", "MatterModel", "MatterProtocol", "MatterTransport",
+                "MatterTypes", "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ]
         ),
         .testTarget(
             name: "MatterControllerTests",
