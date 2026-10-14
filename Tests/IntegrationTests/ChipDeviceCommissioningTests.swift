@@ -214,22 +214,28 @@ struct ChipDeviceCommissioningTests {
 
             // Measured: chip-all-clusters-app v1.4.0.0 has no DoorLock on any
             // endpoint, so LockDoor on endpoint 1 is UnsupportedCluster.
-            await #expect(throws: IMError.invalidStatus("Command error: status \(IMStatusCode.unsupportedCluster.rawValue)")) {
+            await #expect(performing: {
                 _ = try await controller.invokeCommand(
                     nodeID: device.nodeID, endpointID: Self.endpoint, clusterID: .doorLock,
                     commandID: DoorLockCluster.Command.lockDoor,
                     timedTimeout: .seconds(30)
                 )
-            }
+            }, throws: { error in
+                guard case IMError.commandStatus(_, let status, _) = error else { return false }
+                return status == IMStatusCode.unsupportedCluster.rawValue
+            })
 
             // Measured: the app refuses the untimed invoke in the command's
             // status IB (an InvokeResponse), not with a StatusResponse.
-            await #expect(throws: IMError.invalidStatus("Command error: status \(IMStatusCode.needsTimedInteraction.rawValue)")) {
+            await #expect(performing: {
                 _ = try await controller.invokeCommand(
                     nodeID: device.nodeID, endpointID: Self.endpoint, clusterID: Self.unitTesting,
                     commandID: Self.timedInvokeRequest
                 )
-            }
+            }, throws: { error in
+                guard case IMError.commandStatus(_, let status, _) = error else { return false }
+                return status == IMStatusCode.needsTimedInteraction.rawValue
+            })
             _ = try await controller.invokeCommand(
                 nodeID: device.nodeID, endpointID: Self.endpoint, clusterID: Self.unitTesting,
                 commandID: Self.timedInvokeRequest,
