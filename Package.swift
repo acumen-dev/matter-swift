@@ -68,7 +68,8 @@ let package = Package(
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
-            ]
+            ],
+            resources: [.copy("Resources/Attestation")]
         ),
 
         // MARK: - Transport Abstractions

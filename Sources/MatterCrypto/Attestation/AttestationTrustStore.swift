@@ -88,7 +88,7 @@ public enum AttestationTrustStoreError: Error, Sendable, Equatable {
     case unsupportedKey(String)
     /// The named certificate has no SubjectKeyIdentifier extension.
     case missingSubjectKeyIdentifier(String)
-    /// The bundled trust data could not be read (Task 5).
+    /// The bundled trust data is missing, altered, incomplete or has unlisted files; the message says which.
     case bundleCorrupt(String)
     /// A directory swap was interrupted and the previous store could not be restored, or
     /// several stranded copies make the right one ambiguous; the message names where they are.
@@ -134,11 +134,11 @@ public struct AttestationTrustStore: Sendable {
     ///
     /// Assumes no concurrent writer of `directory`.
     ///
-    /// `cdSigningKeys` has no default until the bundled CSA keys exist (Task 5).
-    public init(directory: URL, cdSigningKeys: [CDSigningKey], provenance: TrustStoreProvenance? = nil) throws {
+    /// `cdSigningKeys` defaults to ``bundledCDSigningKeys()``.
+    public init(directory: URL, cdSigningKeys: [CDSigningKey]? = nil, provenance: TrustStoreProvenance? = nil) throws {
         try self.init(
-            directory: directory, cdSigningKeys: cdSigningKeys, provenance: provenance,
-            fileOps: FoundationAttestationFileOps())
+            directory: directory, cdSigningKeys: try cdSigningKeys ?? Self.bundledCDSigningKeys(),
+            provenance: provenance, fileOps: FoundationAttestationFileOps())
     }
 
     init(
