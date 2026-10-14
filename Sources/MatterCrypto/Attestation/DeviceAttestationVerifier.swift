@@ -72,9 +72,8 @@ public struct DeviceAttestationVerifier: Sendable {
             return failed(reason, detail)
         }
 
-        guard let ids = try? MatterCertificateAttributes.identifiers(in: dacCertificate.subject),
-              let vendorID = ids.vendorID, let productID = ids.productID,
-              let dacPublicKey = P256.Signing.PublicKey(dacCertificate.publicKey)
+        guard let vendorID = unverifiedIDs?.vendorID, let productID = unverifiedIDs?.productID,
+              let dacPublicKey = unverifiedKey
         else {
             return failed(.malformed, "the DAC's VID, PID or key could not be read")
         }

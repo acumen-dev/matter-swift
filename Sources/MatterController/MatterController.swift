@@ -1030,6 +1030,8 @@ public actor MatterController {
     /// `approvingUnverifiedDevice`).
     ///
     /// - Throws: `ControllerError.attestationFailed` for a failure that is not approved;
+    ///   `attestationApprovalRefused` if the approved failure's DAC key cannot be read;
+    ///   `attestationValidationFailed` if the attestation cannot be validated at all;
     ///   `commissioningFailed` if Basic Information cannot be read.
     private func attestDevice(
         sessionID: UInt16,

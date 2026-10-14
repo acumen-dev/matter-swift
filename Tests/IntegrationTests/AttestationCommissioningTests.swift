@@ -25,7 +25,9 @@ struct AttestationCommissioningTests {
     /// (`VendorID.test`, 0xFFF1), so the recorded identifiers are not the controller's. They
     /// are also what the rig's Basic Information reports: with `testCredentials`' CD (one PID,
     /// no dac_origin fields) Ruling 16a's CD checks require BI, CD and DAC to agree, so these
-    /// tests cannot tell DAC from BI. That the IDs come from the DAC is pinned at unit level
+    /// tests cannot tell DAC from BI wherever the CD check runs. In `approvedRetrySucceeds` the
+    /// failure is at the chain step, before the CD check, so that agreement is not exercised
+    /// there. That the IDs come from the DAC is pinned at unit level
     /// (CommissioningControllerTests: `applyAttestationResult`, `handleCommissioningComplete`).
     static let vendorID: UInt16 = 0xFFF2
     static let productID: UInt16 = 0x8001
