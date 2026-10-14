@@ -18,8 +18,8 @@ struct CommissioningFailureTests {
 
     struct InjectedFailure: Error {}
 
-    @Test("A failure after ArmFailSafe / CSR / AddNOC / the ACL write / CASE disarms the device, commits no fabric, and frees the node ID",
-          arguments: [CommissioningStep.afterArmFailSafe, .afterCSR, .afterAddNOC, .afterACLWrite, .afterCASE])
+    @Test("A failure after ArmFailSafe / attestation / CSR / AddNOC / the ACL write / CASE disarms the device, commits no fabric, and frees the node ID",
+          arguments: [CommissioningStep.afterArmFailSafe, .afterAttestation, .afterCSR, .afterAddNOC, .afterACLWrite, .afterCASE])
     fileprivate func failureDisarms(step: CommissioningStep) async throws {
         let link = FaultInjectingLink(seed: 21)
         let bridge = MatterBridge()

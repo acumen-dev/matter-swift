@@ -99,6 +99,20 @@ public struct DeviceAttestationVerifier: Sendable {
         ))
     }
 
+    /// The public key and subject VID/PID of a DAC, read without validating it: what a
+    /// commissioner that approved a failed attestation needs to carry on (the CSRResponse
+    /// signature check and the device's recorded identifiers). `nil` if the DAC does not parse
+    /// or its key is not P-256; a VID or PID is `nil` if the subject does not yield one.
+    public static func unverifiedDACContents(
+        _ dac: Data
+    ) -> (publicKey: P256.Signing.PublicKey, vendorID: UInt16?, productID: UInt16?)? {
+        guard let certificate = try? Certificate(derEncoded: Array(dac)),
+              let publicKey = P256.Signing.PublicKey(certificate.publicKey)
+        else { return nil }
+        let ids = try? MatterCertificateAttributes.identifiers(in: certificate.subject)
+        return (publicKey, ids?.vendorID, ids?.productID)
+    }
+
     /// CSRResponse: the device signs nocsrElements || attestationChallenge with its DAC key.
     public static func verifyNOCSRSignature(
         nocsrElements: Data, signature: Data, attestationChallenge: Data,

@@ -271,6 +271,9 @@ struct CommissioningControllerTests {
         var ctx = CommissioningController.CommissioningContext()
         ctx.deviceNodeID = NodeID(rawValue: 42)
         ctx.deviceFabricIndex = FabricIndex(rawValue: 5)
+        ctx.dacVendorID = 0xFFF2
+        ctx.dacProductID = 0x8001
+        ctx.attestation = .verified(paaSubject: "CN=Test PAA", vendorID: 0xFFF2, productID: 0x8001)
 
         let respElement = GeneralCommissioningCluster.CommissioningCompleteResponse(
             errorCode: .ok,
@@ -296,7 +299,10 @@ struct CommissioningControllerTests {
         )
 
         #expect(device.nodeID.rawValue == 42)
-        #expect(device.vendorID == .test)
+        // The device's identifiers are its DAC's, not the controller's own vendor.
+        #expect(device.vendorID == VendorID(rawValue: 0xFFF2))
+        #expect(device.productID == ProductID(rawValue: 0x8001))
+        #expect(device.attestation == ctx.attestation)
         #expect(device.fabricIndex == FabricIndex(rawValue: 5))
     }
 
@@ -358,7 +364,20 @@ struct CommissioningControllerTests {
         ]).tlvEncode()
     }
 
-    private func csrResponse(csr: Data, nonce: Data) -> Data {
+    /// The DAC key that signs ``csrResponse(csr:nonce:signedBy:)`` and the PASE attestation
+    /// challenge it signs over, as ``attestedContext()`` carries them.
+    private static let dacKey = P256.Signing.PrivateKey()
+    private static let challenge = Data(repeating: 0x5C, count: 16)
+
+    /// A context as attestation leaves it: the DAC key and the attestation challenge.
+    private func attestedContext() -> CommissioningController.CommissioningContext {
+        var ctx = CommissioningController.CommissioningContext()
+        ctx.dacPublicKey = Self.dacKey.publicKey
+        ctx.attestationChallenge = Self.challenge
+        return ctx
+    }
+
+    private func csrResponse(csr: Data, nonce: Data, signedBy key: P256.Signing.PrivateKey = dacKey) throws -> Data {
         let elements = TLVEncoder.encode(
             .structure([
                 .init(tag: .contextSpecific(1), value: .octetString(csr)),
@@ -366,7 +385,8 @@ struct CommissioningControllerTests {
             ])
         )
         let resp = OperationalCredentialsCluster.CSRResponse(
-            nocsrElements: elements, attestationSignature: Data(count: 64)
+            nocsrElements: elements,
+            attestationSignature: try key.signature(for: elements + Self.challenge).rawRepresentation
         )
         return InvokeResponse(invokeResponses: [
             InvokeResponseIB(command: CommandDataIB(
@@ -387,10 +407,10 @@ struct CommissioningControllerTests {
         let deviceKey = P256.Signing.PrivateKey()
         let csr = try PKCS10CSRBuilder.buildCSR(privateKey: deviceKey)
         let result = try await cc.handleCSRResponse(
-            response: csrResponse(csr: csr, nonce: nonce),
+            response: try csrResponse(csr: csr, nonce: nonce),
             expectedNonce: nonce,
             deviceNodeID: NodeID(rawValue: 2),
-            context: CommissioningController.CommissioningContext()
+            context: attestedContext()
         )
         let request = try InvokeRequest.fromTLV(result.addNOCMessage)
         let fields = try #require(request.invokeRequests.first?.commandFields)
@@ -407,10 +427,10 @@ struct CommissioningControllerTests {
         let echoed = Data(repeating: 2, count: 32)
         await #expect(throws: ControllerError.commissioningFailed("CSR nonce mismatch")) {
             _ = try await cc.handleCSRResponse(
-                response: csrResponse(csr: csr, nonce: echoed),
+                response: try csrResponse(csr: csr, nonce: echoed),
                 expectedNonce: sent,
                 deviceNodeID: NodeID(rawValue: 2),
-                context: CommissioningController.CommissioningContext()
+                context: attestedContext()
             )
         }
     }
@@ -424,15 +444,180 @@ struct CommissioningControllerTests {
         let nonce = Data(repeating: 7, count: 32)
         do {
             _ = try await cc.handleCSRResponse(
-                response: csrResponse(csr: csr, nonce: nonce),
+                response: try csrResponse(csr: csr, nonce: nonce),
                 expectedNonce: nonce,
                 deviceNodeID: NodeID(rawValue: 2),
-                context: CommissioningController.CommissioningContext()
+                context: attestedContext()
             )
             Issue.record("expected failure")
         } catch ControllerError.commissioningFailed(let message) {
             #expect(message.hasPrefix("Invalid CSR"))
             #expect(message.contains("badSignature"), "the failure must be the signature check, got \(message)")
+        }
+    }
+
+    @Test("CSR response: an attestation signature by a key other than the DAC's is rejected")
+    func csrResponseNotSignedByDAC() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let nonce = Data(repeating: 3, count: 32)
+        await #expect(throws: ControllerError.commissioningFailed("CSR attestation signature invalid")) {
+            _ = try await cc.handleCSRResponse(
+                response: try csrResponse(csr: csr, nonce: nonce, signedBy: P256.Signing.PrivateKey()),
+                expectedNonce: nonce,
+                deviceNodeID: NodeID(rawValue: 2),
+                context: attestedContext()
+            )
+        }
+    }
+
+    @Test("CSR response: without a DAC key from attestation it is rejected, never accepted unchecked")
+    func csrResponseWithoutDACKey() async throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let csr = try PKCS10CSRBuilder.buildCSR(privateKey: P256.Signing.PrivateKey())
+        let nonce = Data(repeating: 4, count: 32)
+        var context = CommissioningController.CommissioningContext()
+        context.attestationChallenge = Self.challenge
+        do {
+            _ = try await cc.handleCSRResponse(
+                response: try csrResponse(csr: csr, nonce: nonce),
+                expectedNonce: nonce,
+                deviceNodeID: NodeID(rawValue: 2),
+                context: context
+            )
+            Issue.record("expected failure")
+        } catch ControllerError.commissioningFailed(let message) {
+            #expect(message.hasPrefix("CSR attestation signature cannot be checked"))
+        }
+    }
+
+    // MARK: - Attestation
+
+    private static let fingerprint = Data(repeating: 0xF1, count: 32)
+
+    private func failed(_ reason: AttestationFailureReason, fingerprint: Data? = fingerprint) -> AttestationResult {
+        .failed(AttestationFailure(reason: reason, dacFingerprint: fingerprint, detail: "test"))
+    }
+
+    @Test("Attestation: a verified result records the PAA and the DAC's VID/PID and key")
+    func attestationVerified() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let key = P256.Signing.PrivateKey().publicKey
+        let verified = VerifiedAttestation(
+            vendorID: 0xFFF2, productID: 0x8001, paaSubject: "CN=Test PAA",
+            dacFingerprint: Self.fingerprint, dacPublicKey: key)
+        let ctx = try cc.applyAttestationResult(
+            .verified(verified), dac: Data(), approvingUnverifiedDevice: nil, approvedAt: Date(),
+            context: .init())
+        #expect(ctx.attestation == .verified(paaSubject: "CN=Test PAA", vendorID: 0xFFF2, productID: 0x8001))
+        #expect(ctx.dacPublicKey?.x963Representation == key.x963Representation)
+        #expect(ctx.dacVendorID == 0xFFF2 && ctx.dacProductID == 0x8001)
+    }
+
+    @Test("Attestation: a failure is thrown unless its exact fingerprint is approved")
+    func attestationFailureNeedsExactApproval() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        var other = Self.fingerprint
+        other[other.startIndex] ^= 0x01
+        for approval in [nil, other] {
+            #expect(throws: ControllerError.attestationFailed(
+                AttestationFailure(reason: .untrustedRoot, dacFingerprint: Self.fingerprint, detail: "test"))) {
+                _ = try cc.applyAttestationResult(
+                    failed(.untrustedRoot), dac: Data(), approvingUnverifiedDevice: approval, approvedAt: Date(),
+                    context: .init())
+            }
+        }
+    }
+
+    @Test("Attestation: a malformed failure is never approved, with or without a fingerprint")
+    func malformedNeverApproved() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        for fingerprint in [nil, Self.fingerprint] {
+            #expect(throws: ControllerError.attestationFailed(
+                AttestationFailure(reason: .malformed, dacFingerprint: fingerprint, detail: "test"))) {
+                _ = try cc.applyAttestationResult(
+                    failed(.malformed, fingerprint: fingerprint), dac: Data(),
+                    approvingUnverifiedDevice: Self.fingerprint, approvedAt: Date(), context: .init())
+            }
+        }
+    }
+
+    @Test("Attestation: an approved failure carries on with the DAC's own key and identifiers")
+    func approvedFailureUsesDAC() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        let creds = try DeviceAttestationCredentials.testCredentials(vendorID: 0xFFF2, productID: 0x8001)
+        let fingerprint = Data(SHA256.hash(data: creds.dacCertificate))
+        let approvedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let ctx = try cc.applyAttestationResult(
+            failed(.untrustedRoot, fingerprint: fingerprint), dac: creds.dacCertificate,
+            approvingUnverifiedDevice: fingerprint, approvedAt: approvedAt, context: .init())
+        #expect(ctx.attestation == .overridden(dacFingerprint: fingerprint, reason: .untrustedRoot, approvedAt: approvedAt))
+        #expect(ctx.dacPublicKey?.x963Representation == creds.dacPrivateKey.publicKey.x963Representation)
+        #expect(ctx.dacVendorID == 0xFFF2 && ctx.dacProductID == 0x8001)
+    }
+
+    @Test("Attestation: an approved failure whose DAC key cannot be read is thrown")
+    func approvedFailureWithoutDACKey() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        #expect(throws: ControllerError.attestationFailed(
+            AttestationFailure(reason: .untrustedRoot, dacFingerprint: Self.fingerprint, detail: "test"))) {
+            _ = try cc.applyAttestationResult(
+                failed(.untrustedRoot), dac: Data([0x30, 0x00]), approvingUnverifiedDevice: Self.fingerprint,
+                approvedAt: Date(), context: .init())
+        }
+    }
+
+    @Test("AttestationResponse: elements and signature are returned; a missing field is an error")
+    func attestationResponseParsing() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        func response(_ fields: [TLVElement.TLVField]) -> Data {
+            InvokeResponse(invokeResponses: [
+                InvokeResponseIB(command: CommandDataIB(
+                    commandPath: CommandPath(
+                        endpointID: .root,
+                        clusterID: ClusterID(rawValue: 0x003E),
+                        commandID: CommandID(rawValue: 0x01)
+                    ),
+                    commandFields: .structure(fields)
+                ))
+            ]).tlvEncode()
+        }
+        let elements = Data([1, 2, 3])
+        let signature = Data(repeating: 9, count: 64)
+        let parsed = try cc.handleAttestationResponse(response([
+            .init(tag: .contextSpecific(0), value: .octetString(elements)),
+            .init(tag: .contextSpecific(1), value: .octetString(signature)),
+        ]))
+        #expect(parsed.elements == elements && parsed.signature == signature)
+        #expect(throws: ControllerError.self) {
+            _ = try cc.handleAttestationResponse(response([
+                .init(tag: .contextSpecific(0), value: .octetString(elements)),
+            ]))
+        }
+    }
+
+    @Test("Basic Information: a 16-bit value is read; anything else fails naming the attribute")
+    func basicInformationResponse() throws {
+        let cc = CommissioningController(fabricManager: try makeFabricManager())
+        func report(_ value: TLVElement) -> Data {
+            ReportData(attributeReports: [
+                AttributeReportIB(attributeData: AttributeDataIB(
+                    dataVersion: DataVersion(rawValue: 1),
+                    path: AttributePath(
+                        endpointID: .root, clusterID: BasicInformationCluster.id,
+                        attributeID: BasicInformationCluster.Attribute.vendorID),
+                    data: value
+                ))
+            ]).tlvEncode()
+        }
+        #expect(try cc.handleBasicInformationResponse(report(.unsignedInt(0xFFF2)), name: "VendorID") == 0xFFF2)
+        for bad in [TLVElement.unsignedInt(0x1_0000), .utf8String("x")] {
+            do {
+                _ = try cc.handleBasicInformationResponse(report(bad), name: "VendorID")
+                Issue.record("expected failure for \(bad)")
+            } catch ControllerError.commissioningFailed(let message) {
+                #expect(message.hasPrefix("Basic Information VendorID"))
+            }
         }
     }
 

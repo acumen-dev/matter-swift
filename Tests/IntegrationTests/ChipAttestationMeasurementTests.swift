@@ -126,11 +126,6 @@ struct ChipAttestationMeasurementTests {
         let pai = try cc.handleCertificateChainResponse(
             try await request(.invokeRequest, cc.buildCertificateChainRequest(certificateType: 2)))
 
-        // The existing controller-side check of nonce echo and signature.
-        try cc.validateAttestationResponse(
-            response: attestationResponse, sentNonce: nonce, attestationChallenge: challenge,
-            dacPublicKey: try cc.extractPublicKeyFromCertificate(dac))
-
         // Basic Information VendorID and ProductID.
         func basicInformation(_ attribute: UInt32) async throws -> UInt16 {
             let read = IMClient.readAttributeRequest(
