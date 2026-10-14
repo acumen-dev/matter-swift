@@ -9,7 +9,8 @@ import X509
 /// The verdict on one candidate PAA: whether it satisfies the rules the runtime applies to a PAA.
 public struct PAAAssessment: Sendable, Equatable {
 
-    /// The certificate's subject, if it parsed.
+    /// The certificate's subject, when it parsed and passed admission; `nil` when it was
+    /// rejected (the `reason` then names the problem).
     public let subject: String?
 
     /// The VID named in the subject, if it parsed and names one.

@@ -20,3 +20,4 @@ Tools/RefImpl/matter-js/node_modules/
 
 # Claude Code
 .claude/
+__pycache__/

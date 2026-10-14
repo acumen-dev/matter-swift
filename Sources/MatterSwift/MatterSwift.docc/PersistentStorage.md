@@ -136,7 +136,7 @@ Failures are reported through `Issue.record`.
 
 ## Using the Shipped File Stores
 
-`MatterTypes` ships `JSONFileFabricStore`, `JSONFileAttributeStore` and `JSONFileControllerStore`. Each writes its state as JSON, owner-only (`0600`) from the moment the file is created, so the secrets above are never readable by other users:
+`MatterTypes` ships `JSONFileFabricStore`, `JSONFileAttributeStore` and `JSONFileControllerStore`. Each writes its state as JSON. The fabric and controller stores, which hold the secrets above, write owner-only (`0600`) from the moment the file is created, so those secrets are never readable by other users; the attribute store holds no secrets and is written with default permissions:
 
 ```swift
 import Foundation

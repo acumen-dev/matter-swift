@@ -288,6 +288,7 @@ let package = Package(
                 "MatterTypes",
                 "MatterTestSupport",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
             ],
             path: "Tests/ReferenceTests"
         ),

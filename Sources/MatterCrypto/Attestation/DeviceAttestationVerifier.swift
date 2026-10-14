@@ -30,6 +30,10 @@ public struct DeviceAttestationVerifier: Sendable {
     ///   Certification Declaration (CD vendor_id == VID, PID in product_id_array), never with
     ///   the DAC: a CD with dac_origin fields legitimately names a DAC vendor other than the
     ///   product's.
+    ///
+    /// `verify` does not bound the size of `attestationElements`; callers should reject
+    /// elements longer than 900 bytes (connectedhomeip's `RESP_MAX`) before calling it, as
+    /// `CommissioningController` does.
     public func verify(
         dac: Data, pai: Data,
         attestationElements: Data, attestationSignature: Data,
