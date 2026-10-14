@@ -261,7 +261,8 @@ struct AddressRefreshTests {
                 fabricID: FabricID(rawValue: 1),
                 mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
                 discoveryTimeout: Self.longDiscoveryTimeout,
-                discoveryClock: clock
+                discoveryClock: clock,
+                attestationTrustStore: try LinkAttestation.trustStore()
             )
         )
         await #expect {
@@ -291,7 +292,8 @@ struct AddressRefreshTests {
                 mrp: MRPConfig(maxRetransmissions: Self.retransmissions),
                 discoveryTimeout: Self.longDiscoveryTimeout,
                 addressRefreshTimeout: Self.shortBound,
-                discoveryClock: clock
+                discoveryClock: clock,
+                attestationTrustStore: try LinkAttestation.trustStore()
             )
         )
 

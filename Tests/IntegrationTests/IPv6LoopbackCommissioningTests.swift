@@ -52,6 +52,7 @@ struct IPv6LoopbackCommissioningTests {
     func commissionOverNonCanonicalLoopback(host: String) async throws {
         let bridge = MatterBridge()
         let light = bridge.addDimmableLight(name: "Loopback Light")
+        bridge.commissioningState.attestationCredentials = try LinkAttestation.credentials()
         let deviceTransport = Self.makeTransport()
         let server = MatterDeviceServer(
             bridge: bridge,
@@ -76,7 +77,10 @@ struct IPv6LoopbackCommissioningTests {
             let controller = try MatterController(
                 transport: controllerTransport,
                 discovery: FaultyLinkDiscovery(),
-                configuration: .init(fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: 2))
+                configuration: .init(
+                    fabricID: FabricID(rawValue: 1), mrp: MRPConfig(maxRetransmissions: 2),
+                    attestationTrustStore: try LinkAttestation.trustStore()
+                )
             )
             started = controller
             let port = try #require(await Self.boundPort(deviceTransport))

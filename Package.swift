@@ -268,6 +268,7 @@ let package = Package(
                 "MatterModel",
                 "MatterTypes",
                 "MatterTestSupport",
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .testTarget(

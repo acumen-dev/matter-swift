@@ -3,6 +3,7 @@
 
 import Foundation
 import MatterTypes
+import MatterCrypto
 
 /// Errors specific to the Matter controller module.
 public enum ControllerError: Error, Sendable, Equatable {
@@ -38,8 +39,18 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// CSR response could not be parsed.
     case invalidCSRResponse
 
-    /// Device attestation validation failed (nonce mismatch, invalid signature, etc.).
+    /// A device attestation exchange could not be completed (for example a
+    /// CertificateChainResponse without a certificate).
     case attestationValidationFailed(String)
+
+    /// The device failed attestation. Nothing was committed on the device: its fail-safe was
+    /// disarmed and no node ID was consumed. A retry passing the failure's `dacFingerprint` as
+    /// `approvingUnverifiedDevice` commissions that device anyway, unless the reason is
+    /// `.malformed`.
+    case attestationFailed(AttestationFailure)
+
+    /// The attestation trust store could not be loaded when the controller was created.
+    case attestationTrustStoreUnavailable(String)
 
     // MARK: - Operational
 

@@ -223,7 +223,8 @@ struct ChipDeviceDiscoveryTests {
                     fabricID: FabricID(rawValue: 1),
                     rootKey: P256.Signing.PrivateKey(),
                     mrp: Self.controllerMRP,
-                    discoveryTimeout: Self.discoveryTimeout
+                    discoveryTimeout: Self.discoveryTimeout,
+                    attestationTrustStore: try TestAttestation.chipDevelopmentTrustStore()
                 )
             )
         } catch {

@@ -162,7 +162,8 @@ struct FaultyLinkTests {
             discovery: FaultyLinkDiscovery(),
             configuration: .init(
                 fabricID: FabricID(rawValue: 1),
-                mrp: MRPConfig(maxRetransmissions: 10)
+                mrp: MRPConfig(maxRetransmissions: 10),
+                attestationTrustStore: try LinkAttestation.trustStore()
             )
         )
     }

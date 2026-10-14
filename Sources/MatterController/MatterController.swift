@@ -109,6 +109,13 @@ public actor MatterController {
         /// host schedules it. Production code leaves the default.
         public var discoveryClock: any MRPClock
 
+        /// The roots and Certification Declaration signing keys device attestation is verified
+        /// against during commissioning. `nil` (the default) uses
+        /// `AttestationTrustStore.bundledProduction()`, the DCL production PAAs and CSA CD
+        /// signing keys bundled with MatterCrypto, loaded once when the controller is created.
+        /// Nothing refreshes it: a consumer that wants a newer store passes one here.
+        public var attestationTrustStore: AttestationTrustStore?
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -120,7 +127,8 @@ public actor MatterController {
             discoveryTimeout: Duration = .seconds(30),
             addressRefreshTimeout: Duration = .seconds(5),
             commissionableResolveTimeout: Duration = .seconds(5),
-            discoveryClock: any MRPClock = ContinuousClock()
+            discoveryClock: any MRPClock = ContinuousClock(),
+            attestationTrustStore: AttestationTrustStore? = nil
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -133,6 +141,7 @@ public actor MatterController {
             self.addressRefreshTimeout = addressRefreshTimeout
             self.commissionableResolveTimeout = commissionableResolveTimeout
             self.discoveryClock = discoveryClock
+            self.attestationTrustStore = attestationTrustStore
         }
     }
 
@@ -147,6 +156,7 @@ public actor MatterController {
     private let configuration: Configuration
     private let logger: Logger
     private let store: (any MatterControllerStore)?
+    private let attestationVerifier: DeviceAttestationVerifier
 
     /// The message layer: the transport's single reader, exchanges and MRP.
     /// Exposed for the Interaction Model client (subscription reports are
@@ -204,6 +214,8 @@ public actor MatterController {
             vendorID: configuration.vendorID
         )
         self.fabricManager = fabricManager
+        self.attestationVerifier = DeviceAttestationVerifier(
+            trustStore: try Self.attestationTrustStore(configuration))
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
         self.registry = DeviceRegistry()
@@ -247,6 +259,8 @@ public actor MatterController {
             nextNodeID: stored.nextNodeID
         )
         self.fabricManager = fabricManager
+        self.attestationVerifier = DeviceAttestationVerifier(
+            trustStore: try Self.attestationTrustStore(configuration))
         self.commissioning = CommissioningController(fabricManager: fabricManager)
         self.controllerSession = ControllerSession(fabricManager: fabricManager)
         self.registry = try DeviceRegistry(storedDevices: stored.devices)
@@ -262,6 +276,16 @@ public actor MatterController {
         self.logger = logger
 
         logger.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
+    }
+
+    /// The configured trust store, or the bundled production store when none is configured.
+    private static func attestationTrustStore(_ configuration: Configuration) throws -> AttestationTrustStore {
+        if let configured = configuration.attestationTrustStore { return configured }
+        do {
+            return try AttestationTrustStore.bundledProduction()
+        } catch {
+            throw ControllerError.attestationTrustStoreUnavailable("the bundled production trust store did not load: \(error)")
+        }
     }
 
     /// Load a controller from persisted state or create a fresh one.

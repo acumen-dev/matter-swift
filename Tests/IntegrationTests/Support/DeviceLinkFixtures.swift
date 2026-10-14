@@ -3,6 +3,7 @@
 
 import Foundation
 import MatterTypes
+import MatterCrypto
 import MatterModel
 import MatterProtocol
 import MatterTransport
@@ -48,17 +49,37 @@ let patient = MRPParameters(
 /// the device's replies there. 10 (the lossy suites' value) also qualifies.
 let handshakeRetransmissions = 8
 
+/// The attestation identity every link-harness device presents, and the trust store that
+/// trusts exactly it. One set per test process: the suites share it so a controller made by
+/// ``makeController(on:maxRetransmissions:discovery:store:discoveryClock:trustStore:)`` trusts
+/// a device from ``startServer(on:toggles:discovery:transport:credentials:)`` without either
+/// relying on the controller's production default.
+enum LinkAttestation {
+    private static let generated: Result<DeviceAttestationCredentials, any Error> = Result {
+        try DeviceAttestationCredentials.testCredentials()
+    }
+    private static let store: Result<AttestationTrustStore, any Error> = Result {
+        try TestAttestation.trustStore(for: generated.get())
+    }
+
+    static func credentials() throws -> DeviceAttestationCredentials { try generated.get() }
+    static func trustStore() throws -> AttestationTrustStore { try store.get() }
+}
+
 /// `discovery` is where the device advertises; share one `InMemoryDiscovery`
 /// with the controller so it can find the device. The default advertises nowhere.
 /// `transport` replaces the device's endpoint (default `link.b`), e.g. to
-/// wrap it.
+/// wrap it. `credentials` is the attestation identity the device presents
+/// (default: ``LinkAttestation/credentials()``).
 func startServer(
     on link: FaultInjectingLink,
     toggles: LockedValue<Int>,
     discovery: any MatterDiscovery = FaultyLinkDiscovery(),
-    transport: (any MatterUDPTransport)? = nil
+    transport: (any MatterUDPTransport)? = nil,
+    credentials: DeviceAttestationCredentials? = nil
 ) async throws -> (MatterDeviceServer, BridgedEndpoint) {
     let bridge = MatterBridge()
+    bridge.commissioningState.attestationCredentials = try credentials ?? LinkAttestation.credentials()
     let light = bridge.addDimmableLight(name: "Faulty Light", onOffChanged: { _ in
         toggles.withLock { $0 += 1 }
     })
@@ -83,12 +104,15 @@ func startServer(
 /// one that never moves: in-memory discovery answers at once, so a deadline
 /// could only ever fall because a loaded host was slow to schedule the
 /// answer. MRP and the operation timeouts stay on the real clock.
+/// `trustStore` is the attestation trust store (default:
+/// ``LinkAttestation/trustStore()``, which trusts the harness device).
 func makeController(
     on link: FaultInjectingLink,
     maxRetransmissions: Int,
     discovery: any MatterDiscovery = FaultyLinkDiscovery(),
     store: (any MatterControllerStore)? = nil,
-    discoveryClock: any MRPClock = ManualClock()
+    discoveryClock: any MRPClock = ManualClock(),
+    trustStore: AttestationTrustStore? = nil
 ) throws -> MatterController {
     try MatterController(
         transport: link.a,
@@ -96,7 +120,8 @@ func makeController(
         configuration: .init(
             fabricID: FabricID(rawValue: 1),
             mrp: MRPConfig(maxRetransmissions: maxRetransmissions),
-            discoveryClock: discoveryClock
+            discoveryClock: discoveryClock,
+            attestationTrustStore: try trustStore ?? LinkAttestation.trustStore()
         ),
         store: store
     )
