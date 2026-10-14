@@ -68,7 +68,8 @@ public struct AttestationFailure: Error, Sendable, Equatable {
     /// The product ID in the DAC's subject; **unverified**, as ``dacVendorID``.
     public let dacProductID: UInt16?
 
-    public init(
+    /// Only the verifier produces failures; a commissioner applies the one `verify` returned.
+    package init(
         reason: AttestationFailureReason, dacFingerprint: Data?, detail: String,
         dacPublicKey: P256.Signing.PublicKey? = nil, dacVendorID: UInt16? = nil, dacProductID: UInt16? = nil
     ) {
@@ -95,8 +96,17 @@ public struct AttestationFailure: Error, Sendable, Equatable {
 /// A device whose attestation verified.
 public struct VerifiedAttestation: Sendable, Equatable {
 
+    /// The vendor ID in the DAC's subject. For a white-label product this is the DAC issuer's
+    /// (the OEM's), which may differ from the product's Basic Information VendorID.
     public let vendorID: UInt16
+
+    /// The product ID in the DAC's subject; as ``vendorID``.
     public let productID: UInt16
+
+    /// The Certification Declaration's `certification_type`: 0 development and test,
+    /// 1 provisional, 2 official. A consumer that admits only certified products checks for 2;
+    /// swift-matter applies no such policy.
+    public let certificationType: UInt8
 
     /// The subject of the trusted PAA the chain ended at.
     public let paaSubject: String
@@ -106,12 +116,14 @@ public struct VerifiedAttestation: Sendable, Equatable {
 
     public let dacPublicKey: P256.Signing.PublicKey
 
-    public init(
-        vendorID: UInt16, productID: UInt16, paaSubject: String,
+    /// Only the verifier produces a verified attestation.
+    package init(
+        vendorID: UInt16, productID: UInt16, certificationType: UInt8, paaSubject: String,
         dacFingerprint: Data, dacPublicKey: P256.Signing.PublicKey
     ) {
         self.vendorID = vendorID
         self.productID = productID
+        self.certificationType = certificationType
         self.paaSubject = paaSubject
         self.dacFingerprint = dacFingerprint
         self.dacPublicKey = dacPublicKey
@@ -120,6 +132,7 @@ public struct VerifiedAttestation: Sendable, Equatable {
     public static func == (lhs: VerifiedAttestation, rhs: VerifiedAttestation) -> Bool {
         lhs.vendorID == rhs.vendorID
             && lhs.productID == rhs.productID
+            && lhs.certificationType == rhs.certificationType
             && lhs.paaSubject == rhs.paaSubject
             && lhs.dacFingerprint == rhs.dacFingerprint
             && lhs.dacPublicKey.x963Representation == rhs.dacPublicKey.x963Representation

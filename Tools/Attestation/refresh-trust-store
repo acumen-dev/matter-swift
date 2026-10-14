@@ -16,6 +16,12 @@
 # manifest.json under "excluded". The Swift BundledTrustStoreTests are the authority: if one
 # finds a bundled PAA that fails, fix this filter, not the test.
 #
+# DCLTrustStoreFetcher also excludes a certificate whose subject VID differs from its DCL
+# record's nonzero `vid`, or whose record `vid` is not 16-bit. Those are metadata rules about
+# the DCL record, not chain rules, and this script deliberately does not apply them. Nor does
+# it check that a subject VID is well formed: everyBundledPAAConforms runs assessPAA on every
+# bundled file, so a malformed VID fails that test before a release.
+#
 # Only public certificates are handled; file names derive from SKI and SHA-256 alone.
 # Standard library plus the openssl command line tool. Tests never run this.
 #

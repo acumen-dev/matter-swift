@@ -178,15 +178,26 @@ func commissionWithApproval(
 }
 ```
 
-The retry succeeds if and only if the fingerprint matches the device's DAC exactly and the DAC's public key could be read. Approving one device's fingerprint never approves another. If the key cannot be read, the controller throws `ControllerError.attestationApprovalRefused` instead, because nothing could bind the device to the approval. The check that the NOCSR is signed by the DAC key still runs on an approved device, so an override means "trust this DAC", not "skip the proof of key possession".
+The retry succeeds if and only if the fingerprint matches the device's DAC exactly and the DAC's public key could be read. Approving one fingerprint never approves a device presenting a different DAC. Devices presenting byte-identical DACs (clones, or every instance of a CHIP example app) share a fingerprint, so approving it approves all of them. If the key cannot be read, the controller throws `ControllerError.attestationApprovalRefused` instead, because nothing could bind the device to the approval. The check that the NOCSR is signed by the DAC key still runs on an approved device, so an override means "trust this DAC", not "skip the proof of key possession".
 
-Tests that commission development devices should not use approval. Build a store that trusts the test device with `TestAttestation` from `MatterTestSupport` and pass it as `attestationTrustStore`.
+Tests that commission development devices should not use approval. Build a store that trusts the test device's credentials explicitly and pass it as `attestationTrustStore`:
+
+```swift
+let creds = try DeviceAttestationCredentials.testCredentials()
+let trustStore = try AttestationTrustStore(
+    paas: [creds.paaCertificate],
+    cdSigningKeys: [CDSigningKey(certificateDER: creds.cdSigningCertificate!)],
+    provenance: TrustStoreProvenance(source: "explicit")
+)
+```
+
+(This package's own tests do the same through `TestAttestation` in `MatterTestSupport`, which is not a product.)
 
 ### What is recorded
 
 Every commissioned device carries an `attestation` record, saved with the device registry:
 
-- `.verified` names the PAA the chain ended at and the vendor and product identifiers.
+- `.verified` names the PAA the chain ended at and the DAC's vendor and product identifiers.
 - `.overridden` holds the DAC fingerprint that was approved, the `AttestationFailureReason` that was overridden, and the time of approval.
 
 A device commissioned before attestation was recorded has `nil`. The device's `vendorID` and `productID` are the product's, as it reports them in Basic Information. On a `.verified` device the Certification Declaration lists them, so they are verified; on an `.overridden` device they are the device's unverified claim. A white-label product's DAC can name a different vendor (the OEM's); the DAC's identifiers are the ones in the `.verified` record.

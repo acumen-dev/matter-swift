@@ -78,8 +78,9 @@ public struct DCLTrustStoreFetcher: Sendable {
     /// it (it parses, is a self-signed P-256 CA, conforms to the PAA profile, names no PID) and
     /// its VID agrees with the DCL record's `vid`. The DCL serialises an absent VID as `0`, so a
     /// zero `vid` means the record has none; likewise a certificate whose subject names no VID is
-    /// not contradicted by the record. Validity dates are not judged (the runtime accepts a PAA
-    /// that was valid when the DAC's validity began); diff entries carry `notValidAfter`.
+    /// not contradicted by the record. A record whose `vid` is not a 16-bit vendor ID is
+    /// excluded. Validity dates are not judged (the runtime accepts a PAA that was valid when
+    /// the DAC's validity began); diff entries carry `notValidAfter`.
     /// Anything that fails is excluded rather than thrown: its reason is in
     /// ``TrustStoreDiff/excluded``, and the rest of the response is still used.
     ///
@@ -111,7 +112,9 @@ public struct DCLTrustStoreFetcher: Sendable {
                 let label = assessment.subject ?? Self.label(root)
                 if let rejection = assessment.rejection {
                     excluded.append("\(label): \(rejection)")
-                } else if let recorded = record.vid, recorded != 0, let actual = assessment.vendorID, recorded != actual {
+                } else if let recorded = record.vid, UInt16(exactly: recorded) == nil {
+                    excluded.append("\(label): the DCL record's VID \(recorded) is not a 16-bit vendor ID")
+                } else if let recorded = record.vid, recorded != 0, let actual = assessment.vendorID, recorded != Int(actual) {
                     excluded.append("\(label): VID 0x\(String(actual, radix: 16, uppercase: true)) "
                         + "does not match the DCL record's VID 0x\(String(recorded, radix: 16, uppercase: true))")
                 } else {
@@ -194,8 +197,9 @@ public struct DCLTrustStoreFetcher: Sendable {
 
     private struct Record: Decodable {
         let pemCert: String
-        /// The DCL serialises an absent VID as `0`. A VID outside UInt16 is a malformed response.
-        let vid: UInt16?
+        /// The DCL serialises an absent VID as `0`. Decoded wide so that a VID outside UInt16
+        /// excludes only its record; a `vid` that is not an integer is a malformed response.
+        let vid: Int?
     }
 
     // MARK: - Helpers

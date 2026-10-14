@@ -365,6 +365,10 @@ public struct CommissioningController: Sendable {
     /// device holds the DAC's private key. That re-proof is why a nonce-mismatch or
     /// attestation-signature failure can be approved at all.
     ///
+    /// `result` must be the one `DeviceAttestationVerifier.verify` returned for the DAC, PAI and
+    /// attestation elements this session received: the binding of an approval to a DAC key, and
+    /// of the CSRResponse check to that key, is only as good as that provenance.
+    ///
     /// - Throws: `ControllerError.attestationFailed` with the verifier's failure when nothing
     ///   approves it; `ControllerError.attestationApprovalRefused` when the approval names this
     ///   DAC but the failure carries no readable key to bind it to.

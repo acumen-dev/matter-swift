@@ -82,13 +82,15 @@ A `MatterControllerStore` implementation must honour these rules, which `MatterC
 
 ### Secret fields
 
-`StoredControllerState` is mostly public data (certificates, node IDs, addresses), but three fields are secret and must be readable by the owning user only and never logged:
+The stored state is mostly public data (certificates, node IDs, addresses), but these fields are secret and must be readable by the owning user only and never logged:
 
 | Field | What it is |
 |-------|------------|
-| `identity.rootKeyRaw` | The fabric root CA private key |
-| `identity.operationalKeyRaw` | The controller's operational private key |
-| `identity.ipkEpochKey` | The fabric's Identity Protection Key epoch key |
+| `StoredControllerState.identity.rootKeyRaw` | The controller's fabric root CA private key |
+| `StoredControllerState.identity.operationalKeyRaw` | The controller's operational private key |
+| `StoredControllerState.identity.ipkEpochKey` | The controller's fabric Identity Protection Key epoch key |
+| `StoredFabric.operationalKeyRaw` | A device's operational private key on one fabric (`MatterFabricStore`) |
+| `StoredFabric.ipkEpochKey` | That fabric's Identity Protection Key epoch key (`MatterFabricStore`) |
 
 A store backed by an encrypted secret store should protect at least these. The certificates, including the root and operational certificates, are public.
 
@@ -132,74 +134,29 @@ Failures are reported through `Issue.record`.
 
 `JSONFileControllerStore` is a ready-made implementation for standalone and development use. It writes the state as plaintext JSON, owner-only (`0600`): the file is created with that mode before any bytes are written, then renamed over the target, so the secrets are never readable by others, and a save tightens a more permissive existing file. It does not encrypt, and it does not fsync the containing directory, so power loss immediately after a save can still lose it. A production embedder should supply its own `MatterControllerStore` that keeps the root CA key in its own secret store.
 
-## Implementing a Simple File Store
+## Using the Shipped File Stores
 
-Here's a minimal JSON file-based implementation:
+`MatterTypes` ships `JSONFileFabricStore`, `JSONFileAttributeStore` and `JSONFileControllerStore`. Each writes its state as JSON, owner-only (`0600`) from the moment the file is created, so the secrets above are never readable by other users:
 
 ```swift
 import Foundation
 import MatterTypes
 
-final class JSONFileStore<T: Codable & Sendable>: Sendable {
-    let fileURL: URL
-
-    init(directory: URL, filename: String) {
-        self.fileURL = directory.appendingPathComponent(filename)
-    }
-
-    func load() async throws -> T? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return nil
-        }
-        let data = try Data(contentsOf: fileURL)
-        return try JSONDecoder().decode(T.self, from: data)
-    }
-
-    func save(_ state: T) async throws {
-        let data = try JSONEncoder().encode(state)
-        try data.write(to: fileURL, options: .atomic)
-    }
-}
-
-// Conform to storage protocols
-final class FileFabricStore: MatterFabricStore, Sendable {
-    private let store = JSONFileStore<StoredDeviceState>(
-        directory: .applicationSupportDirectory,
-        filename: "matter-fabric.json"
-    )
-
-    func load() async throws -> StoredDeviceState? {
-        try await store.load()
-    }
-
-    func save(_ state: StoredDeviceState) async throws {
-        try await store.save(state)
-    }
-}
-
-final class FileAttributeStore: MatterAttributeStore, Sendable {
-    private let store = JSONFileStore<StoredAttributeData>(
-        directory: .applicationSupportDirectory,
-        filename: "matter-attributes.json"
-    )
-
-    func load() async throws -> StoredAttributeData? {
-        try await store.load()
-    }
-
-    func save(_ data: StoredAttributeData) async throws {
-        try await store.save(data)
-    }
-}
+let directory = URL(filePath: "/var/lib/my-hub/matter")
+let fabricStore = JSONFileFabricStore(directory: directory)
+let attributeStore = JSONFileAttributeStore(directory: directory)
+let controllerStore = JSONFileControllerStore(directory: directory)
 ```
+
+If you write your own file store instead, create the file with owner-only permissions before writing any bytes to it. Writing with `Data.write(to:options: .atomic)` and tightening the mode afterwards leaves a window in which the keys are readable by others.
 
 ## Wiring Stores to MatterBridge
 
 Pass your stores when creating the bridge:
 
 ```swift
-let fabricStore = FileFabricStore()
-let attributeStore = FileAttributeStore()
+let fabricStore = JSONFileFabricStore(directory: directory)
+let attributeStore = JSONFileAttributeStore(directory: directory)
 
 let bridge = MatterBridge(
     config: .init(vendorName: "MyCompany", productName: "Hub"),

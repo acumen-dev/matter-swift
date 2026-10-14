@@ -92,15 +92,21 @@ public struct DeviceAttestationVerifier: Sendable {
         }
 
         // 6. Certification Declaration.
+        let cd: CertificationDeclaration
+        do {
+            cd = try CertificationDeclaration(cmsDER: elements.certificationDeclaration)
+        } catch {
+            return failed(.malformed, "the Certification Declaration is malformed: \(error)")
+        }
         if let (reason, detail) = checkCertificationDeclaration(
-            elements.certificationDeclaration, basicInformation: basicInformation,
+            cd, basicInformation: basicInformation,
             dacVendorID: vendorID, dacProductID: productID, pai: paiCertificate, paa: paa
         ) {
             return failed(reason, detail)
         }
 
         return .verified(VerifiedAttestation(
-            vendorID: vendorID, productID: productID,
+            vendorID: vendorID, productID: productID, certificationType: cd.certificationType,
             paaSubject: paa.subject.description,
             dacFingerprint: fingerprint,
             dacPublicKey: dacPublicKey
@@ -126,15 +132,9 @@ public struct DeviceAttestationVerifier: Sendable {
     /// Upstream also refuses the test CD signing key unless test keys are enabled (:477-480);
     /// here the trust store alone decides which CD signing keys are trusted.
     private func checkCertificationDeclaration(
-        _ cmsDER: Data, basicInformation: (vendorID: UInt16, productID: UInt16),
+        _ cd: CertificationDeclaration, basicInformation: (vendorID: UInt16, productID: UInt16),
         dacVendorID: UInt16, dacProductID: UInt16, pai: Certificate, paa: Certificate
     ) -> (AttestationFailureReason, String)? {
-        let cd: CertificationDeclaration
-        do {
-            cd = try CertificationDeclaration(cmsDER: cmsDER)
-        } catch {
-            return (.malformed, "the Certification Declaration is malformed: \(error)")
-        }
         switch cd.verifySignature(keys: trustStore.cdSigningKeys) {
         case .valid:
             break

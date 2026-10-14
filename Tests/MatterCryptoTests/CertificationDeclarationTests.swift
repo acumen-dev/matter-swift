@@ -394,6 +394,16 @@ struct CertificationDeclarationVerifierStageTests {
         #expect(Self.reason(try await Self.verifyDev(cd: reserved)) == .malformed)
     }
 
+    @Test("a verified attestation carries the CD's certification_type", arguments: [UInt8(0), 1, 2])
+    func certificationTypeExposed(_ type: UInt8) async throws {
+        let cd = try Self.signed(vendorID: 0xFFF1, productIDs: [0x8000], certificationType: type)
+        guard case .verified(let verified) = try await Self.verifyDev(cd: cd) else {
+            Issue.record("expected verified")
+            return
+        }
+        #expect(verified.certificationType == type)
+    }
+
     @Test("Basic Information VID other than the CD vendor_id gives cdVidPidNotListed (:512)")
     func basicInformationVendor() async throws {
         let result = try await Self.verifyDev(cd: AttestationFixtures.testCD, basicInformation: (0xFFF2, 0x8000))

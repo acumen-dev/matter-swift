@@ -327,7 +327,20 @@ struct DCLTrustStoreFetcherTests {
         }
     }
 
-    @Test("a non-numeric or out-of-range vid is malformedResponse", arguments: ["70000", "-1", "\"0x1188\"", "true"])
+    @Test("an out-of-range vid excludes only its record, naming the VID", arguments: [70000, -1])
+    func outOfRangeVID(vid: Int) async throws {
+        let feit = try DCLFixtures.recordedLeaf(containing: "Feit")
+        let other = try #require(try DCLFixtures.recordedLeaves().first { !$0.text.contains("Feit") })
+        let (candidate, diff) = try await DCLFixtures.fetch(try DCLFixtures.response([
+            ("c3ViamVjdA==", "01:02:03", [["pemCert": DCLFixtures.pem(try feit.der), "vid": vid], other.certs[0]]),
+        ]))
+        #expect(candidate.paas.count == 1)
+        #expect(diff.excluded.count == 1)
+        #expect(diff.excluded.first?.contains("the DCL record's VID \(vid) is not a 16-bit vendor ID") == true,
+                "\(diff.excluded)")
+    }
+
+    @Test("a vid that is not an integer is malformedResponse", arguments: ["\"0x1188\"", "true", "1.5"])
     func badVID(json: String) async throws {
         let good = try DCLFixtures.recordedLeaf(containing: "Feit")
         do {

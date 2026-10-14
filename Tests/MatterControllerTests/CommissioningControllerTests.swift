@@ -569,7 +569,7 @@ struct CommissioningControllerTests {
         let cc = CommissioningController(fabricManager: try makeFabricManager())
         let key = P256.Signing.PrivateKey().publicKey
         let verified = VerifiedAttestation(
-            vendorID: 0xFFF2, productID: 0x8001, paaSubject: "CN=Test PAA",
+            vendorID: 0xFFF2, productID: 0x8001, certificationType: 0, paaSubject: "CN=Test PAA",
             dacFingerprint: Self.fingerprint, dacPublicKey: key)
         let ctx = try cc.applyAttestationResult(
             .verified(verified), approvingUnverifiedDevice: nil, approvedAt: Date(), context: .init())
@@ -590,7 +590,7 @@ struct CommissioningControllerTests {
         reported.deviceFabricIndex = FabricIndex(rawValue: 1)
         let result: AttestationResult = verified
             ? .verified(VerifiedAttestation(
-                vendorID: 0xFFF2, productID: 0x8001, paaSubject: "CN=Test PAA",
+                vendorID: 0xFFF2, productID: 0x8001, certificationType: 0, paaSubject: "CN=Test PAA",
                 dacFingerprint: Self.fingerprint, dacPublicKey: Self.dacKeyOnFailure))
             : .failed(failure(.untrustedRoot))
         let approvedAt = Date(timeIntervalSince1970: 1_800_000_000)

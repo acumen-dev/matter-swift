@@ -236,7 +236,7 @@ struct DeviceAttestationVerifierTests {
         let paa = try Certificate(derEncoded: Array(AttestationFixtures.testPAA))
         let dacDER = try AttestationFixtures.devDAC
         let expected = VerifiedAttestation(
-            vendorID: 0xFFF1, productID: 0x8000,
+            vendorID: 0xFFF1, productID: 0x8000, certificationType: 0,
             paaSubject: paa.subject.description,
             dacFingerprint: Data(SHA256.hash(data: dacDER)),
             dacPublicKey: try Self.devKey().publicKey
