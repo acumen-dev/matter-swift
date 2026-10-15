@@ -18,7 +18,7 @@ import Logging
 ///
 /// ```swift
 /// let bridge = MatterBridge()
-/// bridge.addDimmableLight(name: "Kitchen Pendant")
+/// bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 ///
 /// let server = MatterDeviceServer(
 ///     bridge: bridge,
@@ -177,7 +177,7 @@ public actor MatterDeviceServer {
         // and send `hasPBKDFParameters = true` on subsequent commissioning attempts. The server
         // must respond with the same salt it used before, or SPAKE2+ will fail.
         try await bridge.loadPersistedState()
-        try await bridge.restoreAttributeCache()
+        await bridge.restoreAttributeCache()
         // A fail-safe never survives a restart, so neither may its Breadcrumb.
         GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
 
@@ -224,7 +224,7 @@ public actor MatterDeviceServer {
             Task { [weak self] in
                 guard let self else { return }
                 await self.onFabricCommitted(fabric)
-                await self.bridge.commissioningState.saveToStore()
+                // The fabric itself was saved by commitCommissioning().
                 await self.bridge.store.saveToStore()
             }
         }
@@ -253,7 +253,6 @@ public actor MatterDeviceServer {
             Task { [weak self] in
                 guard let self else { return }
                 await self.onFabricRemoved(fabricIndex)
-                await self.bridge.commissioningState.saveToStore()
             }
         }
 
@@ -312,6 +311,7 @@ public actor MatterDeviceServer {
     /// Stop the server: cancel loops, stop advertising, close transport.
     public func stop() async {
         await bridge.saveAttributeCache()
+        await bridge.commissioningState.flush()
         receiveTask?.cancel()
         receiveTask = nil
         reportTask?.cancel()

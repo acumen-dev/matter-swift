@@ -214,9 +214,9 @@ struct DuplicateHandlingTests {
     private func startServer(onOffChanged: (@Sendable (Bool) -> Void)? = nil, extraLights: Int = 0) async throws -> Rig {
         let transport = MockServerUDPTransport()
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Duplicate Light", onOffChanged: onOffChanged)
+        let light = bridge.addDimmableLight(name: "Duplicate Light", uniqueID: "duplicate-light", onOffChanged: onOffChanged)
         for index in 0..<extraLights {
-            _ = bridge.addDimmableLight(name: "Extra Light \(index)")
+            _ = bridge.addDimmableLight(name: "Extra Light \(index)", uniqueID: "device")
         }
         let server = MatterDeviceServer(
             bridge: bridge,

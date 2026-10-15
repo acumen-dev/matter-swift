@@ -230,6 +230,7 @@ struct MetadataClusterHandlerTests {
         let endpoint = bridge.addGenericEndpoint(
             name: "Test Sensor",
             deviceTypeID: .temperatureSensor,
+            uniqueID: "test-sensor",
             clusters: [
                 MatterBridge.ClusterConfig(
                     clusterID: .temperatureMeasurement,

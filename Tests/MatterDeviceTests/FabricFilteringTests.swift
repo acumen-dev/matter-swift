@@ -301,7 +301,7 @@ struct FabricFilteringTests {
     @Test("Non-fabric-scoped attribute (OnOff) is unaffected by fabric filtering")
     func nonFabricScopedAttributeUnchanged() async throws {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Test Light")
+        let light = bridge.addDimmableLight(name: "Test Light", uniqueID: "test-light")
 
         // Set OnOff to true
         bridge.store.set(

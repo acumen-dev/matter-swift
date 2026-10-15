@@ -18,7 +18,7 @@ struct BridgeSubscriptionTests {
 
     private func makeBridgeWithSubscription() async throws -> (MatterBridge, BridgedEndpoint, SubscriptionID) {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Kitchen Pendant")
+        let light = bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 
         // Subscribe to OnOff attribute
         let subReq = SubscribeRequest(
@@ -49,7 +49,7 @@ struct BridgeSubscriptionTests {
     @Test("Subscribe through bridge returns initial report and subscribe response")
     func subscribeThroughBridge() async throws {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light")
 
         let subReq = SubscribeRequest(
             minIntervalFloor: 1,
@@ -161,7 +161,7 @@ struct BridgeSubscriptionTests {
     @Test("Subscription expires without StatusResponse after maxInterval + margin")
     func subscriptionExpiry() async throws {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light-2")
 
         let subReq = SubscribeRequest(
             minIntervalFloor: 0,
@@ -199,8 +199,8 @@ struct BridgeSubscriptionTests {
     @Test("Multiple subscriptions get independent reports")
     func multipleSubscriptions() async throws {
         let bridge = MatterBridge()
-        let light1 = bridge.addDimmableLight(name: "Light 1")
-        let light2 = bridge.addDimmableLight(name: "Light 2")
+        let light1 = bridge.addDimmableLight(name: "Light 1", uniqueID: "light-1")
+        let light2 = bridge.addDimmableLight(name: "Light 2", uniqueID: "light-2")
 
         // Subscribe to light1 OnOff
         let subReq1 = SubscribeRequest(

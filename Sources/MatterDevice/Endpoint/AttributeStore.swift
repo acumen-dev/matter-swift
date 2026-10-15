@@ -244,8 +244,9 @@ public final class AttributeStore: @unchecked Sendable {
     ///
     /// The cluster must already be registered. Only attributes the live cluster has are
     /// restored, and those in `liveWins` keep their live values. The cluster takes the
-    /// cached `DataVersion`, bumped if its resulting contents differ from what was
-    /// cached — a controller holding the cached version must re-read it.
+    /// cached `DataVersion` if its resulting contents equal what was cached; otherwise a
+    /// fresh random one (as a new cluster gets), so a controller holding the cached
+    /// version re-reads it.
     func restoreCluster(
         endpoint: EndpointID,
         cluster: ClusterID,
@@ -268,7 +269,9 @@ public final class AttributeStore: @unchecked Sendable {
 
             clusterStorage.dataVersion = DataVersion(rawValue: cached.dataVersion)
             if restored != cachedAttributes {
-                clusterStorage.dataVersion = DataVersion(rawValue: cached.dataVersion &+ 1)
+                var fresh = UInt32.random(in: 0...UInt32.max)
+                while fresh == cached.dataVersion { fresh = UInt32.random(in: 0...UInt32.max) }
+                clusterStorage.dataVersion = DataVersion(rawValue: fresh)
                 for (id, value) in restored where cachedAttributes[id] != value {
                     clusterStorage.dirtyAttributes.insert(id)
                 }

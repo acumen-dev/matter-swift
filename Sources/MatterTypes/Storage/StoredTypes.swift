@@ -36,12 +36,14 @@ public struct StoredDeviceState: Codable, Sendable, Equatable {
     ///
     /// An endpoint number is part of the bridge's identity toward its fabrics — a
     /// controller binds its tiles and automations to it — so it is persisted here,
-    /// next to the fabric data, rather than in the attribute cache. Entries are never
-    /// removed: a device that returns gets its own ID back.
+    /// next to the fabric data, rather than in the attribute cache. An entry is removed
+    /// only when its device is explicitly removed from the bridge; a device that merely
+    /// stops being served, or a restart, keeps it.
     public var bridgedEndpointIDs: [String: UInt16]
 
     /// The highest bridged endpoint ID ever issued, `0` if none. A new device gets the
-    /// next one, so a removed device's ID is never reused.
+    /// next one; after 0xFFFE, the lowest free one (Matter Core § 9.2.10). So a removed
+    /// device's ID is reused only after the count has wrapped.
     public var highestBridgedEndpointID: UInt16
 
     public init(

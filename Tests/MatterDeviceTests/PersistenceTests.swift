@@ -106,10 +106,11 @@ struct PersistenceTests {
 
         #expect(state1.fabrics.count == 1)
 
-        // Save
+        // Save. commitCommissioning() already requested one; writes coalesce, so the
+        // explicit save adds at most one more.
         await state1.saveToStore()
         let saveCount = await memStore.saveCount
-        #expect(saveCount == 1)
+        #expect((1...2).contains(saveCount))
 
         // Load into a fresh state
         let state2 = CommissioningState(fabricStore: memStore)

@@ -57,7 +57,7 @@ struct AttestationCommissioningTests {
     ) async throws -> Rig {
         let link = FaultInjectingLink(seed: seed)
         let bridge = MatterBridge(config: .init(vendorId: vendorID, productId: productID))
-        _ = bridge.addDimmableLight(name: "Attested Light", onOffChanged: { _ in })
+        _ = bridge.addDimmableLight(name: "Attested Light", uniqueID: "attested-light", onOffChanged: { _ in })
         bridge.commissioningState.attestationCredentials = credentials
         let server = MatterDeviceServer(
             bridge: bridge,

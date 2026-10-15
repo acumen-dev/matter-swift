@@ -14,9 +14,18 @@ import MatterCrypto
 /// `GeneralCommissioningHandler`, `OperationalCredentialsHandler`,
 /// `AdminCommissioningHandler`, and `MatterDeviceServer`.
 ///
-/// All mutations happen synchronously on the device server actor — no internal
-/// locking needed. Marked `@unchecked Sendable` because it is owned by the
-/// `MatterDeviceServer` actor and only mutated within that actor's context.
+/// All mutations happen synchronously on the device server actor (before the server
+/// starts: on the context that creates the bridge) — no locking of that state.
+/// Marked `@unchecked Sendable` because it is owned by the `MatterDeviceServer`
+/// actor and only mutated within that actor's context.
+///
+/// Persistence rule: nothing outside that context reads the fabric state. Each
+/// mutation of persisted state (fabrics, ACLs, next fabric index, PBKDF parameters)
+/// calls `fabricStateChanged()` on the owning context, which copies it into
+/// `fabricSnapshot` under `persistLock`. Writes to the fabric store compose that
+/// snapshot with the bridged endpoint allocation — both lock-protected — so
+/// `MatterBridge.add*`, which runs on the host's context, can request a save
+/// without touching actor-owned state.
 public final class CommissioningState: @unchecked Sendable {
 
     // MARK: - Commissioning Window Status
@@ -129,8 +138,7 @@ public final class CommissioningState: @unchecked Sendable {
     /// After commissioning, this method updates the committed ACLs directly.
     public func updateCommittedACLs(fabricIndex: FabricIndex, entries: [AccessControlCluster.AccessControlEntry]) {
         committedACLs[fabricIndex] = entries
-        // Persist asynchronously — the save is best-effort
-        Task { await saveToStore() }
+        fabricStateChanged()
     }
 
     // MARK: - Persistence
@@ -144,11 +152,19 @@ public final class CommissioningState: @unchecked Sendable {
     /// Bridged endpoint IDs issued per device `uniqueID`, persisted with the fabrics.
     let bridgedEndpointAllocator = BridgedEndpointAllocator()
 
-    /// Serializes writes to the fabric store. Each save snapshots the state under
-    /// `persistLock` and writes after the previous save finished, so saves land in
-    /// the order they were snapshotted and an older snapshot never overwrites a newer one.
+    /// Whether `loadFromStore()` has applied the stored state. It runs once, so a later
+    /// call never reads disk over in-memory state.
+    private var loaded = false
+
+    /// Guards `fabricSnapshot`, `savePending` and `saveWriter`.
     private let persistLock = NSLock()
-    private var persistTail: Task<Void, Never>?
+    /// The persisted fabric state as of its last change, with empty allocation fields.
+    private var fabricSnapshot = StoredDeviceState()
+    /// Whether a change has not been written yet.
+    private var savePending = false
+    /// The single task writing to the fabric store. It writes the latest state until
+    /// nothing is pending, so a burst of changes costs one or two writes, not one each.
+    private var saveWriter: Task<Void, Never>?
 
     // MARK: - Callbacks
 
@@ -179,7 +195,16 @@ public final class CommissioningState: @unchecked Sendable {
 
     // MARK: - Init
 
-    public init(fabricStore: (any MatterFabricStore)? = nil) {
+    /// Create commissioning state that is not persisted.
+    public init() {
+        self.fabricStore = nil
+    }
+
+    /// Create commissioning state persisted through `fabricStore`.
+    ///
+    /// Internal: a persisted state must be loaded before bridged endpoints are added,
+    /// and only `MatterBridge.init(config:fabricStore:attributeStore:)` guarantees that.
+    init(fabricStore: (any MatterFabricStore)?) {
         self.fabricStore = fabricStore
     }
 
@@ -295,6 +320,7 @@ public final class CommissioningState: @unchecked Sendable {
     public func removeFabric(_ fabricIndex: FabricIndex) -> Bool {
         guard fabrics.removeValue(forKey: fabricIndex) != nil else { return false }
         committedACLs.removeValue(forKey: fabricIndex)
+        fabricStateChanged()
         onFabricRemoved?(fabricIndex)
         return true
     }
@@ -365,6 +391,7 @@ public final class CommissioningState: @unchecked Sendable {
             }
             committedACLs[fabricIndex] = fixedACLs
         }
+        fabricStateChanged()
 
         onCommissioningComplete?(fabric)
 
@@ -377,16 +404,11 @@ public final class CommissioningState: @unchecked Sendable {
 
     /// Load committed state from the fabric store.
     ///
-    /// Restores fabrics, ACLs, and the next fabric index counter from persisted
-    /// state. Called during server startup before accepting connections.
+    /// Restores fabrics, ACLs, the next fabric index counter and the bridged endpoint
+    /// allocation from persisted state. Only the first successful call has any effect.
     public func loadFromStore() async throws {
-        guard let store = fabricStore else { return }
-        guard let stored = try await store.load() else {
-            if bridgedEndpointAllocator.load(assigned: [:], highest: 0) {
-                await saveToStore()
-            }
-            return
-        }
+        guard let store = fabricStore, !loaded else { return }
+        let stored = try await store.load() ?? StoredDeviceState()
 
         nextFabricIndex = stored.nextFabricIndex
         pbkdfSalt = stored.pbkdfSalt
@@ -429,44 +451,83 @@ public final class CommissioningState: @unchecked Sendable {
             }
         }
 
+        loaded = true
+        refreshFabricSnapshot()
+
         // Last, once the fabric state is in memory: only now may an allocation save
         // replace the stored state.
         if bridgedEndpointAllocator.load(
             assigned: stored.bridgedEndpointIDs,
             highest: stored.highestBridgedEndpointID
         ) {
-            await saveToStore()
+            scheduleSave()
+            await flush()
         }
     }
 
-    /// Save committed state to the fabric store.
+    /// Save committed state to the fabric store and wait for the write.
     ///
-    /// Persists all fabrics, ACLs, the next fabric index counter and the bridged
-    /// endpoint allocation. Called after commissioning completes, after ACL
-    /// modifications and when a bridged endpoint ID is issued.
+    /// Persists all fabrics, ACLs, the next fabric index counter, the PBKDF parameters
+    /// and the bridged endpoint allocation. Call it on the owning context, after
+    /// changing state that has no mutator of its own (such as `pbkdfSalt`).
     public func saveToStore() async {
-        await enqueueSave()?.value
+        fabricStateChanged()
+        await flush()
     }
 
-    /// Snapshot the state now and queue its write behind any earlier save.
-    ///
-    /// For synchronous callers (`MatterBridge.add*`) that cannot await the write.
-    @discardableResult
-    func enqueueSave() -> Task<Void, Never>? {
-        guard let store = fabricStore else { return nil }
-        return persistLock.withLock {
-            let state = storedState()
-            let previous = persistTail
-            let write = Task {
-                await previous?.value
-                try? await store.save(state)
-            }
-            persistTail = write
-            return write
+    /// Wait until every requested save has been written.
+    public func flush() async {
+        while let writer = persistLock.withLock({ saveWriter }) {
+            await writer.value
         }
     }
 
-    private func storedState() -> StoredDeviceState {
+    /// Record a change to persisted fabric state and request a save.
+    ///
+    /// Call on the owning context: this is the only place the fabric state is read
+    /// for persistence.
+    func fabricStateChanged() {
+        refreshFabricSnapshot()
+        scheduleSave()
+    }
+
+    /// Request a write of the current snapshot and allocation. Safe from any context.
+    func scheduleSave() {
+        guard let store = fabricStore else { return }
+        persistLock.withLock {
+            savePending = true
+            guard saveWriter == nil else { return }
+            saveWriter = Task {
+                while let state = self.takePendingState() {
+                    try? await store.save(state)
+                }
+            }
+        }
+    }
+
+    /// The state to write next, or `nil` (and the writer retires) if nothing is pending.
+    private func takePendingState() -> StoredDeviceState? {
+        persistLock.withLock {
+            guard savePending else {
+                saveWriter = nil
+                return nil
+            }
+            savePending = false
+            var state = fabricSnapshot
+            let allocation = bridgedEndpointAllocator.snapshot()
+            state.bridgedEndpointIDs = allocation.assigned
+            state.highestBridgedEndpointID = allocation.highest
+            return state
+        }
+    }
+
+    private func refreshFabricSnapshot() {
+        let snapshot = fabricState()
+        persistLock.withLock { fabricSnapshot = snapshot }
+    }
+
+    /// The persisted fabric state, read on the owning context. Allocation fields empty.
+    private func fabricState() -> StoredDeviceState {
         let storedFabrics = fabrics.values.map { f in
             StoredFabric(
                 fabricIndex: f.fabricIndex.rawValue,
@@ -501,15 +562,12 @@ public final class CommissioningState: @unchecked Sendable {
             )
         }
 
-        let allocation = bridgedEndpointAllocator.snapshot()
         return StoredDeviceState(
             fabrics: storedFabrics,
             acls: storedACLs,
             nextFabricIndex: nextFabricIndex,
             pbkdfSalt: pbkdfSalt,
-            pbkdfIterations: pbkdfSalt != nil ? pbkdfIterations : nil,
-            bridgedEndpointIDs: allocation.assigned,
-            highestBridgedEndpointID: allocation.highest
+            pbkdfIterations: pbkdfSalt != nil ? pbkdfIterations : nil
         )
     }
 

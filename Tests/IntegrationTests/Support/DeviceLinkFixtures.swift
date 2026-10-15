@@ -80,7 +80,7 @@ func startServer(
 ) async throws -> (MatterDeviceServer, BridgedEndpoint) {
     let bridge = MatterBridge()
     bridge.commissioningState.attestationCredentials = try credentials ?? LinkAttestation.credentials()
-    let light = bridge.addDimmableLight(name: "Faulty Light", onOffChanged: { _ in
+    let light = bridge.addDimmableLight(name: "Faulty Light", uniqueID: "faulty-light", onOffChanged: { _ in
         toggles.withLock { $0 += 1 }
     })
     let server = MatterDeviceServer(

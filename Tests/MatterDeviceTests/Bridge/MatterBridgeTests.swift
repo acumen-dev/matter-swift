@@ -45,7 +45,7 @@ struct MatterBridgeTests {
     @Test("addDimmableLight creates endpoint with OnOff, LevelControl, BridgedDeviceBasicInfo, Descriptor")
     func addDimmableLight() {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Kitchen Pendant")
+        let light = bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 
         #expect(light.name == "Kitchen Pendant")
         #expect(bridge.store.hasEndpoint(light.endpointID))
@@ -86,7 +86,7 @@ struct MatterBridgeTests {
     @Test("addOnOffLight creates endpoint without LevelControl")
     func addOnOffLight() {
         let bridge = MatterBridge()
-        let light = bridge.addOnOffLight(name: "Hallway Light")
+        let light = bridge.addOnOffLight(name: "Hallway Light", uniqueID: "hallway-light")
 
         #expect(light.name == "Hallway Light")
 
@@ -105,9 +105,9 @@ struct MatterBridgeTests {
     @Test("Multiple lights get sequential endpoint IDs starting at 3")
     func sequentialEndpointIDs() {
         let bridge = MatterBridge()
-        let light1 = bridge.addDimmableLight(name: "Light 1")
-        let light2 = bridge.addDimmableLight(name: "Light 2")
-        let light3 = bridge.addOnOffLight(name: "Light 3")
+        let light1 = bridge.addDimmableLight(name: "Light 1", uniqueID: "light-1")
+        let light2 = bridge.addDimmableLight(name: "Light 2", uniqueID: "light-2")
+        let light3 = bridge.addOnOffLight(name: "Light 3", uniqueID: "light-3")
 
         #expect(light1.endpointID.rawValue == 3)
         #expect(light2.endpointID.rawValue == 4)
@@ -119,8 +119,8 @@ struct MatterBridgeTests {
     @Test("Aggregator PartsList updates when endpoints are added")
     func aggregatorPartsListOnAdd() {
         let bridge = MatterBridge()
-        let light1 = bridge.addDimmableLight(name: "Light 1")
-        let light2 = bridge.addOnOffLight(name: "Light 2")
+        let light1 = bridge.addDimmableLight(name: "Light 1", uniqueID: "light-1-2")
+        let light2 = bridge.addOnOffLight(name: "Light 2", uniqueID: "light-2-2")
 
         let partsList = bridge.store.get(
             endpoint: EndpointManager.aggregatorEndpoint,
@@ -141,8 +141,8 @@ struct MatterBridgeTests {
     @Test("Aggregator PartsList updates when endpoints are removed")
     func aggregatorPartsListOnRemove() {
         let bridge = MatterBridge()
-        let light1 = bridge.addDimmableLight(name: "Light 1")
-        let _ = bridge.addDimmableLight(name: "Light 2")
+        let light1 = bridge.addDimmableLight(name: "Light 1", uniqueID: "light-1-3")
+        let _ = bridge.addDimmableLight(name: "Light 2", uniqueID: "light-2-3")
 
         bridge.removeEndpoint(light1)
 
@@ -167,7 +167,7 @@ struct MatterBridgeTests {
     @Test("Remove endpoint clears data from store")
     func removeEndpointClearsStore() {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light")
 
         #expect(bridge.store.hasEndpoint(light.endpointID))
         bridge.removeEndpoint(light.endpointID)
@@ -180,7 +180,7 @@ struct MatterBridgeTests {
     @Test("BridgedEndpoint.setOnOff updates store")
     func setOnOff() async {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light-2")
 
         await light.setOnOff(true)
 
@@ -195,7 +195,7 @@ struct MatterBridgeTests {
     @Test("BridgedEndpoint.setLevel updates store")
     func setLevel() async {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light-3")
 
         await light.setLevel(200)
 
@@ -210,7 +210,7 @@ struct MatterBridgeTests {
     @Test("BridgedEndpoint.setReachable updates store")
     func setReachable() async {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light-4")
 
         await light.setReachable(false)
 
@@ -227,7 +227,7 @@ struct MatterBridgeTests {
     @Test("handleIM ReadRequest reads bridged light attributes")
     func readThroughBridge() async throws {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light-5")
         await light.setOnOff(true)
 
         let request = ReadRequest(attributeRequests: [
@@ -256,7 +256,7 @@ struct MatterBridgeTests {
     @Test("handleIM InvokeRequest executes command on bridged light")
     func invokeThroughBridge() async throws {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Light")
+        let light = bridge.addDimmableLight(name: "Light", uniqueID: "light-6")
 
         let cmd = CommandDataIB(
             commandPath: CommandPath(
@@ -292,7 +292,7 @@ struct MatterBridgeTests {
     @Test("addColorTemperatureLight creates endpoint with ColorControl cluster")
     func addColorTemperatureLight() {
         let bridge = MatterBridge()
-        let light = bridge.addColorTemperatureLight(name: "CT Light")
+        let light = bridge.addColorTemperatureLight(name: "CT Light", uniqueID: "ct-light")
 
         #expect(light.name == "CT Light")
         #expect(bridge.store.hasCluster(endpoint: light.endpointID, cluster: .onOff))
@@ -304,7 +304,7 @@ struct MatterBridgeTests {
     @Test("addExtendedColorLight creates endpoint with ColorControl cluster")
     func addExtendedColorLight() {
         let bridge = MatterBridge()
-        let light = bridge.addExtendedColorLight(name: "RGB Light")
+        let light = bridge.addExtendedColorLight(name: "RGB Light", uniqueID: "rgb-light")
 
         #expect(bridge.store.hasCluster(endpoint: light.endpointID, cluster: .colorControl))
         #expect(bridge.store.hasCluster(endpoint: light.endpointID, cluster: .onOff))
@@ -313,7 +313,7 @@ struct MatterBridgeTests {
     @Test("addOnOffPlugInUnit creates endpoint with OnOff only")
     func addOnOffPlugInUnit() {
         let bridge = MatterBridge()
-        let plug = bridge.addOnOffPlugInUnit(name: "Smart Plug")
+        let plug = bridge.addOnOffPlugInUnit(name: "Smart Plug", uniqueID: "smart-plug")
 
         #expect(plug.name == "Smart Plug")
         #expect(bridge.store.hasCluster(endpoint: plug.endpointID, cluster: .onOff))
@@ -323,7 +323,7 @@ struct MatterBridgeTests {
     @Test("addThermostat creates endpoint with Thermostat cluster")
     func addThermostat() {
         let bridge = MatterBridge()
-        let thermo = bridge.addThermostat(name: "Living Room Thermostat")
+        let thermo = bridge.addThermostat(name: "Living Room Thermostat", uniqueID: "living-room-thermostat")
 
         #expect(bridge.store.hasCluster(endpoint: thermo.endpointID, cluster: .thermostat))
         let temp = bridge.store.get(
@@ -337,7 +337,7 @@ struct MatterBridgeTests {
     @Test("addDoorLock creates endpoint with DoorLock cluster")
     func addDoorLock() {
         let bridge = MatterBridge()
-        let lock = bridge.addDoorLock(name: "Front Door")
+        let lock = bridge.addDoorLock(name: "Front Door", uniqueID: "front-door")
 
         #expect(bridge.store.hasCluster(endpoint: lock.endpointID, cluster: .doorLock))
         let state = bridge.store.get(
@@ -351,7 +351,7 @@ struct MatterBridgeTests {
     @Test("addWindowCovering creates endpoint with WindowCovering cluster")
     func addWindowCovering() {
         let bridge = MatterBridge()
-        let covering = bridge.addWindowCovering(name: "Bedroom Blinds")
+        let covering = bridge.addWindowCovering(name: "Bedroom Blinds", uniqueID: "bedroom-blinds")
 
         #expect(bridge.store.hasCluster(endpoint: covering.endpointID, cluster: .windowCovering))
     }
@@ -359,7 +359,7 @@ struct MatterBridgeTests {
     @Test("addFan creates endpoint with FanControl cluster")
     func addFan() {
         let bridge = MatterBridge()
-        let fan = bridge.addFan(name: "Ceiling Fan")
+        let fan = bridge.addFan(name: "Ceiling Fan", uniqueID: "ceiling-fan")
 
         #expect(bridge.store.hasCluster(endpoint: fan.endpointID, cluster: .fanControl))
         let mode = bridge.store.get(
@@ -373,7 +373,7 @@ struct MatterBridgeTests {
     @Test("addContactSensor creates endpoint with BooleanState cluster")
     func addContactSensor() {
         let bridge = MatterBridge()
-        let sensor = bridge.addContactSensor(name: "Door Sensor")
+        let sensor = bridge.addContactSensor(name: "Door Sensor", uniqueID: "door-sensor")
 
         #expect(bridge.store.hasCluster(endpoint: sensor.endpointID, cluster: .booleanState))
     }
@@ -381,7 +381,7 @@ struct MatterBridgeTests {
     @Test("addOccupancySensor creates endpoint with OccupancySensing cluster")
     func addOccupancySensor() {
         let bridge = MatterBridge()
-        let sensor = bridge.addOccupancySensor(name: "Motion")
+        let sensor = bridge.addOccupancySensor(name: "Motion", uniqueID: "motion")
 
         #expect(bridge.store.hasCluster(endpoint: sensor.endpointID, cluster: .occupancySensing))
     }
@@ -389,7 +389,7 @@ struct MatterBridgeTests {
     @Test("addTemperatureSensor creates endpoint with TemperatureMeasurement cluster")
     func addTemperatureSensor() {
         let bridge = MatterBridge()
-        let sensor = bridge.addTemperatureSensor(name: "Temp")
+        let sensor = bridge.addTemperatureSensor(name: "Temp", uniqueID: "temp")
 
         #expect(bridge.store.hasCluster(endpoint: sensor.endpointID, cluster: .temperatureMeasurement))
     }
@@ -397,7 +397,7 @@ struct MatterBridgeTests {
     @Test("addHumiditySensor creates endpoint with RelativeHumidityMeasurement cluster")
     func addHumiditySensor() {
         let bridge = MatterBridge()
-        let sensor = bridge.addHumiditySensor(name: "Humidity")
+        let sensor = bridge.addHumiditySensor(name: "Humidity", uniqueID: "humidity")
 
         #expect(bridge.store.hasCluster(endpoint: sensor.endpointID, cluster: .relativeHumidityMeasurement))
     }
@@ -405,7 +405,7 @@ struct MatterBridgeTests {
     @Test("addLightSensor creates endpoint with IlluminanceMeasurement cluster")
     func addLightSensor() {
         let bridge = MatterBridge()
-        let sensor = bridge.addLightSensor(name: "Lux")
+        let sensor = bridge.addLightSensor(name: "Lux", uniqueID: "lux")
 
         #expect(bridge.store.hasCluster(endpoint: sensor.endpointID, cluster: .illuminanceMeasurement))
     }
@@ -415,7 +415,7 @@ struct MatterBridgeTests {
     @Test("setColorTemperature updates store and colorMode")
     func setColorTemperature() async {
         let bridge = MatterBridge()
-        let light = bridge.addColorTemperatureLight(name: "Light")
+        let light = bridge.addColorTemperatureLight(name: "Light", uniqueID: "light-7")
 
         await light.setColorTemperature(300)
 
@@ -426,7 +426,7 @@ struct MatterBridgeTests {
     @Test("setHue updates store and colorMode")
     func setHue() async {
         let bridge = MatterBridge()
-        let light = bridge.addExtendedColorLight(name: "Light")
+        let light = bridge.addExtendedColorLight(name: "Light", uniqueID: "light-8")
 
         await light.setHue(120)
 
@@ -437,7 +437,7 @@ struct MatterBridgeTests {
     @Test("setCurrentXY updates store and colorMode")
     func setCurrentXY() async {
         let bridge = MatterBridge()
-        let light = bridge.addExtendedColorLight(name: "Light")
+        let light = bridge.addExtendedColorLight(name: "Light", uniqueID: "light-9")
 
         await light.setCurrentXY(x: 24000, y: 25000)
 
@@ -449,7 +449,7 @@ struct MatterBridgeTests {
     @Test("setLocalTemperature updates store")
     func setLocalTemperature() async {
         let bridge = MatterBridge()
-        let thermo = bridge.addThermostat(name: "Thermo")
+        let thermo = bridge.addThermostat(name: "Thermo", uniqueID: "thermo")
 
         await thermo.setLocalTemperature(2200)
 
@@ -459,7 +459,7 @@ struct MatterBridgeTests {
     @Test("setLockState updates store")
     func setLockState() async {
         let bridge = MatterBridge()
-        let lock = bridge.addDoorLock(name: "Lock")
+        let lock = bridge.addDoorLock(name: "Lock", uniqueID: "lock")
 
         await lock.setLockState(2) // Unlocked
 
@@ -469,7 +469,7 @@ struct MatterBridgeTests {
     @Test("setLiftPosition updates store")
     func setLiftPosition() async {
         let bridge = MatterBridge()
-        let cover = bridge.addWindowCovering(name: "Blind")
+        let cover = bridge.addWindowCovering(name: "Blind", uniqueID: "blind")
 
         await cover.setLiftPosition(5000) // 50%
 
@@ -479,7 +479,7 @@ struct MatterBridgeTests {
     @Test("setFanMode updates store")
     func setFanMode() async {
         let bridge = MatterBridge()
-        let fan = bridge.addFan(name: "Fan")
+        let fan = bridge.addFan(name: "Fan", uniqueID: "fan")
 
         await fan.setFanMode(3) // High
 
@@ -489,7 +489,7 @@ struct MatterBridgeTests {
     @Test("setFanPercent updates setting and current")
     func setFanPercent() async {
         let bridge = MatterBridge()
-        let fan = bridge.addFan(name: "Fan")
+        let fan = bridge.addFan(name: "Fan", uniqueID: "fan-2")
 
         await fan.setFanPercent(75)
 
@@ -500,7 +500,7 @@ struct MatterBridgeTests {
     @Test("setTemperature updates store")
     func setTemperature() async {
         let bridge = MatterBridge()
-        let sensor = bridge.addTemperatureSensor(name: "Temp")
+        let sensor = bridge.addTemperatureSensor(name: "Temp", uniqueID: "temp-2")
 
         await sensor.setTemperature(2350) // 23.50°C
 
@@ -510,7 +510,7 @@ struct MatterBridgeTests {
     @Test("setHumidity updates store")
     func setHumidity() async {
         let bridge = MatterBridge()
-        let sensor = bridge.addHumiditySensor(name: "Humid")
+        let sensor = bridge.addHumiditySensor(name: "Humid", uniqueID: "humid")
 
         await sensor.setHumidity(6500) // 65.00%
 
@@ -520,7 +520,7 @@ struct MatterBridgeTests {
     @Test("setOccupancy updates store")
     func setOccupancy() async {
         let bridge = MatterBridge()
-        let sensor = bridge.addOccupancySensor(name: "Motion")
+        let sensor = bridge.addOccupancySensor(name: "Motion", uniqueID: "motion-2")
 
         await sensor.setOccupancy(1)
 
@@ -530,7 +530,7 @@ struct MatterBridgeTests {
     @Test("setStateValue updates store")
     func setStateValue() async {
         let bridge = MatterBridge()
-        let sensor = bridge.addContactSensor(name: "Door")
+        let sensor = bridge.addContactSensor(name: "Door", uniqueID: "door")
 
         await sensor.setStateValue(true) // Open
 
@@ -540,7 +540,7 @@ struct MatterBridgeTests {
     @Test("setIlluminance updates store")
     func setIlluminance() async {
         let bridge = MatterBridge()
-        let sensor = bridge.addLightSensor(name: "Lux")
+        let sensor = bridge.addLightSensor(name: "Lux", uniqueID: "lux-2")
 
         await sensor.setIlluminance(5000)
 

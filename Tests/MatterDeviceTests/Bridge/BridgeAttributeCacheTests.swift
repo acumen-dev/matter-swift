@@ -89,7 +89,7 @@ struct BridgeAttributeCacheTests {
 
         let aggregator = try readPartsList(second, on: ep(1))
         #expect(aggregator.parts == [3, 5])
-        #expect(aggregator.version.rawValue == cachedVersion.rawValue &+ 1)
+        #expect(aggregator.version != cachedVersion)
         #expect(partsList(second, on: ep(0)) == [1, 3, 5])
 
         // The removed endpoint's cached values are not restored.
@@ -150,6 +150,20 @@ struct BridgeAttributeCacheTests {
         try await stop(server, discovery)
     }
 
+    @Test("An unreadable attribute cache does not abort start(); live values stand")
+    func corruptCacheIsIgnored() async throws {
+        let bridge = MatterBridge(attributeStore: FailingAttributeStore())
+        let a = bridge.addOnOffLight(name: "A", uniqueID: "dev-a")
+
+        let (server, discovery) = makeServer(bridge)
+        try await server.start()
+
+        #expect(bridgedString(bridge, a.endpointID, BridgedDeviceBasicInfoCluster.Attribute.uniqueID) == "dev-a")
+        #expect(partsList(bridge, on: ep(1)) == [3])
+
+        try await stop(server, discovery)
+    }
+
     // MARK: - Persisting the Cache
 
     @Test("The attribute cache is saved on stop()")
@@ -191,6 +205,8 @@ struct BridgeAttributeCacheTests {
     func subscriberReportedOnRuntimeAdd() async throws {
         let bridge = MatterBridge()
         bridge.addOnOffLight(name: "A", uniqueID: "dev-a")
+        // A's own notification must land before the subscription exists.
+        await bridge.flushEndpointSetNotifications()
 
         let subscribe = SubscribeRequest(
             minIntervalFloor: 0,
@@ -226,6 +242,7 @@ struct BridgeAttributeCacheTests {
         let bridge = MatterBridge()
         let a = bridge.addOnOffLight(name: "A", uniqueID: "dev-a")
         bridge.addOnOffLight(name: "B", uniqueID: "dev-b")
+        await bridge.flushEndpointSetNotifications()
 
         let subscribe = SubscribeRequest(
             minIntervalFloor: 0,
@@ -242,10 +259,18 @@ struct BridgeAttributeCacheTests {
         )
         bridge.store.clearDirty()
 
+        #expect(await bridge.pendingReports().isEmpty)
         bridge.removeEndpoint(a)
 
         #expect(partsList(bridge, on: ep(0)) == [1, 4])
         #expect(partsList(bridge, on: ep(1)) == [4])
         try await pollUntil { await !bridge.pendingReports().isEmpty }
     }
+}
+
+/// An attribute store whose saved data cannot be read.
+private actor FailingAttributeStore: MatterAttributeStore {
+    struct Corrupt: Error {}
+    func load() async throws -> StoredAttributeData? { throw Corrupt() }
+    func save(_ data: StoredAttributeData) async throws {}
 }

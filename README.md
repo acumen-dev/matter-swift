@@ -40,7 +40,7 @@ let bridge = MatterBridge(config: .init(
 ))
 
 // Add a dimmable light
-let light = bridge.addDimmableLight(name: "Kitchen Pendant")
+let light = bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 
 // Create and start the server
 let server = MatterDeviceServer(

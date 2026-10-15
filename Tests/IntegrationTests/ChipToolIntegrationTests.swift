@@ -240,7 +240,7 @@ struct ChipToolIntegrationTests {
         bridge: MatterBridge
     ) {
         let bridge = MatterBridge()
-        bridge.addDimmableLight(name: "ChipTool Test Light")
+        bridge.addDimmableLight(name: "ChipTool Test Light", uniqueID: "chiptool-test-light")
 
         let transport = AppleUDPTransport()
         let discovery = AppleDiscovery()
