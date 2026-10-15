@@ -176,7 +176,7 @@ public actor MatterDeviceServer {
         // Controllers (e.g. Apple Home) cache PBKDF parameters after a successful PASE session
         // and send `hasPBKDFParameters = true` on subsequent commissioning attempts. The server
         // must respond with the same salt it used before, or SPAKE2+ will fail.
-        try await bridge.commissioningState.loadFromStore()
+        try await bridge.loadPersistedState()
         try await bridge.store.loadFromStore()
         // A fail-safe never survives a restart, so neither may its Breadcrumb.
         GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)

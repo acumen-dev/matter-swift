@@ -17,6 +17,7 @@ MatterSwift defines three storage protocols in the `MatterTypes` module. Impleme
 | Fabric credentials | NOCs, root certificates, fabric IDs — without these, CASE sessions fail |
 | ACL entries | Access control lists per fabric — without these, all requests are denied |
 | PBKDF salt and iterations | Apple Home caches these after first PASE — changing them breaks recommissioning |
+| Bridged endpoint IDs | The endpoint number issued to each bridged device, keyed by its `uniqueID` — controllers bind tiles and automations to it |
 | Commissioning state | Fail-safe state, staged credentials during active commissioning |
 
 ### For Devices/Bridges (`MatterAttributeStore`)
@@ -158,14 +159,18 @@ Pass your stores when creating the bridge:
 let fabricStore = JSONFileFabricStore(directory: directory)
 let attributeStore = JSONFileAttributeStore(directory: directory)
 
-let bridge = MatterBridge(
+let bridge = try await MatterBridge(
     config: .init(vendorName: "MyCompany", productName: "Hub"),
     fabricStore: fabricStore,
     attributeStore: attributeStore
 )
+
+bridge.addOnOffLight(name: "Hall", uniqueID: "hue-light-17")
 ```
 
-The bridge loads persisted state during initialisation and saves automatically when state changes (fabric commits, attribute writes).
+The store-taking initializer is `async throws` because it loads the persisted fabric state before returning — before any device can be added. That state decides each bridged device's endpoint number, which is part of the bridge's identity toward its fabrics: controllers bind tiles and automations to it. The bridge issues it by the `uniqueID` you pass to `add*`: a known device gets its stored number back, a new device gets the highest number ever issued + 1, and a removed device's number is never given to another device. Pass a stable `uniqueID` for every device — one without a `uniqueID` gets a new number each time it is added. State saved before endpoint numbers were persisted assigns them in `add*` call order, so an existing installation keeps its numbers.
+
+The bridge saves automatically when state changes (fabric commits, newly issued endpoint numbers, attribute writes).
 
 ## Wiring Stores to MatterController
 

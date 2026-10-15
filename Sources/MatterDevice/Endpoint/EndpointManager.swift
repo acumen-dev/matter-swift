@@ -117,6 +117,11 @@ public final class EndpointManager: @unchecked Sendable {
         }
     }
 
+    /// Keep `nextEndpointID()` past an ID issued by other means, so the two never collide.
+    func reserveEndpointID(_ id: EndpointID) {
+        withLock { nextDynamicEndpointRaw = max(nextDynamicEndpointRaw, id.rawValue + 1) }
+    }
+
     /// Get an endpoint config by ID.
     public func endpoint(for id: EndpointID) -> EndpointConfig? {
         withLock { endpoints[id] }

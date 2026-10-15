@@ -138,6 +138,18 @@ public final class CommissioningState: @unchecked Sendable {
     /// Optional fabric store for persisting committed state across restarts.
     private let fabricStore: (any MatterFabricStore)?
 
+    /// Whether committed state is persisted through a fabric store.
+    var hasFabricStore: Bool { fabricStore != nil }
+
+    /// Bridged endpoint IDs issued per device `uniqueID`, persisted with the fabrics.
+    let bridgedEndpointAllocator = BridgedEndpointAllocator()
+
+    /// Serializes writes to the fabric store. Each save snapshots the state under
+    /// `persistLock` and writes after the previous save finished, so saves land in
+    /// the order they were snapshotted and an older snapshot never overwrites a newer one.
+    private let persistLock = NSLock()
+    private var persistTail: Task<Void, Never>?
+
     // MARK: - Callbacks
 
     /// Called when commissioning completes with fabric info for CASE session setup.
@@ -369,7 +381,12 @@ public final class CommissioningState: @unchecked Sendable {
     /// state. Called during server startup before accepting connections.
     public func loadFromStore() async throws {
         guard let store = fabricStore else { return }
-        guard let stored = try await store.load() else { return }
+        guard let stored = try await store.load() else {
+            if bridgedEndpointAllocator.load(assigned: [:], highest: 0) {
+                await saveToStore()
+            }
+            return
+        }
 
         nextFabricIndex = stored.nextFabricIndex
         pbkdfSalt = stored.pbkdfSalt
@@ -411,15 +428,45 @@ public final class CommissioningState: @unchecked Sendable {
                 )
             }
         }
+
+        // Last, once the fabric state is in memory: only now may an allocation save
+        // replace the stored state.
+        if bridgedEndpointAllocator.load(
+            assigned: stored.bridgedEndpointIDs,
+            highest: stored.highestBridgedEndpointID
+        ) {
+            await saveToStore()
+        }
     }
 
     /// Save committed state to the fabric store.
     ///
-    /// Persists all fabrics, ACLs, and the next fabric index counter.
-    /// Called after commissioning completes and after ACL modifications.
+    /// Persists all fabrics, ACLs, the next fabric index counter and the bridged
+    /// endpoint allocation. Called after commissioning completes, after ACL
+    /// modifications and when a bridged endpoint ID is issued.
     public func saveToStore() async {
-        guard let store = fabricStore else { return }
+        await enqueueSave()?.value
+    }
 
+    /// Snapshot the state now and queue its write behind any earlier save.
+    ///
+    /// For synchronous callers (`MatterBridge.add*`) that cannot await the write.
+    @discardableResult
+    func enqueueSave() -> Task<Void, Never>? {
+        guard let store = fabricStore else { return nil }
+        return persistLock.withLock {
+            let state = storedState()
+            let previous = persistTail
+            let write = Task {
+                await previous?.value
+                try? await store.save(state)
+            }
+            persistTail = write
+            return write
+        }
+    }
+
+    private func storedState() -> StoredDeviceState {
         let storedFabrics = fabrics.values.map { f in
             StoredFabric(
                 fabricIndex: f.fabricIndex.rawValue,
@@ -454,15 +501,16 @@ public final class CommissioningState: @unchecked Sendable {
             )
         }
 
-        let state = StoredDeviceState(
+        let allocation = bridgedEndpointAllocator.snapshot()
+        return StoredDeviceState(
             fabrics: storedFabrics,
             acls: storedACLs,
             nextFabricIndex: nextFabricIndex,
             pbkdfSalt: pbkdfSalt,
-            pbkdfIterations: pbkdfSalt != nil ? pbkdfIterations : nil
+            pbkdfIterations: pbkdfSalt != nil ? pbkdfIterations : nil,
+            bridgedEndpointIDs: allocation.assigned,
+            highestBridgedEndpointID: allocation.highest
         )
-
-        try? await store.save(state)
     }
 
     // MARK: - Private

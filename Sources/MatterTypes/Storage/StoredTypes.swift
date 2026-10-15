@@ -31,18 +31,57 @@ public struct StoredDeviceState: Codable, Sendable, Equatable {
     /// PBKDF2 iteration count used together with `pbkdfSalt`.
     public var pbkdfIterations: Int?
 
+    /// The endpoint ID issued to each bridged device, keyed by the `uniqueID` the host
+    /// passed when adding it.
+    ///
+    /// An endpoint number is part of the bridge's identity toward its fabrics — a
+    /// controller binds its tiles and automations to it — so it is persisted here,
+    /// next to the fabric data, rather than in the attribute cache. Entries are never
+    /// removed: a device that returns gets its own ID back.
+    public var bridgedEndpointIDs: [String: UInt16]
+
+    /// The highest bridged endpoint ID ever issued, `0` if none. A new device gets the
+    /// next one, so a removed device's ID is never reused.
+    public var highestBridgedEndpointID: UInt16
+
     public init(
         fabrics: [StoredFabric] = [],
         acls: [StoredFabricACLs] = [],
         nextFabricIndex: UInt8 = 1,
         pbkdfSalt: Data? = nil,
-        pbkdfIterations: Int? = nil
+        pbkdfIterations: Int? = nil,
+        bridgedEndpointIDs: [String: UInt16] = [:],
+        highestBridgedEndpointID: UInt16 = 0
     ) {
         self.fabrics = fabrics
         self.acls = acls
         self.nextFabricIndex = nextFabricIndex
         self.pbkdfSalt = pbkdfSalt
         self.pbkdfIterations = pbkdfIterations
+        self.bridgedEndpointIDs = bridgedEndpointIDs
+        self.highestBridgedEndpointID = highestBridgedEndpointID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fabrics, acls, nextFabricIndex, pbkdfSalt, pbkdfIterations
+        case bridgedEndpointIDs, highestBridgedEndpointID
+    }
+
+    /// Decodes state saved before bridged endpoint allocation was persisted: the
+    /// allocation fields are absent there and decode as empty.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.fabrics = try container.decode([StoredFabric].self, forKey: .fabrics)
+        self.acls = try container.decode([StoredFabricACLs].self, forKey: .acls)
+        self.nextFabricIndex = try container.decode(UInt8.self, forKey: .nextFabricIndex)
+        self.pbkdfSalt = try container.decodeIfPresent(Data.self, forKey: .pbkdfSalt)
+        self.pbkdfIterations = try container.decodeIfPresent(Int.self, forKey: .pbkdfIterations)
+        self.bridgedEndpointIDs = try container.decodeIfPresent(
+            [String: UInt16].self, forKey: .bridgedEndpointIDs
+        ) ?? [:]
+        self.highestBridgedEndpointID = try container.decodeIfPresent(
+            UInt16.self, forKey: .highestBridgedEndpointID
+        ) ?? 0
     }
 }
 
