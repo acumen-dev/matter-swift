@@ -17,6 +17,7 @@ MatterSwift defines three storage protocols in the `MatterTypes` module. Impleme
 | Fabric credentials | NOCs, root certificates, fabric IDs — without these, CASE sessions fail |
 | ACL entries | Access control lists per fabric — without these, all requests are denied |
 | PBKDF salt and iterations | Apple Home caches these after first PASE — changing them breaks recommissioning |
+| Bridged endpoint IDs | The endpoint number issued to each bridged device, keyed by its `uniqueID` — controllers bind tiles and automations to it |
 | Commissioning state | Fail-safe state, staged credentials during active commissioning |
 
 ### For Devices/Bridges (`MatterAttributeStore`)
@@ -158,14 +159,20 @@ Pass your stores when creating the bridge:
 let fabricStore = JSONFileFabricStore(directory: directory)
 let attributeStore = JSONFileAttributeStore(directory: directory)
 
-let bridge = MatterBridge(
+let bridge = try await MatterBridge(
     config: .init(vendorName: "MyCompany", productName: "Hub"),
     fabricStore: fabricStore,
     attributeStore: attributeStore
 )
+
+bridge.addOnOffLight(name: "Hall", uniqueID: "hue-light-17")
 ```
 
-The bridge loads persisted state during initialisation and saves automatically when state changes (fabric commits, attribute writes).
+The store-taking initializer is `async throws` because it loads the persisted fabric state before returning — before any device can be added. That state decides each bridged device's endpoint number, which is part of the bridge's identity toward its fabrics: controllers bind tiles and automations to it. The bridge issues it by the `uniqueID` you pass to `add*`: a known device gets its stored number back, a new device gets the next number after the highest ever issued, and a number is freed only when its device is removed with `removeEndpoint` — never by a restart. After 0xFFFE, new numbers continue with the lowest free one (Matter Core § 9.2.10), so a removed device's number goes to another device only after that wrap. Every `add*` requires the `uniqueID`; keep it stable for the device's lifetime. State saved before endpoint numbers were persisted assigns them in `add*` call order, so an existing installation keeps its numbers.
+
+`MatterDeviceServer.start()` restores the attribute cache for the endpoints that are registered at that point, then the live endpoint set wins over the cache: values are restored only for an endpoint registered with the same `uniqueID`, and the PartsLists and each bridged device's identity are recomputed, with a new DataVersion wherever they differ from the cache.
+
+The bridge saves automatically when state changes: fabric commits and newly issued endpoint numbers through the fabric store; the attribute cache through the attribute store at commissioning, on every change to the endpoint set and on `stop()`.
 
 ## Wiring Stores to MatterController
 

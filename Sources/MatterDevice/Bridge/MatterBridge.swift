@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Logging
 import MatterTypes
 import MatterModel
 import MatterCrypto
@@ -20,7 +21,7 @@ import MatterProtocol
 ///     vendorId: 0xFFF1, productId: 0x8000
 /// ))
 ///
-/// let light = bridge.addDimmableLight(name: "Kitchen Pendant")
+/// let light = bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 /// await light.setOnOff(true)
 /// await light.setLevel(200)
 ///
@@ -74,18 +75,38 @@ public final class MatterBridge: @unchecked Sendable {
     /// Buffer for reassembling chunked invoke requests across multiple UDP messages.
     public let chunkedInvokeBuffer = ChunkedInvokeBuffer()
     private let imHandler: InteractionModelHandler
+    private let logger = Logger(label: "matter.bridge")
+
+    /// Guards `bridgedEndpoints`, `cacheRestored` and `notifyTail`: `add*` and
+    /// `removeEndpoint` run on the host's context while the server reads them.
+    private let stateLock = NSLock()
     private var bridgedEndpoints: [EndpointID: BridgedEndpoint] = [:]
+    /// Whether the attribute cache has been restored. Before that, saving the cache
+    /// would replace it with fresh values.
+    private var cacheRestored = false
+    /// The latest endpoint-set notification; each waits for the one before, so
+    /// subscribers learn of changes in order.
+    private var notifyTail: Task<Void, Never>?
 
     // MARK: - Init
 
+    /// Create a bridge whose fabrics do not persist.
+    ///
+    /// Bridged endpoint IDs are sequential from 3 in `add*` call order. For a bridge
+    /// that survives restarts, use ``init(config:fabricStore:attributeStore:)``.
+    ///
+    /// - Parameters:
+    ///   - commissioningState: Shared commissioning state, not persisted. (A persisted
+    ///     one can only be created by ``init(config:fabricStore:attributeStore:)``, which
+    ///     loads it before any device can be added.)
+    ///   - attributeStore: Optional attribute cache, restored by `MatterDeviceServer.start()`.
     public init(
         config: Config = Config(),
         commissioningState: CommissioningState? = nil,
-        fabricStore: (any MatterFabricStore)? = nil,
         attributeStore: (any MatterAttributeStore)? = nil
     ) {
         self.config = config
-        self.commissioningState = commissioningState ?? CommissioningState(fabricStore: fabricStore)
+        self.commissioningState = commissioningState ?? CommissioningState()
         self.store = AttributeStore(attributeStore: attributeStore)
         self.eventStore = EventStore()
         self.endpoints = EndpointManager(store: store)
@@ -103,6 +124,40 @@ public final class MatterBridge: @unchecked Sendable {
 
         setupRootEndpoint()
         setupAggregatorEndpoint()
+    }
+
+    /// Create a bridge that persists its fabrics, and load them.
+    ///
+    /// Loading happens here, before any device can be added, because the stored state
+    /// decides each bridged device's endpoint ID: a known `uniqueID` gets its stored ID
+    /// back, a new one gets the next number after the highest ever issued (after 0xFFFE,
+    /// the lowest free one), and a removed device's ID goes to another device only after
+    /// that count has wrapped. Every newly issued ID is saved through
+    /// `fabricStore`. On state saved before endpoint IDs were persisted, IDs are issued
+    /// in `add*` call order, so an existing installation keeps its numbers.
+    ///
+    /// - Throws: If the stored state exists but cannot be loaded.
+    public convenience init(
+        config: Config = Config(),
+        fabricStore: any MatterFabricStore,
+        attributeStore: (any MatterAttributeStore)? = nil
+    ) async throws {
+        self.init(
+            config: config,
+            commissioningState: CommissioningState(fabricStore: fabricStore),
+            attributeStore: attributeStore
+        )
+        try await loadPersistedState()
+    }
+
+    // MARK: - Persisted State
+
+    /// Load the fabric store's state. Only the first call affects endpoint allocation.
+    ///
+    /// Endpoints added before this keep their provisional IDs and are recorded.
+    /// Without a fabric store it does nothing.
+    func loadPersistedState() async throws {
+        try await commissioningState.loadFromStore()
     }
 
     // MARK: - Root + Aggregator Setup
@@ -170,16 +225,20 @@ public final class MatterBridge: @unchecked Sendable {
     }
 
     // MARK: - Add Endpoints
+    //
+    // Every `add*` takes the device's `uniqueID`: its stable identity, published as
+    // BridgedDeviceBasicInformation.UniqueID. With a fabric store it also keys the
+    // device's endpoint ID, so it must not change across restarts.
 
     /// Add a bridged dimmable light (OnOff + LevelControl + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
     public func addDimmableLight(
         name: String,
-        uniqueID: String = "",
+        uniqueID: String,
         onOffChanged: (@Sendable (Bool) -> Void)? = nil,
         levelChanged: (@Sendable (UInt8) -> Void)? = nil
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.onOff, .levelControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -203,8 +262,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged on/off light (OnOff + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addOnOffLight(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addOnOffLight(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.onOff, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -229,12 +288,12 @@ public final class MatterBridge: @unchecked Sendable {
     @discardableResult
     public func addColorTemperatureLight(
         name: String,
-        uniqueID: String = "",
+        uniqueID: String,
         onOffChanged: (@Sendable (Bool) -> Void)? = nil,
         levelChanged: (@Sendable (UInt8) -> Void)? = nil,
         colorTemperatureChanged: (@Sendable (UInt16) -> Void)? = nil
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.onOff, .levelControl, .colorControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let colorOnChange: (@Sendable (ColorControlChange) -> Void)? = colorTemperatureChanged.map { callback in
@@ -266,13 +325,13 @@ public final class MatterBridge: @unchecked Sendable {
     @discardableResult
     public func addExtendedColorLight(
         name: String,
-        uniqueID: String = "",
+        uniqueID: String,
         onOffChanged: (@Sendable (Bool) -> Void)? = nil,
         levelChanged: (@Sendable (UInt8) -> Void)? = nil,
         colorTemperatureChanged: (@Sendable (UInt16) -> Void)? = nil,
         xyChanged: (@Sendable (UInt16, UInt16) -> Void)? = nil
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.onOff, .levelControl, .colorControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let colorOnChange: (@Sendable (ColorControlChange) -> Void)? = (colorTemperatureChanged != nil || xyChanged != nil) ? { @Sendable change in
@@ -306,10 +365,10 @@ public final class MatterBridge: @unchecked Sendable {
     @discardableResult
     public func addOnOffPlugInUnit(
         name: String,
-        uniqueID: String = "",
+        uniqueID: String,
         onOffChanged: (@Sendable (Bool) -> Void)? = nil
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.onOff, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -332,8 +391,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged thermostat (Thermostat + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addThermostat(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addThermostat(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.thermostat, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -358,10 +417,10 @@ public final class MatterBridge: @unchecked Sendable {
     @discardableResult
     public func addDoorLock(
         name: String,
-        uniqueID: String = "",
+        uniqueID: String,
         lockStateChanged: (@Sendable (UInt8) -> Void)? = nil
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.doorLock, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -384,8 +443,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged window covering (WindowCovering + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addWindowCovering(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addWindowCovering(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.windowCovering, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -410,10 +469,10 @@ public final class MatterBridge: @unchecked Sendable {
     @discardableResult
     public func addFan(
         name: String,
-        uniqueID: String = "",
+        uniqueID: String,
         fanPercentChanged: (@Sendable (UInt8) -> Void)? = nil
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.fanControl, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -440,8 +499,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged contact sensor (BooleanState + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addContactSensor(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addContactSensor(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.booleanState, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -464,8 +523,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged occupancy sensor (OccupancySensing + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addOccupancySensor(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addOccupancySensor(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.occupancySensing, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -488,8 +547,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged temperature sensor (TemperatureMeasurement + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addTemperatureSensor(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addTemperatureSensor(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.temperatureMeasurement, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -512,8 +571,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged humidity sensor (RelativeHumidityMeasurement + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addHumiditySensor(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addHumiditySensor(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.relativeHumidityMeasurement, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -536,8 +595,8 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// Add a bridged light sensor (IlluminanceMeasurement + Groups + Identify + BridgedDeviceBasicInfo + Descriptor).
     @discardableResult
-    public func addLightSensor(name: String, uniqueID: String = "") -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+    public func addLightSensor(name: String, uniqueID: String) -> BridgedEndpoint {
+        let epID = allocateEndpointID(uniqueID: uniqueID)
         let serverClusters: [ClusterID] = [.illuminanceMeasurement, .groups, .identify, .bridgedDeviceBasicInformation, .descriptor]
 
         let config = EndpointConfig(
@@ -623,6 +682,7 @@ public final class MatterBridge: @unchecked Sendable {
     /// bridge.addGenericEndpoint(
     ///     name: "My Sensor",
     ///     deviceTypeID: .temperatureSensor,
+    ///     uniqueID: "sensor-42",
     ///     clusters: [
     ///         ClusterConfig(
     ///             clusterID: .temperatureMeasurement,
@@ -639,10 +699,10 @@ public final class MatterBridge: @unchecked Sendable {
     public func addGenericEndpoint(
         name: String,
         deviceTypeID: DeviceTypeID,
-        uniqueID: String = "",
+        uniqueID: String,
         clusters: [ClusterConfig]
     ) -> BridgedEndpoint {
-        let epID = endpoints.nextEndpointID()
+        let epID = allocateEndpointID(uniqueID: uniqueID)
 
         // Build cluster handlers from configs
         var handlers: [any ClusterHandler] = clusters.map { config in
@@ -682,9 +742,17 @@ public final class MatterBridge: @unchecked Sendable {
     // MARK: - Remove Endpoints
 
     /// Remove a bridged endpoint.
+    ///
+    /// This removes the device: its endpoint ID is freed, and if the same `uniqueID` is
+    /// added again it gets a new ID. A freed ID goes to another device only after the
+    /// allocation count has wrapped at 0xFFFE (Matter Core § 9.2.10).
     public func removeEndpoint(_ endpointID: EndpointID) {
         endpoints.removeEndpoint(endpointID)
-        bridgedEndpoints.removeValue(forKey: endpointID)
+        stateLock.withLock { _ = bridgedEndpoints.removeValue(forKey: endpointID) }
+        if commissioningState.bridgedEndpointAllocator.remove(endpointID) {
+            commissioningState.scheduleSave()
+        }
+        endpointSetChanged()
     }
 
     /// Remove a bridged endpoint by handle.
@@ -694,6 +762,24 @@ public final class MatterBridge: @unchecked Sendable {
 
     // MARK: - Internal
 
+    /// Issue the endpoint ID for a new bridged device.
+    ///
+    /// With a fabric store the ID is stable per `uniqueID` and every newly issued ID is
+    /// saved through the store. Without one, IDs are sequential from 3 in call order.
+    private func allocateEndpointID(uniqueID: String) -> EndpointID {
+        guard commissioningState.hasFabricStore else {
+            return endpoints.nextEndpointID()
+        }
+        let (id, needsSave) = commissioningState.bridgedEndpointAllocator.allocate(uniqueID: uniqueID) { raw in
+            endpoints.endpoint(for: EndpointID(rawValue: raw)) != nil
+        }
+        endpoints.reserveEndpointID(id)
+        if needsSave {
+            commissioningState.scheduleSave()
+        }
+        return id
+    }
+
     private func registerBridgedEndpoint(epID: EndpointID, name: String) -> BridgedEndpoint {
         let bridged = BridgedEndpoint(
             endpointID: epID,
@@ -701,32 +787,127 @@ public final class MatterBridge: @unchecked Sendable {
             store: store,
             subscriptions: subscriptions
         )
-        bridgedEndpoints[epID] = bridged
+        stateLock.withLock { bridgedEndpoints[epID] = bridged }
+        endpointSetChanged()
+        return bridged
+    }
 
-        // Per Matter spec §9.5.4.6, the Root Endpoint (ep=0) PartsList MUST list ALL endpoints.
-        // The Aggregator Endpoint (ep=1) PartsList MUST list all its bridged endpoints.
-        // Update both in the AttributeStore now that we know the new endpoint ID.
-        let allBridgedIDs = bridgedEndpoints.keys.sorted { $0.rawValue < $1.rawValue }
-        let bridgedElements = allBridgedIDs.map { TLVElement.unsignedInt(UInt64($0.rawValue)) }
+    // MARK: - Endpoint Set
 
-        // ep=0 PartsList: aggregator (ep=1) + all bridged endpoints
-        let rootParts = [TLVElement.unsignedInt(UInt64(EndpointManager.aggregatorEndpoint.rawValue))] + bridgedElements
+    /// Recompute both PartsLists from the registered endpoints, report them to
+    /// subscribers and, once the cache has been restored, persist it.
+    private func endpointSetChanged() {
+        refreshPartsLists()
+        let paths = [EndpointID(rawValue: 0), EndpointManager.aggregatorEndpoint].map {
+            AttributePath(endpointID: $0, clusterID: .descriptor, attributeID: DescriptorCluster.Attribute.partsList)
+        }
+        let subscriptions = subscriptions
+        stateLock.withLock {
+            let previous = notifyTail
+            notifyTail = Task {
+                await previous?.value
+                await subscriptions.attributesChanged(paths)
+            }
+        }
+        if stateLock.withLock({ cacheRestored }) {
+            store.enqueueSave()
+        }
+    }
+
+    /// Wait until subscribers have been told of every endpoint-set change so far.
+    func flushEndpointSetNotifications() async {
+        await stateLock.withLock({ notifyTail })?.value
+    }
+
+    /// Per Matter spec §9.5.4.6, the Root Endpoint (ep=0) PartsList lists all other
+    /// endpoints and the Aggregator (ep=1) PartsList lists its bridged endpoints.
+    private func refreshPartsLists() {
+        let bridged = endpoints.allEndpointIDs()
+            .filter { $0 != EndpointID(rawValue: 0) && $0 != EndpointManager.aggregatorEndpoint }
+            .map { TLVElement.unsignedInt(UInt64($0.rawValue)) }
+        let aggregator = TLVElement.unsignedInt(UInt64(EndpointManager.aggregatorEndpoint.rawValue))
         store.set(
             endpoint: EndpointID(rawValue: 0),
-            cluster: ClusterID.descriptor,
+            cluster: .descriptor,
             attribute: DescriptorCluster.Attribute.partsList,
-            value: .array(rootParts)
+            value: .array([aggregator] + bridged)
         )
-
-        // ep=1 PartsList: all bridged endpoints
         store.set(
             endpoint: EndpointManager.aggregatorEndpoint,
-            cluster: ClusterID.descriptor,
+            cluster: .descriptor,
             attribute: DescriptorCluster.Attribute.partsList,
-            value: .array(bridgedElements)
+            value: .array(bridged)
         )
+    }
 
-        return bridged
+    // MARK: - Attribute Cache
+
+    /// Restore the attribute cache under the live endpoint set, then persist the result.
+    ///
+    /// The live registration wins over the cache:
+    /// - values are restored only for clusters of endpoints registered now, and for a
+    ///   bridged endpoint only if it carries the same `uniqueID` as when cached;
+    /// - Descriptor attributes (PartsList, device types, server list), the bridged
+    ///   device's NodeLabel and UniqueID, and the global attributes keep their live values;
+    /// - a restored cluster whose contents differ from the cache gets a new DataVersion,
+    ///   so controllers holding the cached version re-read it.
+    ///
+    /// The cache is regenerable: one that cannot be read is logged and ignored, and the
+    /// live values stand. Called by `MatterDeviceServer.start()`.
+    func restoreAttributeCache() async {
+        let cachedData: StoredAttributeData?
+        do {
+            cachedData = try await store.loadCachedData()
+        } catch {
+            logger.warning("Ignoring unreadable attribute cache, starting from live values: \(error)")
+            cachedData = nil
+        }
+        if let cached = cachedData {
+            let identity = BridgedDeviceBasicInfoCluster.Attribute.uniqueID
+            func cachedUniqueID(_ endpoint: EndpointID) -> String {
+                let key = StoredClusterKey(endpointID: endpoint.rawValue, clusterID: ClusterID.bridgedDeviceBasicInformation.rawValue)
+                guard let tlv = cached.clusters[key]?.attributes[identity.rawValue],
+                      let decoded = try? TLVDecoder.decode(tlv) else { return "" }
+                return decoded.element.stringValue ?? ""
+            }
+
+            for (key, data) in cached.clusters {
+                let endpoint = EndpointID(rawValue: key.endpointID)
+                let cluster = ClusterID(rawValue: key.clusterID)
+                guard let config = endpoints.endpoint(for: endpoint),
+                      config.clusterHandlers.contains(where: { $0.clusterID == cluster }) else { continue }
+                let liveUniqueID = store.get(endpoint: endpoint, cluster: .bridgedDeviceBasicInformation, attribute: identity)?
+                    .stringValue ?? ""
+                guard liveUniqueID == cachedUniqueID(endpoint) else { continue }
+
+                store.restoreCluster(endpoint: endpoint, cluster: cluster, from: data) { attribute in
+                    Self.liveWins(cluster: cluster, attribute: attribute)
+                }
+            }
+        }
+
+        stateLock.withLock { cacheRestored = true }
+        await store.saveToStore()
+    }
+
+    /// Persist the attribute cache, if it has been restored. Called by `MatterDeviceServer.stop()`.
+    func saveAttributeCache() async {
+        guard stateLock.withLock({ cacheRestored }) else { return }
+        await store.saveToStore()
+    }
+
+    /// Attributes that describe the live registration rather than device state.
+    private static func liveWins(cluster: ClusterID, attribute: AttributeID) -> Bool {
+        if attribute.rawValue >= AttributeID.generatedCommandList.rawValue { return true }
+        switch cluster {
+        case .descriptor:
+            return true
+        case .bridgedDeviceBasicInformation:
+            return attribute == BridgedDeviceBasicInfoCluster.Attribute.nodeLabel
+                || attribute == BridgedDeviceBasicInfoCluster.Attribute.uniqueID
+        default:
+            return false
+        }
     }
 
     // MARK: - IM Handling
@@ -850,11 +1031,11 @@ public final class MatterBridge: @unchecked Sendable {
 
     /// All currently registered bridged endpoints.
     public var allBridgedEndpoints: [BridgedEndpoint] {
-        Array(bridgedEndpoints.values)
+        stateLock.withLock { Array(bridgedEndpoints.values) }
     }
 
     /// Get a bridged endpoint by ID.
     public func bridgedEndpoint(for id: EndpointID) -> BridgedEndpoint? {
-        bridgedEndpoints[id]
+        stateLock.withLock { bridgedEndpoints[id] }
     }
 }

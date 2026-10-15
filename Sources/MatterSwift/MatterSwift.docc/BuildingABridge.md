@@ -59,22 +59,22 @@ MatterSwift provides convenience methods for common device types:
 
 ```swift
 // Lights
-let light = bridge.addDimmableLight(name: "Kitchen Pendant")
-let colorLight = bridge.addColorTemperatureLight(name: "Living Room")
-let rgbLight = bridge.addExtendedColorLight(name: "Bedroom Strip")
+let light = bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
+let colorLight = bridge.addColorTemperatureLight(name: "Living Room", uniqueID: "living-room")
+let rgbLight = bridge.addExtendedColorLight(name: "Bedroom Strip", uniqueID: "bedroom-strip")
 
 // Sensors
-let tempSensor = bridge.addTemperatureSensor(name: "Office Temp")
-let humiditySensor = bridge.addHumiditySensor(name: "Basement Humidity")
-let contactSensor = bridge.addContactSensor(name: "Front Door")
-let occupancySensor = bridge.addOccupancySensor(name: "Hallway Motion")
+let tempSensor = bridge.addTemperatureSensor(name: "Office Temp", uniqueID: "office-temp")
+let humiditySensor = bridge.addHumiditySensor(name: "Basement Humidity", uniqueID: "basement-humidity")
+let contactSensor = bridge.addContactSensor(name: "Front Door", uniqueID: "front-door")
+let occupancySensor = bridge.addOccupancySensor(name: "Hallway Motion", uniqueID: "hallway-motion")
 
 // Other devices
-let plug = bridge.addOnOffPlugInUnit(name: "Desk Plug")
-let thermostat = bridge.addThermostat(name: "Main Thermostat")
-let lock = bridge.addDoorLock(name: "Front Door Lock")
-let fan = bridge.addFan(name: "Ceiling Fan")
-let blinds = bridge.addWindowCovering(name: "Bedroom Blinds")
+let plug = bridge.addOnOffPlugInUnit(name: "Desk Plug", uniqueID: "desk-plug")
+let thermostat = bridge.addThermostat(name: "Main Thermostat", uniqueID: "main-thermostat")
+let lock = bridge.addDoorLock(name: "Front Door Lock", uniqueID: "front-door-lock")
+let fan = bridge.addFan(name: "Ceiling Fan", uniqueID: "ceiling-fan")
+let blinds = bridge.addWindowCovering(name: "Bedroom Blinds", uniqueID: "bedroom-blinds")
 ```
 
 Each method returns a `BridgedEndpoint` handle for updating state.
@@ -87,6 +87,7 @@ For device types without a convenience method, use `addGenericEndpoint`:
 let smokeSensor = bridge.addGenericEndpoint(
     name: "Kitchen Smoke Detector",
     deviceTypeID: .smokeCOAlarm,
+    uniqueID: "kitchen-smoke-detector",
     clusters: [
         (.smokeCoAlarm, SmokeCoAlarmHandler()),
     ]
@@ -95,7 +96,7 @@ let smokeSensor = bridge.addGenericEndpoint(
 
 ### Unique IDs
 
-Pass a `uniqueID` to ensure stable endpoint assignment across restarts:
+Every `add*` takes a `uniqueID`: the device's stable identity, published to controllers as BridgedDeviceBasicInformation.UniqueID. With a fabric store it also keys the device's endpoint number, so keep it stable across restarts:
 
 ```swift
 let light = bridge.addDimmableLight(
@@ -104,7 +105,7 @@ let light = bridge.addDimmableLight(
 )
 ```
 
-Without a unique ID, endpoint numbering depends on the order devices are added.
+With a fabric store, a known `uniqueID` always gets its stored endpoint number, and a removed device's number goes to another device only after the numbering has wrapped at 0xFFFE. Without one, endpoint numbering depends on the order devices are added.
 
 ## Updating Device State
 
@@ -134,6 +135,7 @@ When a user taps a light in Apple Home or says "Hey Siri, turn on the kitchen li
 ```swift
 let light = bridge.addDimmableLight(
     name: "Kitchen Pendant",
+    uniqueID: "kitchen-pendant",
     onOffChanged: { isOn in
         // Forward to your device protocol
         try await myDevice.setPower(isOn)
@@ -193,7 +195,7 @@ Devices can be added and removed at runtime:
 
 ```swift
 // Add a new device
-let newLight = bridge.addDimmableLight(name: "New Light")
+let newLight = bridge.addDimmableLight(name: "New Light", uniqueID: "new-light")
 
 // Remove a device
 bridge.removeEndpoint(newLight.endpointID)
@@ -217,9 +219,9 @@ struct MyBridge {
         ))
 
         // Add devices
-        let kitchenLight = bridge.addDimmableLight(name: "Kitchen Light")
-        let officeTemp = bridge.addTemperatureSensor(name: "Office Temp")
-        let frontDoor = bridge.addContactSensor(name: "Front Door")
+        let kitchenLight = bridge.addDimmableLight(name: "Kitchen Light", uniqueID: "kitchen-light")
+        let officeTemp = bridge.addTemperatureSensor(name: "Office Temp", uniqueID: "office-temp")
+        let frontDoor = bridge.addContactSensor(name: "Front Door", uniqueID: "front-door")
 
         // Start the server
         let server = MatterDeviceServer(

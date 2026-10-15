@@ -326,7 +326,7 @@ struct LoopbackTests {
         serverPort: UInt16
     ) {
         let bridge = MatterBridge()
-        bridge.addDimmableLight(name: "Test Light")
+        bridge.addDimmableLight(name: "Test Light", uniqueID: "test-light")
         bridge.commissioningState.attestationCredentials = try LinkAttestation.credentials()
 
         let transport = LoopbackTransport()

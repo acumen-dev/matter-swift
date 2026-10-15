@@ -51,7 +51,7 @@ struct IPv6LoopbackCommissioningTests {
     )
     func commissionOverNonCanonicalLoopback(host: String) async throws {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Loopback Light")
+        let light = bridge.addDimmableLight(name: "Loopback Light", uniqueID: "loopback-light")
         bridge.commissioningState.attestationCredentials = try LinkAttestation.credentials()
         let deviceTransport = Self.makeTransport()
         let server = MatterDeviceServer(

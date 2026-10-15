@@ -397,7 +397,7 @@ public struct OperationalCredentialsHandler: ClusterHandler, @unchecked Sendable
             }
         }
 
-        commissioningState.fabrics[fabricIndex]?.label = label
+        commissioningState.setFabricLabel(label, for: fabricIndex)
         updateFabricAttributes(store: store, endpointID: endpointID)
 
         return OperationalCredentialsCluster.NOCResponse(

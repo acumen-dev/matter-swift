@@ -13,7 +13,7 @@ import MatterProtocol
 /// `SubscriptionManager` of dirty paths so active subscriptions get reports.
 ///
 /// ```swift
-/// let light = bridge.addDimmableLight(name: "Kitchen Pendant")
+/// let light = bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 /// light.setOnOff(true)
 /// light.setLevel(200)
 /// light.setReachable(false)

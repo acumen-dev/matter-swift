@@ -3,6 +3,7 @@
 
 import Foundation
 import Crypto
+import Logging
 import MatterTypes
 import MatterModel
 import MatterCrypto
@@ -14,9 +15,18 @@ import MatterCrypto
 /// `GeneralCommissioningHandler`, `OperationalCredentialsHandler`,
 /// `AdminCommissioningHandler`, and `MatterDeviceServer`.
 ///
-/// All mutations happen synchronously on the device server actor — no internal
-/// locking needed. Marked `@unchecked Sendable` because it is owned by the
-/// `MatterDeviceServer` actor and only mutated within that actor's context.
+/// All mutations happen synchronously on the device server actor (before the server
+/// starts: on the context that creates the bridge) — no locking of that state.
+/// Marked `@unchecked Sendable` because it is owned by the `MatterDeviceServer`
+/// actor and only mutated within that actor's context.
+///
+/// Persistence rule: nothing outside that context reads the fabric state. Each
+/// mutation of persisted state (fabrics, ACLs, next fabric index, PBKDF parameters)
+/// calls `fabricStateChanged()` on the owning context, which copies it into
+/// `fabricSnapshot` under `persistLock`. Writes to the fabric store compose that
+/// snapshot with the bridged endpoint allocation — both lock-protected — so
+/// `MatterBridge.add*`, which runs on the host's context, can request a save
+/// without touching actor-owned state.
 public final class CommissioningState: @unchecked Sendable {
 
     // MARK: - Commissioning Window Status
@@ -101,15 +111,33 @@ public final class CommissioningState: @unchecked Sendable {
     /// Set once on first startup and persisted across restarts. Controllers (e.g. Apple Home)
     /// cache PBKDF params after a successful PASE and send `hasPBKDFParameters = true` on
     /// subsequent attempts — the server must respond with the same salt, or SPAKE2+ fails.
-    public var pbkdfSalt: Data?
+    public private(set) var pbkdfSalt: Data?
 
     /// PBKDF2 iteration count paired with `pbkdfSalt`.
-    public var pbkdfIterations: Int = 1000
+    public private(set) var pbkdfIterations: Int = 1000
+
+    /// Set the PBKDF2 parameters and persist them.
+    public func setPBKDFParameters(salt: Data, iterations: Int) {
+        pbkdfSalt = salt
+        pbkdfIterations = iterations
+        fabricStateChanged()
+    }
 
     // MARK: - Committed Fabrics
 
     /// Committed fabrics on this device.
-    public var fabrics: [FabricIndex: CommittedFabric] = [:]
+    public private(set) var fabrics: [FabricIndex: CommittedFabric] = [:]
+
+    /// Set a committed fabric's label (UpdateFabricLabel).
+    ///
+    /// - Returns: `false` if no such fabric is committed.
+    @discardableResult
+    public func setFabricLabel(_ label: String, for fabricIndex: FabricIndex) -> Bool {
+        guard fabrics[fabricIndex] != nil else { return false }
+        // Not part of StoredFabric, so there is nothing to persist.
+        fabrics[fabricIndex]?.label = label
+        return true
+    }
 
     /// Next fabric index to assign.
     private var nextFabricIndex: UInt8 = 1
@@ -129,14 +157,38 @@ public final class CommissioningState: @unchecked Sendable {
     /// After commissioning, this method updates the committed ACLs directly.
     public func updateCommittedACLs(fabricIndex: FabricIndex, entries: [AccessControlCluster.AccessControlEntry]) {
         committedACLs[fabricIndex] = entries
-        // Persist asynchronously — the save is best-effort
-        Task { await saveToStore() }
+        fabricStateChanged()
     }
 
     // MARK: - Persistence
 
     /// Optional fabric store for persisting committed state across restarts.
     private let fabricStore: (any MatterFabricStore)?
+
+    /// Whether committed state is persisted through a fabric store.
+    var hasFabricStore: Bool { fabricStore != nil }
+
+    /// Bridged endpoint IDs issued per device `uniqueID`, persisted with the fabrics.
+    let bridgedEndpointAllocator = BridgedEndpointAllocator()
+
+    /// Whether `loadFromStore()` has applied the stored state. It runs once, so a later
+    /// call never reads disk over in-memory state.
+    private var loaded = false
+
+    /// Guards `fabricSnapshot`, `savePending` and `saveWriter`.
+    private let persistLock = NSLock()
+    /// The persisted fabric state as of its last change, with empty allocation fields.
+    private var fabricSnapshot = StoredDeviceState()
+    /// Whether a change has not been written yet.
+    private var savePending = false
+    /// The single task writing to the fabric store. It writes the latest state until
+    /// nothing is pending, so a burst of changes costs one or two writes, not one each.
+    private var saveWriter: Task<Void, Never>?
+
+    /// Attempts per write before it is given up. A later change requests a new write.
+    static let maxSaveAttempts = 3
+    private let saveRetryDelay: @Sendable (Int) async -> Void
+    private let logger = Logger(label: "matter.commissioning-state")
 
     // MARK: - Callbacks
 
@@ -167,8 +219,30 @@ public final class CommissioningState: @unchecked Sendable {
 
     // MARK: - Init
 
-    public init(fabricStore: (any MatterFabricStore)? = nil) {
+    /// Create commissioning state that is not persisted.
+    public init() {
+        self.fabricStore = nil
+        self.saveRetryDelay = Self.defaultSaveRetryDelay
+    }
+
+    /// Create commissioning state persisted through `fabricStore`.
+    ///
+    /// Internal: a persisted state must be loaded before bridged endpoints are added,
+    /// and only `MatterBridge.init(config:fabricStore:attributeStore:)` guarantees that.
+    ///
+    /// - Parameter saveRetryDelay: Waits before retry `attempt` (1-based) of a failed
+    ///   write. Injectable so tests need no wall clock.
+    init(
+        fabricStore: (any MatterFabricStore)?,
+        saveRetryDelay: @escaping @Sendable (Int) async -> Void = CommissioningState.defaultSaveRetryDelay
+    ) {
         self.fabricStore = fabricStore
+        self.saveRetryDelay = saveRetryDelay
+    }
+
+    /// 200 ms, then 400 ms.
+    static let defaultSaveRetryDelay: @Sendable (Int) async -> Void = { attempt in
+        try? await Task.sleep(for: .milliseconds(100 << attempt))
     }
 
     // MARK: - Fail-Safe Operations
@@ -283,6 +357,7 @@ public final class CommissioningState: @unchecked Sendable {
     public func removeFabric(_ fabricIndex: FabricIndex) -> Bool {
         guard fabrics.removeValue(forKey: fabricIndex) != nil else { return false }
         committedACLs.removeValue(forKey: fabricIndex)
+        fabricStateChanged()
         onFabricRemoved?(fabricIndex)
         return true
     }
@@ -353,6 +428,7 @@ public final class CommissioningState: @unchecked Sendable {
             }
             committedACLs[fabricIndex] = fixedACLs
         }
+        fabricStateChanged()
 
         onCommissioningComplete?(fabric)
 
@@ -365,11 +441,11 @@ public final class CommissioningState: @unchecked Sendable {
 
     /// Load committed state from the fabric store.
     ///
-    /// Restores fabrics, ACLs, and the next fabric index counter from persisted
-    /// state. Called during server startup before accepting connections.
+    /// Restores fabrics, ACLs, the next fabric index counter and the bridged endpoint
+    /// allocation from persisted state. Only the first successful call has any effect.
     public func loadFromStore() async throws {
-        guard let store = fabricStore else { return }
-        guard let stored = try await store.load() else { return }
+        guard let store = fabricStore, !loaded else { return }
+        let stored = try await store.load() ?? StoredDeviceState()
 
         nextFabricIndex = stored.nextFabricIndex
         pbkdfSalt = stored.pbkdfSalt
@@ -411,15 +487,99 @@ public final class CommissioningState: @unchecked Sendable {
                 )
             }
         }
+
+        loaded = true
+        refreshFabricSnapshot()
+
+        // Last, once the fabric state is in memory: only now may an allocation save
+        // replace the stored state.
+        if bridgedEndpointAllocator.load(
+            assigned: stored.bridgedEndpointIDs,
+            highest: stored.highestBridgedEndpointID
+        ) {
+            scheduleSave()
+            await flush()
+        }
     }
 
-    /// Save committed state to the fabric store.
+    /// Save committed state to the fabric store and wait for the write.
     ///
-    /// Persists all fabrics, ACLs, and the next fabric index counter.
-    /// Called after commissioning completes and after ACL modifications.
-    public func saveToStore() async {
-        guard let store = fabricStore else { return }
+    /// Persists all fabrics, ACLs, the next fabric index counter, the PBKDF parameters
+    /// and the bridged endpoint allocation. Every mutator saves on its own; this is for
+    /// callers that need the write to have happened. Call it on the owning context.
+    func saveToStore() async {
+        fabricStateChanged()
+        await flush()
+    }
 
+    /// Wait until every requested save has been written.
+    public func flush() async {
+        while let writer = persistLock.withLock({ saveWriter }) {
+            await writer.value
+        }
+    }
+
+    /// Record a change to persisted fabric state and request a save.
+    ///
+    /// Call on the owning context: this is the only place the fabric state is read
+    /// for persistence.
+    func fabricStateChanged() {
+        refreshFabricSnapshot()
+        scheduleSave()
+    }
+
+    /// Request a write of the current snapshot and allocation. Safe from any context.
+    func scheduleSave() {
+        guard let store = fabricStore else { return }
+        persistLock.withLock {
+            savePending = true
+            guard saveWriter == nil else { return }
+            saveWriter = Task {
+                var failures = 0
+                while let state = self.takePendingState() {
+                    do {
+                        try await store.save(state)
+                        failures = 0
+                    } catch {
+                        failures += 1
+                        guard failures < Self.maxSaveAttempts else {
+                            self.logger.error("Giving up saving fabric state after \(failures) failed attempts: \(error)")
+                            failures = 0
+                            continue
+                        }
+                        self.logger.error("Saving fabric state failed (attempt \(failures) of \(Self.maxSaveAttempts)), retrying: \(error)")
+                        // Retry with the latest state, which includes this one.
+                        self.persistLock.withLock { self.savePending = true }
+                        await self.saveRetryDelay(failures)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The state to write next, or `nil` (and the writer retires) if nothing is pending.
+    private func takePendingState() -> StoredDeviceState? {
+        persistLock.withLock {
+            guard savePending else {
+                saveWriter = nil
+                return nil
+            }
+            savePending = false
+            var state = fabricSnapshot
+            let allocation = bridgedEndpointAllocator.snapshot()
+            state.bridgedEndpointIDs = allocation.assigned
+            state.highestBridgedEndpointID = allocation.highest
+            return state
+        }
+    }
+
+    private func refreshFabricSnapshot() {
+        let snapshot = fabricState()
+        persistLock.withLock { fabricSnapshot = snapshot }
+    }
+
+    /// The persisted fabric state, read on the owning context. Allocation fields empty.
+    private func fabricState() -> StoredDeviceState {
         let storedFabrics = fabrics.values.map { f in
             StoredFabric(
                 fabricIndex: f.fabricIndex.rawValue,
@@ -454,15 +614,13 @@ public final class CommissioningState: @unchecked Sendable {
             )
         }
 
-        let state = StoredDeviceState(
+        return StoredDeviceState(
             fabrics: storedFabrics,
             acls: storedACLs,
             nextFabricIndex: nextFabricIndex,
             pbkdfSalt: pbkdfSalt,
             pbkdfIterations: pbkdfSalt != nil ? pbkdfIterations : nil
         )
-
-        try? await store.save(state)
     }
 
     // MARK: - Private

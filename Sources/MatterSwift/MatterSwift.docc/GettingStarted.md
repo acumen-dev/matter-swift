@@ -60,8 +60,8 @@ struct MyBridge {
         ))
 
         // 2. Add devices
-        let light = bridge.addDimmableLight(name: "Desk Lamp")
-        let sensor = bridge.addTemperatureSensor(name: "Office Temp")
+        let light = bridge.addDimmableLight(name: "Desk Lamp", uniqueID: "desk-lamp")
+        let sensor = bridge.addTemperatureSensor(name: "Office Temp", uniqueID: "office-temp")
 
         // 3. Create and start the server
         let server = MatterDeviceServer(

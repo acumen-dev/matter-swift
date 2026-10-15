@@ -556,7 +556,7 @@ struct OperationalCredentialsHandlerTests {
 
         // Label fabric1
         state.invokingFabricIndex = fabric1
-        state.fabrics[fabric1]?.label = "Office"
+        state.setFabricLabel("Office", for: fabric1)
 
         // Try to label fabric2 with the same label
         state.invokingFabricIndex = fabric2

@@ -18,7 +18,7 @@ import Logging
 ///
 /// ```swift
 /// let bridge = MatterBridge()
-/// bridge.addDimmableLight(name: "Kitchen Pendant")
+/// bridge.addDimmableLight(name: "Kitchen Pendant", uniqueID: "kitchen-pendant")
 ///
 /// let server = MatterDeviceServer(
 ///     bridge: bridge,
@@ -176,8 +176,8 @@ public actor MatterDeviceServer {
         // Controllers (e.g. Apple Home) cache PBKDF parameters after a successful PASE session
         // and send `hasPBKDFParameters = true` on subsequent commissioning attempts. The server
         // must respond with the same salt it used before, or SPAKE2+ will fail.
-        try await bridge.commissioningState.loadFromStore()
-        try await bridge.store.loadFromStore()
+        try await bridge.loadPersistedState()
+        await bridge.restoreAttributeCache()
         // A fail-safe never survives a restart, so neither may its Breadcrumb.
         GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
 
@@ -189,9 +189,8 @@ public actor MatterDeviceServer {
         } else {
             salt = config.salt ?? generateRandomSalt()
             iterations = config.iterations
-            commState.pbkdfSalt = salt
-            commState.pbkdfIterations = iterations
-            await commState.saveToStore()
+            commState.setPBKDFParameters(salt: salt, iterations: iterations)
+            await commState.flush()
             logger.debug("Generated and persisted new PBKDF salt (\(salt.count) bytes, \(iterations) iterations)")
         }
 
@@ -224,7 +223,7 @@ public actor MatterDeviceServer {
             Task { [weak self] in
                 guard let self else { return }
                 await self.onFabricCommitted(fabric)
-                await self.bridge.commissioningState.saveToStore()
+                // The fabric itself was saved by commitCommissioning().
                 await self.bridge.store.saveToStore()
             }
         }
@@ -253,7 +252,6 @@ public actor MatterDeviceServer {
             Task { [weak self] in
                 guard let self else { return }
                 await self.onFabricRemoved(fabricIndex)
-                await self.bridge.commissioningState.saveToStore()
             }
         }
 
@@ -311,6 +309,8 @@ public actor MatterDeviceServer {
 
     /// Stop the server: cancel loops, stop advertising, close transport.
     public func stop() async {
+        await bridge.saveAttributeCache()
+        await bridge.commissioningState.flush()
         receiveTask?.cancel()
         receiveTask = nil
         reportTask?.cancel()
@@ -1828,6 +1828,38 @@ public actor MatterDeviceServer {
     }
 
     /// The current commissioning window.
+    // MARK: - Fabrics (admin)
+
+    /// A committed fabric, without its credentials.
+    public struct FabricSummary: Sendable, Equatable {
+        public let fabricIndex: FabricIndex
+        public let adminVendorId: UInt16
+        public let label: String?
+    }
+
+    /// The number of committed fabrics (paired controllers).
+    public var fabricCount: Int {
+        bridge.commissioningState.fabrics.count
+    }
+
+    /// The committed fabrics, sorted by index.
+    public var fabrics: [FabricSummary] {
+        bridge.commissioningState.fabrics.values
+            .map { FabricSummary(fabricIndex: $0.fabricIndex, adminVendorId: $0.adminVendorId, label: $0.label) }
+            .sorted { $0.fabricIndex.rawValue < $1.fabricIndex.rawValue }
+    }
+
+    /// Remove a committed fabric, as the RemoveFabric command does: its sessions,
+    /// subscriptions and operational advertisement go with it, and the removal is saved.
+    ///
+    /// - Returns: `false` if no such fabric is committed.
+    @discardableResult
+    public func removeFabric(_ fabricIndex: FabricIndex) async -> Bool {
+        guard bridge.commissioningState.removeFabric(fabricIndex) else { return false }
+        await bridge.commissioningState.flush()
+        return true
+    }
+
     public var commissioningWindow: CommissioningWindow {
         let state = bridge.commissioningState
         return CommissioningWindow(

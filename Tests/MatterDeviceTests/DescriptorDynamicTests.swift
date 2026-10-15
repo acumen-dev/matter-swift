@@ -182,7 +182,7 @@ struct DescriptorDynamicTests {
         #expect(empty.isEmpty)
 
         // Add a light
-        let light = bridge.addDimmableLight(name: "Kitchen")
+        let light = bridge.addDimmableLight(name: "Kitchen", uniqueID: "kitchen")
         let afterAdd = partsList(store: bridge.store)
         #expect(afterAdd.count == 1)
         #expect(afterAdd.contains(light.endpointID.rawValue))
@@ -196,7 +196,7 @@ struct DescriptorDynamicTests {
     @Test("MatterBridge endpoints have ServerClusterList populated from handlers")
     func matterBridgeServerClusterListPopulated() {
         let bridge = MatterBridge()
-        let light = bridge.addDimmableLight(name: "Bedroom")
+        let light = bridge.addDimmableLight(name: "Bedroom", uniqueID: "bedroom")
 
         let srvList = serverList(store: bridge.store, endpoint: light.endpointID)
 

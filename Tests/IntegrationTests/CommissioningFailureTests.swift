@@ -23,7 +23,7 @@ struct CommissioningFailureTests {
     fileprivate func failureDisarms(step: CommissioningStep) async throws {
         let link = FaultInjectingLink(seed: 21)
         let bridge = MatterBridge()
-        _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
+        _ = bridge.addDimmableLight(name: "Failing Light", uniqueID: "failing-light", onOffChanged: { _ in })
         let discovery = RecordingDiscovery()
         let server = try Self.makeServer(bridge: bridge, link: link, discovery: discovery)
         try await server.start()
@@ -75,7 +75,7 @@ struct CommissioningFailureTests {
     func lostArmResponseIsDisarmed() async throws {
         let link = FaultInjectingLink(seed: 22)
         let bridge = MatterBridge()
-        _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
+        _ = bridge.addDimmableLight(name: "Failing Light", uniqueID: "failing-light-2", onOffChanged: { _ in })
         let server = try Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
@@ -108,7 +108,7 @@ struct CommissioningFailureTests {
     func lostCompleteKeepsNodeID() async throws {
         let link = FaultInjectingLink(seed: 23)
         let bridge = MatterBridge()
-        _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
+        _ = bridge.addDimmableLight(name: "Failing Light", uniqueID: "failing-light-3", onOffChanged: { _ in })
         let server = try Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
         let store = InMemoryControllerStore()
@@ -148,7 +148,7 @@ struct CommissioningFailureTests {
     func caseHandshakeFailure() async throws {
         let link = FaultInjectingLink(seed: 24)
         let bridge = MatterBridge()
-        _ = bridge.addDimmableLight(name: "Failing Light", onOffChanged: { _ in })
+        _ = bridge.addDimmableLight(name: "Failing Light", uniqueID: "failing-light-4", onOffChanged: { _ in })
         let server = try Self.makeServer(bridge: bridge, link: link, discovery: RecordingDiscovery())
         try await server.start()
         let controller = try makeController(on: link, maxRetransmissions: handshakeRetransmissions)
