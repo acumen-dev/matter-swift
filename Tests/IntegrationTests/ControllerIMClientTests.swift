@@ -27,14 +27,17 @@ struct ControllerIMClientTests {
 
             // The device answers with an InvokeResponse carrying the command
             // status NeedsTimedInteraction (0xC6 = 198), not a top-level
-            // StatusResponse, so it surfaces as IMError.invalidStatus.
-            await #expect(throws: IMError.invalidStatus("Command error: status 198")) {
+            // StatusResponse, so it surfaces as IMError.commandStatus.
+            await #expect(performing: {
                 _ = try await controller.invokeCommand(
                     nodeID: device.nodeID, endpointID: EndpointID(rawValue: 0),
                     clusterID: .adminCommissioning, commandID: CommandID(rawValue: 0x01),
                     commandFields: Self.commissioningTimeout
                 )
-            }
+            }, throws: { error in
+                guard case IMError.commandStatus(_, let status, _) = error else { return false }
+                return status == 198
+            })
 
             let fields = try await controller.invokeCommand(
                 nodeID: device.nodeID, endpointID: EndpointID(rawValue: 0),

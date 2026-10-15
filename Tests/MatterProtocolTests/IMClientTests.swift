@@ -34,7 +34,7 @@ struct IMClientTests {
             InvokeResponseIB(status: CommandStatusIB(commandPath: path1, status: StatusIB(status: 0))),
             InvokeResponseIB(status: CommandStatusIB(commandPath: path2, status: StatusIB(status: 0x85))),
         ])
-        #expect(throws: IMError.invalidStatus("Command error: status 133")) { try IMClient.parseInvokeResponse(data) }
+        #expect(throws: IMError.commandStatus(path: path2, status: 0x85, clusterStatus: nil)) { try IMClient.parseInvokeResponse(data) }
     }
 
     @Test("SUCCESS carrying a cluster status is not an error")
@@ -112,5 +112,49 @@ struct IMClientWriteResponseTests {
             attributeID: AttributeID(rawValue: 0x0000), dataVersion: DataVersion(rawValue: 7), value: .bool(true)
         ))
         #expect(conditional.writeRequests.first?.dataVersion == DataVersion(rawValue: 7))
+    }
+}
+
+@Suite("IMClient typed status errors")
+struct IMClientStatusErrorTests {
+
+    private let attr = AttributePath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006), attributeID: AttributeID(rawValue: 0x00FF))
+    private let cmd = CommandPath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0006), commandID: CommandID(rawValue: 0x02))
+
+    private func report(_ status: StatusIB) -> Data {
+        ReportData(attributeReports: [AttributeReportIB(attributeStatus: AttributeStatusIB(path: attr, status: status))]).tlvEncode()
+    }
+
+    @Test("A read answered with UnsupportedAttribute throws a typed attributeStatus")
+    func unsupportedAttribute() {
+        #expect(throws: IMError.attributeStatus(path: attr, status: 0x86, clusterStatus: nil)) {
+            try IMClient.parseReadResponse(report(StatusIB(status: 0x86)))
+        }
+    }
+
+    @Test("A cluster-specific status is carried")
+    func clusterStatusCarried() {
+        #expect(throws: IMError.attributeStatus(path: attr, status: 0x01, clusterStatus: 0x42)) {
+            try IMClient.parseReadResponse(report(StatusIB(status: 0x01, clusterStatus: 0x42)))
+        }
+    }
+
+    @Test("A failed command throws a typed commandStatus")
+    func commandStatus() {
+        let data = InvokeResponse(invokeResponses: [
+            InvokeResponseIB(status: CommandStatusIB(commandPath: cmd, status: StatusIB(status: 0xC6, clusterStatus: 7)))
+        ]).tlvEncode()
+        #expect(throws: IMError.commandStatus(path: cmd, status: 0xC6, clusterStatus: 7)) {
+            try IMClient.parseInvokeResponse(data)
+        }
+    }
+
+    @Test("Descriptions name the status, cluster status and path")
+    func descriptions() {
+        let a = IMError.attributeStatus(path: attr, status: 0x86, clusterStatus: nil)
+        #expect(a.description == "Attribute error: status 0x86 (unsupportedAttribute) at endpoint 0x1 cluster 0x6 attribute 0xFF")
+        #expect(a.statusCode == .unsupportedAttribute)
+        let c = IMError.commandStatus(path: cmd, status: 0xC6, clusterStatus: 7)
+        #expect(c.description == "Command error: status 0xC6 (needsTimedInteraction), cluster status 0x7 at endpoint 0x1 cluster 0x6 command 0x2")
     }
 }

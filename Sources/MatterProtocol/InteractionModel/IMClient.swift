@@ -45,7 +45,7 @@ public enum IMClient {
         }
 
         if let status = first.attributeStatus {
-            throw IMError.invalidStatus("Attribute error: status \(status.status.status)")
+            throw IMError.attributeStatus(path: status.path, status: status.status.status, clusterStatus: status.status.clusterStatus)
         }
 
         guard let attrData = first.attributeData else {
@@ -128,7 +128,7 @@ public enum IMClient {
         let responses = try parseInvokeResponses(data)
         for response in responses {
             if let status = response.status, status.status.status != StatusIB.success.status {
-                throw IMError.invalidStatus("Command error: status \(status.status.status)")
+                throw IMError.commandStatus(path: status.commandPath, status: status.status.status, clusterStatus: status.status.clusterStatus)
             }
         }
         return responses.first(where: { $0.command != nil })?.command?.commandFields

@@ -239,6 +239,53 @@ public enum IMError: Error, Sendable, Equatable {
     case invalidPath(String)
     case invalidMessage(String)
     case invalidStatus(String)
+    /// The device answered a read with an `AttributeStatusIB` instead of data.
+    case attributeStatus(path: AttributePath, status: UInt8, clusterStatus: UInt8?)
+    /// The device answered an invoke with a non-success `CommandStatusIB`.
+    case commandStatus(path: CommandPath, status: UInt8, clusterStatus: UInt8?)
+}
+
+extension IMError {
+    /// The IM status of an `attributeStatus` / `commandStatus` error, when it is a known code.
+    public var statusCode: IMStatusCode? {
+        switch self {
+        case .attributeStatus(_, let status, _), .commandStatus(_, let status, _):
+            return IMStatusCode(rawValue: status)
+        default:
+            return nil
+        }
+    }
+}
+
+extension IMError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .invalidPath(let m): return "Invalid path: \(m)"
+        case .invalidMessage(let m): return "Invalid message: \(m)"
+        case .invalidStatus(let m): return "Invalid status: \(m)"
+        case .attributeStatus(let path, let status, let cs):
+            return "Attribute error: \(Self.describe(status, cs)) at \(Self.describe(path))"
+        case .commandStatus(let path, let status, let cs):
+            return "Command error: \(Self.describe(status, cs)) at \(Self.describe(path))"
+        }
+    }
+
+    private static func hex<T: BinaryInteger>(_ v: T) -> String { "0x" + String(v, radix: 16, uppercase: true) }
+
+    private static func describe(_ status: UInt8, _ clusterStatus: UInt8?) -> String {
+        var out = "status \(hex(status))"
+        if let code = IMStatusCode(rawValue: status) { out += " (\(code))" }
+        if let clusterStatus { out += ", cluster status \(hex(clusterStatus))" }
+        return out
+    }
+
+    private static func describe(_ p: AttributePath) -> String {
+        "endpoint \(p.endpointID.map { hex($0.rawValue) } ?? "*") cluster \(p.clusterID.map { hex($0.rawValue) } ?? "*") attribute \(p.attributeID.map { hex($0.rawValue) } ?? "*")"
+    }
+
+    private static func describe(_ p: CommandPath) -> String {
+        "endpoint \(hex(p.endpointID.rawValue)) cluster \(hex(p.clusterID.rawValue)) command \(hex(p.commandID.rawValue))"
+    }
 }
 
 extension IMError {
