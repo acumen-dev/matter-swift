@@ -177,7 +177,7 @@ public actor MatterDeviceServer {
         // and send `hasPBKDFParameters = true` on subsequent commissioning attempts. The server
         // must respond with the same salt it used before, or SPAKE2+ will fail.
         try await bridge.loadPersistedState()
-        try await bridge.store.loadFromStore()
+        try await bridge.restoreAttributeCache()
         // A fail-safe never survives a restart, so neither may its Breadcrumb.
         GeneralCommissioningHandler.resetBreadcrumb(in: bridge.store)
 
@@ -311,6 +311,7 @@ public actor MatterDeviceServer {
 
     /// Stop the server: cancel loops, stop advertising, close transport.
     public func stop() async {
+        await bridge.saveAttributeCache()
         receiveTask?.cancel()
         receiveTask = nil
         reportTask?.cancel()

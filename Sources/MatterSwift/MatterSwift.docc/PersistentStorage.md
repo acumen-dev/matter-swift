@@ -170,7 +170,9 @@ bridge.addOnOffLight(name: "Hall", uniqueID: "hue-light-17")
 
 The store-taking initializer is `async throws` because it loads the persisted fabric state before returning — before any device can be added. That state decides each bridged device's endpoint number, which is part of the bridge's identity toward its fabrics: controllers bind tiles and automations to it. The bridge issues it by the `uniqueID` you pass to `add*`: a known device gets its stored number back, a new device gets the highest number ever issued + 1, and a removed device's number is never given to another device. Pass a stable `uniqueID` for every device — one without a `uniqueID` gets a new number each time it is added. State saved before endpoint numbers were persisted assigns them in `add*` call order, so an existing installation keeps its numbers.
 
-The bridge saves automatically when state changes (fabric commits, newly issued endpoint numbers, attribute writes).
+`MatterDeviceServer.start()` restores the attribute cache for the endpoints that are registered at that point, then the live endpoint set wins over the cache: values are restored only for an endpoint registered with the same `uniqueID`, and the PartsLists and each bridged device's identity are recomputed, with a new DataVersion wherever they differ from the cache.
+
+The bridge saves automatically when state changes: fabric commits and newly issued endpoint numbers through the fabric store; the attribute cache through the attribute store at commissioning, on every change to the endpoint set and on `stop()`.
 
 ## Wiring Stores to MatterController
 

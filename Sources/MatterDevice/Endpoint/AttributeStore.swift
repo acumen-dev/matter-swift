@@ -40,6 +40,9 @@ public final class AttributeStore: @unchecked Sendable {
 
     private let attributeStore: (any MatterAttributeStore)?
 
+    /// Serializes cache writes so an older snapshot never lands after a newer one.
+    private var persistTail: Task<Void, Never>?
+
     // MARK: - Init
 
     public init(attributeStore: (any MatterAttributeStore)? = nil) {
@@ -202,8 +205,9 @@ public final class AttributeStore: @unchecked Sendable {
 
     /// Load attribute values from the attribute store.
     ///
-    /// Restores TLV attribute values and data versions from persisted state.
-    /// Called during server startup before cluster handlers initialize.
+    /// Restores every cached cluster's values and data version as saved, whether or
+    /// not its endpoint is registered now. `MatterDeviceServer.start()` does not use
+    /// this: it restores the cache under the live endpoint set instead.
     public func loadFromStore() async throws {
         guard let store = attributeStore else { return }
         guard let stored = try await store.load() else { return }
@@ -230,37 +234,98 @@ public final class AttributeStore: @unchecked Sendable {
         }
     }
 
+    /// Read the persisted attribute data without applying it.
+    func loadCachedData() async throws -> StoredAttributeData? {
+        guard let store = attributeStore else { return nil }
+        return try await store.load()
+    }
+
+    /// Restore one cluster from the cache, under the live registration.
+    ///
+    /// The cluster must already be registered. Only attributes the live cluster has are
+    /// restored, and those in `liveWins` keep their live values. The cluster takes the
+    /// cached `DataVersion`, bumped if its resulting contents differ from what was
+    /// cached — a controller holding the cached version must re-read it.
+    func restoreCluster(
+        endpoint: EndpointID,
+        cluster: ClusterID,
+        from cached: StoredClusterData,
+        liveWins: (AttributeID) -> Bool
+    ) {
+        var cachedAttributes: [AttributeID: TLVElement] = [:]
+        for (raw, tlv) in cached.attributes {
+            if let decoded = try? TLVDecoder.decode(tlv) {
+                cachedAttributes[AttributeID(rawValue: raw)] = decoded.element
+            }
+        }
+
+        withLock {
+            guard var clusterStorage = storage[endpoint]?[cluster] else { return }
+            var restored = clusterStorage.attributes
+            for (id, value) in cachedAttributes where restored[id] != nil && !liveWins(id) {
+                restored[id] = value
+            }
+
+            clusterStorage.dataVersion = DataVersion(rawValue: cached.dataVersion)
+            if restored != cachedAttributes {
+                clusterStorage.dataVersion = DataVersion(rawValue: cached.dataVersion &+ 1)
+                for (id, value) in restored where cachedAttributes[id] != value {
+                    clusterStorage.dirtyAttributes.insert(id)
+                }
+            }
+            clusterStorage.attributes = restored
+            storage[endpoint]?[cluster] = clusterStorage
+        }
+    }
+
     /// Save all attribute values to the attribute store.
     ///
     /// Persists TLV attribute values and data versions for all clusters.
     /// Dirty tracking state is NOT persisted (ephemeral).
     public func saveToStore() async {
-        guard let store = attributeStore else { return }
+        await enqueueSave()?.value
+    }
 
-        let clusters: [StoredClusterKey: StoredClusterData] = withLock {
-            var result: [StoredClusterKey: StoredClusterData] = [:]
-            for (endpointID, endpointStorage) in storage {
-                for (clusterID, clusterStorage) in endpointStorage {
-                    let key = StoredClusterKey(
-                        endpointID: endpointID.rawValue,
-                        clusterID: clusterID.rawValue
-                    )
+    /// Snapshot the values now and queue their write behind any earlier save.
+    ///
+    /// For synchronous callers (endpoint-set changes) that cannot await the write.
+    @discardableResult
+    func enqueueSave() -> Task<Void, Never>? {
+        guard let store = attributeStore else { return nil }
 
-                    var attributes: [UInt32: Data] = [:]
-                    for (attrID, element) in clusterStorage.attributes {
-                        attributes[attrID.rawValue] = TLVEncoder.encode(element)
-                    }
-
-                    result[key] = StoredClusterData(
-                        dataVersion: clusterStorage.dataVersion.rawValue,
-                        attributes: attributes
-                    )
-                }
+        return withLock {
+            let data = StoredAttributeData(clusters: snapshotClusters())
+            let previous = persistTail
+            let write = Task {
+                await previous?.value
+                try? await store.save(data)
             }
-            return result
+            persistTail = write
+            return write
         }
+    }
 
-        let data = StoredAttributeData(clusters: clusters)
-        try? await store.save(data)
+    /// Must be called with `lock` held.
+    private func snapshotClusters() -> [StoredClusterKey: StoredClusterData] {
+        var result: [StoredClusterKey: StoredClusterData] = [:]
+        for (endpointID, endpointStorage) in storage {
+            for (clusterID, clusterStorage) in endpointStorage {
+                let key = StoredClusterKey(
+                    endpointID: endpointID.rawValue,
+                    clusterID: clusterID.rawValue
+                )
+
+                var attributes: [UInt32: Data] = [:]
+                for (attrID, element) in clusterStorage.attributes {
+                    attributes[attrID.rawValue] = TLVEncoder.encode(element)
+                }
+
+                result[key] = StoredClusterData(
+                    dataVersion: clusterStorage.dataVersion.rawValue,
+                    attributes: attributes
+                )
+            }
+        }
+        return result
     }
 }

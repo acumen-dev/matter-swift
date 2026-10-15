@@ -76,6 +76,11 @@ public final class MatterBridge: @unchecked Sendable {
     private let imHandler: InteractionModelHandler
     private var bridgedEndpoints: [EndpointID: BridgedEndpoint] = [:]
 
+    /// Whether the attribute cache has been restored. Before that, saving the cache
+    /// would replace it with fresh values.
+    private let cacheLock = NSLock()
+    private var cacheRestored = false
+
     // MARK: - Init
 
     /// Create a bridge whose fabrics do not persist.
@@ -732,6 +737,7 @@ public final class MatterBridge: @unchecked Sendable {
         endpoints.removeEndpoint(endpointID)
         bridgedEndpoints.removeValue(forKey: endpointID)
         commissioningState.bridgedEndpointAllocator.release(endpointID)
+        endpointSetChanged()
     }
 
     /// Remove a bridged endpoint by handle.
@@ -767,31 +773,107 @@ public final class MatterBridge: @unchecked Sendable {
             subscriptions: subscriptions
         )
         bridgedEndpoints[epID] = bridged
+        endpointSetChanged()
+        return bridged
+    }
 
-        // Per Matter spec §9.5.4.6, the Root Endpoint (ep=0) PartsList MUST list ALL endpoints.
-        // The Aggregator Endpoint (ep=1) PartsList MUST list all its bridged endpoints.
-        // Update both in the AttributeStore now that we know the new endpoint ID.
-        let allBridgedIDs = bridgedEndpoints.keys.sorted { $0.rawValue < $1.rawValue }
-        let bridgedElements = allBridgedIDs.map { TLVElement.unsignedInt(UInt64($0.rawValue)) }
+    // MARK: - Endpoint Set
 
-        // ep=0 PartsList: aggregator (ep=1) + all bridged endpoints
-        let rootParts = [TLVElement.unsignedInt(UInt64(EndpointManager.aggregatorEndpoint.rawValue))] + bridgedElements
+    /// Recompute both PartsLists from the registered endpoints, report them to
+    /// subscribers and, once the cache has been restored, persist it.
+    private func endpointSetChanged() {
+        refreshPartsLists()
+        let paths = [EndpointID(rawValue: 0), EndpointManager.aggregatorEndpoint].map {
+            AttributePath(endpointID: $0, clusterID: .descriptor, attributeID: DescriptorCluster.Attribute.partsList)
+        }
+        let subscriptions = subscriptions
+        Task { await subscriptions.attributesChanged(paths) }
+        if cacheLock.withLock({ cacheRestored }) {
+            store.enqueueSave()
+        }
+    }
+
+    /// Per Matter spec §9.5.4.6, the Root Endpoint (ep=0) PartsList lists all other
+    /// endpoints and the Aggregator (ep=1) PartsList lists its bridged endpoints.
+    private func refreshPartsLists() {
+        let bridged = endpoints.allEndpointIDs()
+            .filter { $0 != EndpointID(rawValue: 0) && $0 != EndpointManager.aggregatorEndpoint }
+            .map { TLVElement.unsignedInt(UInt64($0.rawValue)) }
+        let aggregator = TLVElement.unsignedInt(UInt64(EndpointManager.aggregatorEndpoint.rawValue))
         store.set(
             endpoint: EndpointID(rawValue: 0),
-            cluster: ClusterID.descriptor,
+            cluster: .descriptor,
             attribute: DescriptorCluster.Attribute.partsList,
-            value: .array(rootParts)
+            value: .array([aggregator] + bridged)
         )
-
-        // ep=1 PartsList: all bridged endpoints
         store.set(
             endpoint: EndpointManager.aggregatorEndpoint,
-            cluster: ClusterID.descriptor,
+            cluster: .descriptor,
             attribute: DescriptorCluster.Attribute.partsList,
-            value: .array(bridgedElements)
+            value: .array(bridged)
         )
+    }
 
-        return bridged
+    // MARK: - Attribute Cache
+
+    /// Restore the attribute cache under the live endpoint set, then persist the result.
+    ///
+    /// The live registration wins over the cache:
+    /// - values are restored only for clusters of endpoints registered now, and for a
+    ///   bridged endpoint only if it carries the same `uniqueID` as when cached;
+    /// - Descriptor attributes (PartsList, device types, server list), the bridged
+    ///   device's NodeLabel and UniqueID, and the global attributes keep their live values;
+    /// - a restored cluster whose contents differ from the cache gets a new DataVersion,
+    ///   so controllers holding the cached version re-read it.
+    ///
+    /// Called by `MatterDeviceServer.start()`.
+    func restoreAttributeCache() async throws {
+        if let cached = try await store.loadCachedData() {
+            let identity = BridgedDeviceBasicInfoCluster.Attribute.uniqueID
+            func cachedUniqueID(_ endpoint: EndpointID) -> String {
+                let key = StoredClusterKey(endpointID: endpoint.rawValue, clusterID: ClusterID.bridgedDeviceBasicInformation.rawValue)
+                guard let tlv = cached.clusters[key]?.attributes[identity.rawValue],
+                      let decoded = try? TLVDecoder.decode(tlv) else { return "" }
+                return decoded.element.stringValue ?? ""
+            }
+
+            for (key, data) in cached.clusters {
+                let endpoint = EndpointID(rawValue: key.endpointID)
+                let cluster = ClusterID(rawValue: key.clusterID)
+                guard let config = endpoints.endpoint(for: endpoint),
+                      config.clusterHandlers.contains(where: { $0.clusterID == cluster }) else { continue }
+                let liveUniqueID = store.get(endpoint: endpoint, cluster: .bridgedDeviceBasicInformation, attribute: identity)?
+                    .stringValue ?? ""
+                guard liveUniqueID == cachedUniqueID(endpoint) else { continue }
+
+                store.restoreCluster(endpoint: endpoint, cluster: cluster, from: data) { attribute in
+                    Self.liveWins(cluster: cluster, attribute: attribute)
+                }
+            }
+        }
+
+        cacheLock.withLock { cacheRestored = true }
+        await store.saveToStore()
+    }
+
+    /// Persist the attribute cache, if it has been restored. Called by `MatterDeviceServer.stop()`.
+    func saveAttributeCache() async {
+        guard cacheLock.withLock({ cacheRestored }) else { return }
+        await store.saveToStore()
+    }
+
+    /// Attributes that describe the live registration rather than device state.
+    private static func liveWins(cluster: ClusterID, attribute: AttributeID) -> Bool {
+        if attribute.rawValue >= AttributeID.generatedCommandList.rawValue { return true }
+        switch cluster {
+        case .descriptor:
+            return true
+        case .bridgedDeviceBasicInformation:
+            return attribute == BridgedDeviceBasicInfoCluster.Attribute.nodeLabel
+                || attribute == BridgedDeviceBasicInfoCluster.Attribute.uniqueID
+        default:
+            return false
+        }
     }
 
     // MARK: - IM Handling
