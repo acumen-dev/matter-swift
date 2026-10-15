@@ -3,6 +3,7 @@
 
 import Foundation
 import Crypto
+import Logging
 import MatterTypes
 import MatterModel
 import MatterCrypto
@@ -110,15 +111,33 @@ public final class CommissioningState: @unchecked Sendable {
     /// Set once on first startup and persisted across restarts. Controllers (e.g. Apple Home)
     /// cache PBKDF params after a successful PASE and send `hasPBKDFParameters = true` on
     /// subsequent attempts — the server must respond with the same salt, or SPAKE2+ fails.
-    public var pbkdfSalt: Data?
+    public private(set) var pbkdfSalt: Data?
 
     /// PBKDF2 iteration count paired with `pbkdfSalt`.
-    public var pbkdfIterations: Int = 1000
+    public private(set) var pbkdfIterations: Int = 1000
+
+    /// Set the PBKDF2 parameters and persist them.
+    public func setPBKDFParameters(salt: Data, iterations: Int) {
+        pbkdfSalt = salt
+        pbkdfIterations = iterations
+        fabricStateChanged()
+    }
 
     // MARK: - Committed Fabrics
 
     /// Committed fabrics on this device.
-    public var fabrics: [FabricIndex: CommittedFabric] = [:]
+    public private(set) var fabrics: [FabricIndex: CommittedFabric] = [:]
+
+    /// Set a committed fabric's label (UpdateFabricLabel).
+    ///
+    /// - Returns: `false` if no such fabric is committed.
+    @discardableResult
+    public func setFabricLabel(_ label: String, for fabricIndex: FabricIndex) -> Bool {
+        guard fabrics[fabricIndex] != nil else { return false }
+        // Not part of StoredFabric, so there is nothing to persist.
+        fabrics[fabricIndex]?.label = label
+        return true
+    }
 
     /// Next fabric index to assign.
     private var nextFabricIndex: UInt8 = 1
@@ -166,6 +185,11 @@ public final class CommissioningState: @unchecked Sendable {
     /// nothing is pending, so a burst of changes costs one or two writes, not one each.
     private var saveWriter: Task<Void, Never>?
 
+    /// Attempts per write before it is given up. A later change requests a new write.
+    static let maxSaveAttempts = 3
+    private let saveRetryDelay: @Sendable (Int) async -> Void
+    private let logger = Logger(label: "matter.commissioning-state")
+
     // MARK: - Callbacks
 
     /// Called when commissioning completes with fabric info for CASE session setup.
@@ -198,14 +222,27 @@ public final class CommissioningState: @unchecked Sendable {
     /// Create commissioning state that is not persisted.
     public init() {
         self.fabricStore = nil
+        self.saveRetryDelay = Self.defaultSaveRetryDelay
     }
 
     /// Create commissioning state persisted through `fabricStore`.
     ///
     /// Internal: a persisted state must be loaded before bridged endpoints are added,
     /// and only `MatterBridge.init(config:fabricStore:attributeStore:)` guarantees that.
-    init(fabricStore: (any MatterFabricStore)?) {
+    ///
+    /// - Parameter saveRetryDelay: Waits before retry `attempt` (1-based) of a failed
+    ///   write. Injectable so tests need no wall clock.
+    init(
+        fabricStore: (any MatterFabricStore)?,
+        saveRetryDelay: @escaping @Sendable (Int) async -> Void = CommissioningState.defaultSaveRetryDelay
+    ) {
         self.fabricStore = fabricStore
+        self.saveRetryDelay = saveRetryDelay
+    }
+
+    /// 200 ms, then 400 ms.
+    static let defaultSaveRetryDelay: @Sendable (Int) async -> Void = { attempt in
+        try? await Task.sleep(for: .milliseconds(100 << attempt))
     }
 
     // MARK: - Fail-Safe Operations
@@ -468,9 +505,9 @@ public final class CommissioningState: @unchecked Sendable {
     /// Save committed state to the fabric store and wait for the write.
     ///
     /// Persists all fabrics, ACLs, the next fabric index counter, the PBKDF parameters
-    /// and the bridged endpoint allocation. Call it on the owning context, after
-    /// changing state that has no mutator of its own (such as `pbkdfSalt`).
-    public func saveToStore() async {
+    /// and the bridged endpoint allocation. Every mutator saves on its own; this is for
+    /// callers that need the write to have happened. Call it on the owning context.
+    func saveToStore() async {
         fabricStateChanged()
         await flush()
     }
@@ -498,8 +535,23 @@ public final class CommissioningState: @unchecked Sendable {
             savePending = true
             guard saveWriter == nil else { return }
             saveWriter = Task {
+                var failures = 0
                 while let state = self.takePendingState() {
-                    try? await store.save(state)
+                    do {
+                        try await store.save(state)
+                        failures = 0
+                    } catch {
+                        failures += 1
+                        guard failures < Self.maxSaveAttempts else {
+                            self.logger.error("Giving up saving fabric state after \(failures) failed attempts: \(error)")
+                            failures = 0
+                            continue
+                        }
+                        self.logger.error("Saving fabric state failed (attempt \(failures) of \(Self.maxSaveAttempts)), retrying: \(error)")
+                        // Retry with the latest state, which includes this one.
+                        self.persistLock.withLock { self.savePending = true }
+                        await self.saveRetryDelay(failures)
+                    }
                 }
             }
         }

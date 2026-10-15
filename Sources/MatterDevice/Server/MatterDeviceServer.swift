@@ -189,9 +189,8 @@ public actor MatterDeviceServer {
         } else {
             salt = config.salt ?? generateRandomSalt()
             iterations = config.iterations
-            commState.pbkdfSalt = salt
-            commState.pbkdfIterations = iterations
-            await commState.saveToStore()
+            commState.setPBKDFParameters(salt: salt, iterations: iterations)
+            await commState.flush()
             logger.debug("Generated and persisted new PBKDF salt (\(salt.count) bytes, \(iterations) iterations)")
         }
 
@@ -1829,6 +1828,38 @@ public actor MatterDeviceServer {
     }
 
     /// The current commissioning window.
+    // MARK: - Fabrics (admin)
+
+    /// A committed fabric, without its credentials.
+    public struct FabricSummary: Sendable, Equatable {
+        public let fabricIndex: FabricIndex
+        public let adminVendorId: UInt16
+        public let label: String?
+    }
+
+    /// The number of committed fabrics (paired controllers).
+    public var fabricCount: Int {
+        bridge.commissioningState.fabrics.count
+    }
+
+    /// The committed fabrics, sorted by index.
+    public var fabrics: [FabricSummary] {
+        bridge.commissioningState.fabrics.values
+            .map { FabricSummary(fabricIndex: $0.fabricIndex, adminVendorId: $0.adminVendorId, label: $0.label) }
+            .sorted { $0.fabricIndex.rawValue < $1.fabricIndex.rawValue }
+    }
+
+    /// Remove a committed fabric, as the RemoveFabric command does: its sessions,
+    /// subscriptions and operational advertisement go with it, and the removal is saved.
+    ///
+    /// - Returns: `false` if no such fabric is committed.
+    @discardableResult
+    public func removeFabric(_ fabricIndex: FabricIndex) async -> Bool {
+        guard bridge.commissioningState.removeFabric(fabricIndex) else { return false }
+        await bridge.commissioningState.flush()
+        return true
+    }
+
     public var commissioningWindow: CommissioningWindow {
         let state = bridge.commissioningState
         return CommissioningWindow(
