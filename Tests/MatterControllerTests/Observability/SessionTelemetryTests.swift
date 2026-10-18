@@ -195,7 +195,7 @@ struct SessionTelemetryTests {
         #expect(invalidated.subsystem == "session")
         #expect(invalidated.message == "Session invalidated: peer unreachable")
         #expect(invalidated.metadata[MatterLogKey.session] == "0xA")
-        #expect(invalidated.metadata[MatterLogKey.reason] == "peer unreachable")
+        #expect(invalidated.metadata[MatterLogKey.reason] == "peer_unreachable")
         #expect(rig.telemetry.counter("matter_im_requests_total", [("kind", "invoke"), ("outcome", "unreachable")]) == 1)
         #expect(rig.telemetry.counter("matter_mrp_give_ups_total") == 1)
         #expect(await rig.controller.messenger.registeredSessionIDs.isEmpty)

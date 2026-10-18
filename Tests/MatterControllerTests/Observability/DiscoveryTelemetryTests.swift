@@ -73,10 +73,53 @@ struct DiscoveryTelemetryTests {
         await rig.controller.stop()
     }
 
+    @Test("A failed resolve carries matter.reason failed; the error text is in the message only")
+    func resolveFailedReason() async throws {
+        let rig = try await makeControllerRig(discovery: InMemoryDiscovery { _ in nil })
+        let node = rig.node
+        await #expect(throws: (any Error).self) { _ = try await rig.controller.discoverDevice(nodeID: node) }
+
+        let failed = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("mDNS resolve failed") })
+        #expect(failed.level == .debug)
+        #expect(failed.metadata[MatterLogKey.reason] == "failed")
+        #expect(failed.message.count > "mDNS resolve failed: ".count, "the error text is in the message")
+        #expect(try #require(rig.telemetry.finishedSpans(named: "matter.resolve").first).status?.code == .error)
+        await rig.controller.stop()
+    }
+
+    @Test("A resolve that outlives its deadline carries matter.reason timeout and throws discoveryFailed as before")
+    func resolveTimeoutReason() async throws {
+        let rig = try await makeControllerRig(discovery: NeverResolvingDiscovery())
+        let node = rig.node
+        await #expect(throws: ControllerError.discoveryFailed("node \(node.rawValue) did not resolve within 0.001 seconds")) {
+            _ = try await rig.controller.discoverDevice(nodeID: node, timeout: .milliseconds(1))
+        }
+
+        let failed = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("mDNS resolve failed") })
+        #expect(failed.message == "mDNS resolve failed: resolve deadline")
+        #expect(failed.metadata[MatterLogKey.reason] == "timeout")
+        await rig.controller.stop()
+    }
+
     @Test("MatterLogValue.address brackets an IPv6 host once, whether or not it arrived bracketed")
     func addressBrackets() {
         #expect(MatterLogValue.address(MatterAddress(host: "fd00::1", port: 5540)) == "[fd00::1]:5540")
         #expect(MatterLogValue.address(MatterAddress(host: "[fd00::1]", port: 5540)) == "[fd00::1]:5540")
         #expect(MatterLogValue.address(MatterAddress(host: "10.0.0.2", port: 5540)) == "10.0.0.2:5540")
     }
+}
+
+// MARK: - Never Resolving
+
+/// A discovery whose resolves wait until cancelled: only a deadline ends them.
+private struct NeverResolvingDiscovery: ServiceDiscovery {
+    func advertise(service: ServiceRecord) async throws {}
+    func browse(serviceType: ServiceType) -> AsyncStream<ServiceRecord> { AsyncStream { $0.finish() } }
+    func resolve(_ record: ServiceRecord) async throws -> NetworkAddress { try await resolveService(record).address }
+    func resolveService(_ record: ServiceRecord) async throws -> ResolvedService {
+        try await LockedValue(false).wait(until: { $0 })
+        throw CancellationError()
+    }
+    func stopAdvertising() async {}
+    func stopAdvertising(name: String) async {}
 }

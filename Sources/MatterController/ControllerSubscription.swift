@@ -189,7 +189,7 @@ public actor ControllerSubscription {
                     // The messenger stopped under it: not a failure, so not counted.
                     logger.debug("Re-subscribe aborted: \(error)", metadata: attemptMetadata)
                 } else {
-                    recordLoss(.resubscribeFailed, id: nil, reason: reason)
+                    recordLoss(.resubscribeFailed, id: subscribeLink?.id, reason: reason)
                 }
                 continuation.yield(.lost(reason))
                 attempt += 1

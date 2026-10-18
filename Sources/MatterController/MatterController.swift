@@ -555,8 +555,10 @@ public actor MatterController {
     }
 
     /// Run one mDNS resolve inside a `matter.resolve` span (child of `context`), with its debug
-    /// start, result and failure lines. A resolve cancelled or ended by ``stop()`` gets a debug
-    /// line, and its span ends without error status. `node` is nil for a commissionable record.
+    /// start, result and failure lines. A failure's `matter.reason` is `timeout` when `body`
+    /// threw ``ResolveDeadline``, else `failed`. A resolve cancelled or ended by ``stop()`` gets
+    /// a debug line, and its span ends without error status. `node` is nil for a commissionable
+    /// record.
     private static func instrumentedResolve(
         tracer: any Tracer,
         logger: Logger,
@@ -592,15 +594,17 @@ public actor MatterController {
                 logger.debug("mDNS resolve aborted: \(instance)", metadata: metadata(reason: "aborted"))
                 throw error
             }
-            logger.debug("mDNS resolve failed: \(error)", metadata: metadata(reason: String(describing: error)))
+            logger.debug("mDNS resolve failed: \(error)", metadata: metadata(reason: error is ResolveDeadline ? "timeout" : "failed"))
             span.recordError(error)
             span.setStatus(SpanStatus(code: .error, message: String(describing: error)))
             throw error
         }
     }
 
-    /// A commissionable record's resolve outlived its bound.
-    private struct ResolveDeadline: Error {}
+    /// A resolve outlived its bound.
+    private struct ResolveDeadline: Error, CustomStringConvertible {
+        var description: String { "resolve deadline" }
+    }
 
     /// Names the discriminator sought, for `commissionableNotFound`.
     private static func describe(_ discriminator: SetupCode.Discriminator) -> String {
@@ -669,24 +673,28 @@ public actor MatterController {
         let deadline = clock.now + limit
         let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
-        return try await Self.instrumentedResolve(
-            tracer: telemetry.tracer, logger: loggers.discovery, context: context,
-            instance: name, node: nodeID, limit: limit, stopped: { await self.stopped }
-        ) {
-            let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
-                group.addTask { try await discovery.resolveService(record) }
-                group.addTask {
-                    try await clock.sleep(until: deadline)
-                    throw expired
+        do {
+            return try await Self.instrumentedResolve(
+                tracer: telemetry.tracer, logger: loggers.discovery, context: context,
+                instance: name, node: nodeID, limit: limit, stopped: { await self.stopped }
+            ) {
+                let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                    group.addTask { try await discovery.resolveService(record) }
+                    group.addTask {
+                        try await clock.sleep(until: deadline)
+                        throw ResolveDeadline()
+                    }
+                    defer { group.cancelAll() }
+                    guard let first = try await group.next() else { throw ResolveDeadline() }
+                    return first
                 }
-                defer { group.cancelAll() }
-                guard let first = try await group.next() else { throw expired }
-                return first
+                guard let address = resolved.address.withIPLiteralHost else {
+                    throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
+                }
+                return ResolvedService(address: address, txtRecords: resolved.txtRecords)
             }
-            guard let address = resolved.address.withIPLiteralHost else {
-                throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
-            }
-            return ResolvedService(address: address, txtRecords: resolved.txtRecords)
+        } catch is ResolveDeadline {
+            throw expired
         }
     }
 
@@ -1243,19 +1251,19 @@ public actor MatterController {
     /// Invalidate the cached session for a node (e.g., after a communication
     /// error) and unregister it from the message layer.
     public func invalidateSession(for nodeID: NodeID) async {
-        await invalidateSession(for: nodeID, reason: "requested by the caller")
+        await invalidateSession(for: nodeID, reason: .callerRequest)
     }
 
     /// As ``invalidateSession(for:)``, logging why at info.
-    func invalidateSession(for nodeID: NodeID, reason: String) async {
+    func invalidateSession(for nodeID: NodeID, reason: SessionInvalidationReason) async {
         guard let session = sessionCache.session(for: nodeID) else { return }
         // Out of the cache before suspending, so a session established
         // meanwhile is never the one removed.
         sessionCache.remove(for: nodeID)
-        loggers.session.info("Session invalidated: \(reason)", metadata: {
+        loggers.session.info("Session invalidated: \(reason.phrase)", metadata: {
             var metadata = Logger.Metadata.node(nodeID)
             metadata[MatterLogKey.session] = MatterLogValue.hex(session.localSessionID)
-            metadata[MatterLogKey.reason] = .string(reason)
+            metadata[MatterLogKey.reason] = .string(reason.rawValue)
             return metadata
         }())
         await messenger.unregisterSession(localSessionID: session.localSessionID)
@@ -1519,7 +1527,7 @@ public actor MatterController {
         subscriptions.removeAll { $0.nodeID == nodeID }
         for subscription in doomed { await subscription.cancel() }
         await registry.remove(nodeID: nodeID)
-        await invalidateSession(for: nodeID, reason: "device removed")
+        await invalidateSession(for: nodeID, reason: .deviceRemoved)
         await saveState()
     }
 
@@ -1653,7 +1661,7 @@ public actor MatterController {
     /// mean nothing answered; a `timeout` can also follow a Sigma2), the
     /// node's operational address is re-resolved once, within
     /// `configuration.addressRefreshTimeout` (see
-    /// ``refreshedAddress(nodeID:tried:)``). At a different address the
+    /// ``refreshedAddress(nodeID:tried:context:)``). At a different address the
     /// handshake is retried once there, under the same reserved session ID,
     /// and the session is registered with that address. Otherwise the
     /// original error is thrown unchanged: retrying an unchanged address
@@ -1951,7 +1959,7 @@ public actor MatterController {
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
                 if sessionCache.session(for: nodeID) === activeSession {
-                    await invalidateSession(for: nodeID, reason: "peer unreachable")
+                    await invalidateSession(for: nodeID, reason: .peerUnreachable)
                 }
             }
             throw mapped
@@ -2084,7 +2092,7 @@ public actor MatterController {
               mapped == .peerUnreachable(nodeID),
               let cached = sessionCache.session(for: nodeID),
               cached.localSessionID == sessionID else { return }
-        await invalidateSession(for: nodeID, reason: "subscription establishment failed on a dead session")
+        await invalidateSession(for: nodeID, reason: .deadSession)
     }
 
     /// Messaging failures on an operational exchange, as `ControllerError`.

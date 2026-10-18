@@ -128,6 +128,27 @@ enum SubscriptionLossReason: String, CaseIterable, Sendable {
     case closed
 }
 
+/// `matter.reason` of a session invalidation, and the phrase its info line gives.
+enum SessionInvalidationReason: String, Sendable {
+    /// ``MatterController/invalidateSession(for:)``.
+    case callerRequest = "caller_request"
+    /// The device was removed.
+    case deviceRemoved = "device_removed"
+    /// An operation on the session got no answer.
+    case peerUnreachable = "peer_unreachable"
+    /// A subscription could not be established on it: the peer is gone.
+    case deadSession = "dead_session"
+
+    var phrase: String {
+        switch self {
+        case .callerRequest: return "requested by the caller"
+        case .deviceRemoved: return "device removed"
+        case .peerUnreachable: return "peer unreachable"
+        case .deadSession: return "subscription establishment failed on a dead session"
+        }
+    }
+}
+
 // MARK: - Metrics
 
 /// Every controller metric, created once per dimension value so the hot path is a dictionary

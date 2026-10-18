@@ -303,6 +303,7 @@ struct SubscriptionTelemetryTests {
         #expect(lost.level == .info)
         #expect(lost.message == "Subscription lost: \(reason)")
         #expect(lost.metadata[MatterLogKey.reason] == "resubscribe_failed")
+        #expect(lost.metadata[MatterLogKey.subscription] == "0x7")
         #expect(telemetry.counter("matter_subscription_lost_total", [("reason", "resubscribe_failed")]) == 1)
         #expect(telemetry.logs.entries.contains { $0.level == .debug && $0.message == "Subscribe refused" && $0.metadata[MatterLogKey.imStatus] == "0x7D" })
         let subscribes = telemetry.finishedSpans(named: "matter.subscribe")
