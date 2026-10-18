@@ -45,10 +45,12 @@ public actor ControllerSubscription {
     private let livenessMargin: Duration
     private let operationTimeout: Duration
     private let onEstablishFailure: EstablishFailureHook
-    /// Parents the `matter.subscribe` and `matter.subscription` spans.
+    /// Parents the `matter.subscribe` spans.
     private let context: ServiceContext
-    /// The live `matter.subscription` span: one per established subscription, ended on loss or cancel.
-    private var subscriptionSpan: (any Span)?
+    /// The `matter.subscribe` span context that established the current (or last) subscription,
+    /// and that subscription's ID. Each `matter.report` and `matter.subscription.lost` span is a
+    /// root linked to it: a subscription can live for days, so it is not one long trace.
+    private var subscribeLink: (context: ServiceContext, id: SubscriptionID)?
     /// When the last report (first chunk) arrived, for `<prefix>_report_interval`.
     private var lastReportAt: ContinuousClock.Instant?
     private var telemetry: ControllerTelemetry { messenger.telemetry }
@@ -108,7 +110,6 @@ public actor ControllerSubscription {
         monitor?.cancel()
         monitor = nil
         if id != nil { recordLoss(.closed, id: id) }
-        endSubscriptionSpan(error: nil)
         continuation.finish()
         if let id, let sessionID {
             await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
@@ -156,8 +157,9 @@ public actor ControllerSubscription {
             // Clear before any await so cancel() and the loop agree on what is held.
             currentSubscriptionID = nil
             currentSessionID = nil
-            continuation.yield(.lost(reason))
+            // Recorded before it is yielded, so a consumer of `.lost` sees it logged and counted.
             recordLoss(loss, id: id, reason: reason)
+            continuation.yield(.lost(reason))
             await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
             await client.remove(subscriptionID: id, peerNodeID: nodeID)
             await resubscribe()
@@ -183,13 +185,13 @@ public actor ControllerSubscription {
                 if error is CancellationError, cancelled || Task.isCancelled { return }
                 guard !cancelled else { return }
                 let reason = "re-subscribe failed: \(error)"
-                continuation.yield(.lost(reason))
                 if isSubscriptionAborted(error, cancelled: cancelled) {
                     // The messenger stopped under it: not a failure, so not counted.
                     logger.debug("Re-subscribe aborted: \(error)", metadata: attemptMetadata)
                 } else {
                     recordLoss(.resubscribeFailed, id: nil, reason: reason)
                 }
+                continuation.yield(.lost(reason))
                 attempt += 1
             }
         }
@@ -199,31 +201,26 @@ public actor ControllerSubscription {
 
     /// The end of a subscription: its info line (`Subscription lost: <reason>`, or
     /// `Subscription closed` for ``SubscriptionLossReason/closed``) with `matter.reason`,
-    /// `<prefix>_subscription_lost_total{reason}`, and the live subscription span ended, with
-    /// error status for a loss and none for a close.
+    /// `<prefix>_subscription_lost_total{reason}`, and a short `matter.subscription.lost` span
+    /// with `matter.reason`: error status for a loss, none for a close.
     private func recordLoss(_ loss: SubscriptionLossReason, id: SubscriptionID?, reason: String? = nil) {
         var lossMetadata = metadata(id)
         lossMetadata[MatterLogKey.reason] = .string(loss.rawValue)
         logger.info("\(reason.map { "Subscription lost: \($0)" } ?? "Subscription closed")", metadata: lossMetadata)
         telemetry.metrics.subscriptionLoss(loss)
-        endSubscriptionSpan(error: reason)
-    }
-
-    private func beginSubscriptionSpan(id: SubscriptionID, sessionID: UInt16, maxInterval: UInt16) {
-        endSubscriptionSpan(error: nil)
-        let span = telemetry.tracer.startSpan("matter.subscription", context: context, ofKind: .consumer)
-        if span.isRecording {
-            annotate(span, sessionID: sessionID, id: id)
-            span.attributes["matter.max_interval_s"] = Int(maxInterval)
-        }
-        subscriptionSpan = span
-    }
-
-    private func endSubscriptionSpan(error message: String?) {
-        guard let span = subscriptionSpan else { return }
-        subscriptionSpan = nil
-        if let message { span.setStatus(SpanStatus(code: .error, message: message)) }
+        let span = startLinkedSpan("matter.subscription.lost", ofKind: .internal, id: id)
+        if span.isRecording { span.attributes[MatterLogKey.reason] = loss.rawValue }
+        if let reason { span.setStatus(SpanStatus(code: .error, message: reason)) }
         span.end()
+    }
+
+    /// A new root span linked to ``subscribeLink``, with `matter.node` and `matter.subscription`
+    /// (`id`, else the linked subscription's).
+    private func startLinkedSpan(_ name: String, ofKind kind: SpanKind, id: SubscriptionID?) -> any Span {
+        let span = telemetry.tracer.startSpan(name, context: .topLevel, ofKind: kind)
+        if let link = subscribeLink { span.addLink(SpanLink(context: link.context, attributes: [:])) }
+        if span.isRecording { annotate(span, id: id ?? subscribeLink?.id) }
+        return span
     }
 
     /// `matter.node`, plus `matter.session` and `matter.subscription` when given.
@@ -334,7 +331,7 @@ public actor ControllerSubscription {
             logger.debug("Subscribe response: max interval \(subscription.negotiatedMaxInterval) s, \(priming.count) priming chunk(s)", metadata: metadata(id))
             logger.info("Subscription established, max interval \(subscription.negotiatedMaxInterval) s", metadata: metadata(id))
             if span.isRecording { annotate(span, id: id) }
-            beginSubscriptionSpan(id: id, sessionID: sessionID, maxInterval: subscription.negotiatedMaxInterval)
+            subscribeLink = (span.context, id)
             lastReportAt = nil
             for (index, report) in priming.enumerated() { deliver(report, id: id, chunk: index + 1) }
             // Register before closing: a report sent right after SubscribeResponse
@@ -423,20 +420,19 @@ public actor ControllerSubscription {
     }
 
     /// One ReportData: the report interval (first chunk), its debug line, its attribute values
-    /// at trace (redacted for sensitive clusters), a `report` event on the subscription span
-    /// and a short `matter.report` span. The path list is built only when one of those is
-    /// logged or traced: reports can be frequent.
+    /// at trace (redacted for sensitive clusters) and a short `matter.report` span linked to the
+    /// subscribe span. The path list is built only when it is logged or traced: reports can be
+    /// frequent.
     private func noteReport(_ report: SubscriptionReport, id: SubscriptionID, chunk: Int) {
         let now = messenger.clock.now
         if chunk == 1 {
             if let last = lastReportAt { telemetry.metrics.reportInterval.record(duration: now - last) }
             lastReportAt = now
         }
-        let reportSpan = telemetry.tracer.startSpan("matter.report", context: subscriptionSpan?.context ?? context, ofKind: .consumer)
+        let reportSpan = startLinkedSpan("matter.report", ofKind: .consumer, id: id)
         defer { reportSpan.end() }
-        let eventSpan = subscriptionSpan.flatMap { $0.isRecording ? $0 : nil }
         let logged = logger.logLevel <= .debug
-        guard logged || eventSpan != nil || reportSpan.isRecording else { return }
+        guard logged || reportSpan.isRecording else { return }
         let paths = report.attributes.map(IMFormat.describe)
         if logged {
             let reportMetadata = metadata(id)
@@ -448,12 +444,7 @@ public actor ControllerSubscription {
                 }
             }
         }
-        eventSpan?.addEvent(SpanEvent(name: "report", attributes: [
-            "matter.chunk": .int64(Int64(chunk)),
-            MatterLogKey.attribute: .stringArray(paths),
-        ]))
         if reportSpan.isRecording {
-            annotate(reportSpan, id: id)
             reportSpan.attributes[MatterLogKey.attribute] = SpanAttribute.stringArray(paths)
         }
     }

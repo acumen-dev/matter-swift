@@ -1375,7 +1375,7 @@ public actor MatterController {
     /// for events not yet delivered. Cancel it with ``ControllerSubscription/cancel()``;
     /// ``stop()`` cancels any still running.
     ///
-    /// - Parameter context: parents the subscribe and subscription spans.
+    /// - Parameter context: parents each `matter.subscribe` span; report and loss spans link to them.
     public func subscribe(
         nodeID: NodeID,
         _ request: SubscriptionRequest,
