@@ -97,10 +97,15 @@ func nextNewUnsecuredFrame(_ peer: inout TestPeer, seen: inout Set<UInt32>) asyn
     }
 }
 
-/// A rig whose controller is on a fabric the test knows, with no session installed, and node
-/// 0x42's device-side `FabricInfo` on that fabric (NOC signed by the same root, same IPK): a
-/// `CASEProtocolHandler(fabricInfo:)` on it answers the controller's Sigma1 for real.
-func makeCASEControllerRig() async throws -> (rig: ControllerRig, deviceFabric: FabricInfo) {
+/// A fabric the test knows: its root key, the controller's `FabricManager` on it, and node
+/// 0x42's device-side `FabricInfo` (NOC signed by the same root, same IPK).
+struct TestFabric {
+    let rootKey: P256.Signing.PrivateKey
+    let manager: FabricManager
+    let deviceFabric: FabricInfo
+}
+
+func makeTestFabric() throws -> TestFabric {
     let rootKey = P256.Signing.PrivateKey()
     let fabricID = FabricID(rawValue: 1)
     let manager = try FabricManager(
@@ -121,6 +126,13 @@ func makeCASEControllerRig() async throws -> (rig: ControllerRig, deviceFabric: 
         operationalKey: deviceKey,
         ipkEpochKey: manager.ipkEpochKey
     )
-    let rig = try await makeControllerRig(installSession: false, fabricManager: manager)
-    return (rig, deviceFabric)
+    return TestFabric(rootKey: rootKey, manager: manager, deviceFabric: deviceFabric)
+}
+
+/// A rig whose controller is on a ``TestFabric``, with no session installed: a
+/// `CASEProtocolHandler(fabricInfo: fabric.deviceFabric)` answers the controller's Sigma1 for real.
+func makeCASEControllerRig() async throws -> (rig: ControllerRig, fabric: TestFabric) {
+    let fabric = try makeTestFabric()
+    let rig = try await makeControllerRig(installSession: false, fabricManager: fabric.manager)
+    return (rig, fabric)
 }

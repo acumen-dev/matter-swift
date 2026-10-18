@@ -86,14 +86,14 @@ struct SessionTelemetryTests {
 
     @Test("A successful CASE logs its session and duration, counts success, times case_duration once and ends the span without error")
     func caseEstablished() async throws {
-        let (rig, deviceFabric) = try await makeCASEControllerRig()
+        let (rig, fabric) = try await makeCASEControllerRig()
         var peer = TestPeer(link: rig.link)
         var seen = Set<UInt32>()
         let node = rig.node
         let establishing = Task { try await rig.controller.session(for: node) }
         let sigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
         #expect(sigma1.exchangeHeader.protocolOpcode == SecureChannelOpcode.caseSigma1.rawValue)
-        let (sigma2, _) = try CASEProtocolHandler(fabricInfo: deviceFabric).handleSigma1(payload: sigma1.payload, responderSessionID: 300)
+        let (sigma2, _) = try CASEProtocolHandler(fabricInfo: fabric.deviceFabric).handleSigma1(payload: sigma1.payload, responderSessionID: 300)
         try await peer.send(ScriptedPeer.unsecuredReply(
             to: sigma1, protocolID: .secureChannel, opcode: SecureChannelOpcode.caseSigma2.rawValue,
             payload: sigma2, counter: 800

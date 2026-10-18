@@ -14,3 +14,10 @@ extension Spake2pVerifierContext: CustomStringConvertible, CustomDebugStringConv
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: [Mirror.Child](), displayStyle: .struct) }
 }
+
+extension Spake2pVerifier: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    /// Holds w0 and L, from which the passcode can be brute-forced offline: never rendered.
+    public var description: String { "Spake2pVerifier(<redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .struct) }
+}

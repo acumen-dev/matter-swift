@@ -42,3 +42,16 @@ extension CASEProtocolHandler.InitiatorHandshakeContext: CustomStringConvertible
         Mirror(self, children: ["peerNodeID": peerNodeID, "keys": "<redacted>"], displayStyle: .struct)
     }
 }
+
+extension CASEProtocolHandler.ResponderHandshakeContext: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    /// Session ids only: the responder's CASE context (ephemeral key, shared secret, IPK) is never rendered.
+    public var description: String {
+        "ResponderHandshakeContext(initiatorSession: \(MatterLogValue.hexString(initiatorSessionID)), responderSession: \(MatterLogValue.hexString(caseContext.responderSessionID)), keys: <redacted>)"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["summary": description], displayStyle: .struct)
+    }
+}

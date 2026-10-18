@@ -5,8 +5,8 @@ import Testing
 import Foundation
 import Crypto
 import MatterTypes
-import MatterCrypto
-import MatterProtocol
+@testable import MatterCrypto
+@testable import MatterProtocol
 import MatterTestSupport
 @testable import MatterController
 
@@ -29,13 +29,29 @@ struct RedactionTests {
         }
     }
 
-    /// A redacted type's mirror carries exactly `labels`, and none of the children is a byte or key value.
+    /// A redacted type's mirror carries exactly `labels`, and every child is ``isPlain(_:)``.
     static func expectMirror(_ value: Any, labels: Set<String>, sourceLocation: SourceLocation = #_sourceLocation) {
         let children = Mirror(reflecting: value).children
         #expect(Set(children.compactMap(\.label)) == labels, "\(type(of: value)) mirror labels", sourceLocation: sourceLocation)
         for child in children {
-            let secret = child.value is Data || child.value is SymmetricKey || child.value is P256.Signing.PrivateKey
-            #expect(!secret, "\(type(of: value)) mirror child \(child.label ?? "?")", sourceLocation: sourceLocation)
+            #expect(isPlain(child.value), "\(type(of: value)) mirror child \(child.label ?? "?") is \(type(of: child.value))", sourceLocation: sourceLocation)
+        }
+    }
+
+    /// The values a redacted mirror may show: text, integers, booleans, identifiers, enums
+    /// without payloads, and optionals of those. Bytes, keys, contexts, dates, collections
+    /// and any other struct are refused.
+    static func isPlain(_ value: Any) -> Bool {
+        switch value {
+        case is String, is Bool, is any BinaryInteger, is NodeID, is FabricID, is FabricIndex, is VendorID:
+            return true
+        default:
+            let mirror = Mirror(reflecting: value)
+            switch mirror.displayStyle {
+            case .enum?: return mirror.children.isEmpty
+            case .optional?: return mirror.children.allSatisfy { isPlain($0.value) }
+            default: return false
+            }
         }
     }
 
@@ -75,7 +91,10 @@ struct RedactionTests {
         let (_, pA) = try Spake2p.proverStep1(w0: w0)
         let (verifierContext, _, _) = try Spake2p.verifierStep1(pA: pA, verifier: verifier, hashContext: Data(repeating: 1, count: 32))
         #expect(String(describing: verifierContext) == "Spake2pVerifierContext(<redacted>)")
-        Self.expectAbsent(SecretForms.of(verifier.w0) + SecretForms.of(verifier.L), in: verifierContext)
+        Self.expectAbsent(
+            SecretForms.of(verifierContext.ke) + SecretForms.of(Self.bytes(verifierContext.kcA)) + SecretForms.of(verifierContext.y.rawRepresentation),
+            in: verifierContext
+        )
         Self.expectMirror(verifierContext, labels: [])
 
         let pake1 = PASESession.Pake1Context(
@@ -132,5 +151,101 @@ struct RedactionTests {
         #expect(String(describing: configuration).contains("rootKey: <redacted>"))
         Self.expectAbsent(SecretForms.of(configuration.rootKey.rawRepresentation), in: configuration)
         Self.expectMirror(configuration, labels: ["summary"])
+    }
+
+    @Test("The mirror allowlist refuses bytes, keys, contexts and dates, and accepts plain values")
+    func mirrorAllowlist() throws {
+        let fabric = try makeTestFabric()
+        let (_, handshake) = ControllerSession(fabricManager: fabric.manager).createSigma1(peerNodeID: NodeID(rawValue: 0x42), initiatorSessionID: 7)
+        let refused: [Any] = [
+            Data([0xAB, 0x01]), [UInt8]([0xAB, 0x01]), SymmetricKey(size: .bits128), P256.Signing.PrivateKey(),
+            P256.KeyAgreement.PrivateKey(), handshake.caseContext, fabric.deviceFabric, Date(), Optional(Data([1])) as Any,
+            TLVElement.octetString(Data([1])),
+        ]
+        for value in refused {
+            #expect(!Self.isPlain(value), "\(type(of: value)) must be refused")
+        }
+        let accepted: [Any] = [
+            "text", UInt16(10), 42, true, NodeID(rawValue: 0x42), FabricID(rawValue: 1), FabricIndex(rawValue: 1),
+            VendorID.test, SessionEstablishment.case, Optional<NodeID>.none as Any, Optional("text") as Any,
+        ]
+        for value in accepted {
+            #expect(Self.isPlain(value), "\(type(of: value)) must be accepted")
+        }
+    }
+
+    @Test("Spake2pVerifier and SessionKeys never render w0, L or a key")
+    func verifierAndSessionKeys() throws {
+        let verifier = try Spake2p.computeVerifier(passcode: 20202021, salt: Data(repeating: 0x5A, count: 16), iterations: 1000)
+        #expect(String(describing: verifier) == "Spake2pVerifier(<redacted>)")
+        Self.expectAbsent(SecretForms.of(verifier.w0) + SecretForms.of(verifier.L) + SecretForms.of(verifier.serialized), in: verifier)
+        Self.expectMirror(verifier, labels: ["summary"])
+
+        let keys = KeyDerivation.deriveSessionKeys(sharedSecret: Data(repeating: 0x33, count: 32))
+        #expect(String(describing: keys) == "SessionKeys(<redacted>)")
+        Self.expectAbsent([keys.i2rKey, keys.r2iKey, keys.attestationKey].flatMap { SecretForms.of(Self.bytes($0)) }, in: keys)
+        Self.expectMirror(keys, labels: ["summary"])
+    }
+
+    @Test("FabricInfo, ResumptionTicket and DeviceAttestationCredentials never render a private key, the IPK or the shared secret")
+    func fabricTicketAndCredentials() throws {
+        let fabric = try makeTestFabric().deviceFabric
+        #expect(String(describing: fabric) == "FabricInfo(fabricIndex: 1, fabricID: 0x1, nodeID: 0x42, keys: <redacted>)")
+        Self.expectAbsent(
+            SecretForms.of(fabric.operationalKey.rawRepresentation) + SecretForms.of(fabric.ipkEpochKey) + SecretForms.of(fabric.deriveIPK()),
+            in: fabric
+        )
+        Self.expectMirror(fabric, labels: ["summary"])
+
+        let resumptionID = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        let sharedSecret = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        let ticket = ResumptionTicket(
+            resumptionID: resumptionID, sharedSecret: sharedSecret, peerNodeID: NodeID(rawValue: 0x42),
+            peerFabricID: FabricID(rawValue: 1), fabricIndex: FabricIndex(rawValue: 1),
+            expiryDate: Date(timeIntervalSinceReferenceDate: 0)
+        )
+        #expect(String(describing: ticket)
+                == "ResumptionTicket(peerNode: 0x42, peerFabric: 0x1, fabricIndex: 1, expires: 2001-01-01 00:00:00 +0000, secrets: <redacted>)")
+        Self.expectAbsent(SecretForms.of(resumptionID) + SecretForms.of(sharedSecret), in: ticket)
+        Self.expectMirror(ticket, labels: ["summary"])
+
+        let credentials = try DeviceAttestationCredentials.testCredentials()
+        #expect(String(describing: credentials) == "DeviceAttestationCredentials(dacPrivateKey: <redacted>)")
+        Self.expectAbsent(SecretForms.of(credentials.dacPrivateKey.rawRepresentation), in: credentials)
+        Self.expectMirror(credentials, labels: ["summary"])
+    }
+
+    @Test("The CASE initiator and responder contexts never render an ephemeral key, the IPK, the shared secret or a Sigma payload")
+    func caseSessionContexts() throws {
+        let testFabric = try makeTestFabric()
+        let controllerFabric = testFabric.manager.controllerFabricInfo, deviceFabric = testFabric.deviceFabric
+        let (initiator, sigma1) = CASESession.initiatorStep1(
+            fabricInfo: controllerFabric, peerNodeID: deviceFabric.nodeID, peerFabricID: deviceFabric.fabricID,
+            peerRootPublicKey: deviceFabric.rootPublicKey, initiatorSessionID: 7
+        )
+        #expect(String(describing: initiator) == "InitiatorContext(initiatorSession: 0x7, keys: <redacted>)")
+        Self.expectAbsent(
+            SecretForms.of(initiator.initiatorEphKey.rawRepresentation) + SecretForms.of(initiator.ipk) + SecretForms.of(sigma1)
+                + SecretForms.of(controllerFabric.operationalKey.rawRepresentation) + SecretForms.of(controllerFabric.ipkEpochKey),
+            in: initiator
+        )
+        Self.expectMirror(initiator, labels: ["summary"])
+
+        let (_, handshake) = try CASEProtocolHandler(fabricInfo: deviceFabric).handleSigma1(payload: sigma1, responderSessionID: 300)
+        let responder = handshake.caseContext
+        let responderSecrets = SecretForms.of(responder.responderEphKey.rawRepresentation) + SecretForms.of(responder.ipk)
+            + SecretForms.of(responder.sharedSecret.withUnsafeBytes { Data($0) }) + SecretForms.of(responder.sigma1Bytes)
+            + SecretForms.of(responder.sigma2Bytes) + SecretForms.of(deviceFabric.operationalKey.rawRepresentation)
+        #expect(String(describing: responder) == "ResponderContext(responderSession: 0x12C, keys: <redacted>)")
+        Self.expectAbsent(responderSecrets, in: responder)
+        Self.expectMirror(responder, labels: ["summary"])
+
+        #expect(String(describing: handshake) == "ResponderHandshakeContext(initiatorSession: 0x7, responderSession: 0x12C, keys: <redacted>)")
+        Self.expectAbsent(responderSecrets, in: handshake)
+        Self.expectMirror(handshake, labels: ["summary"])
+        for text in Self.renderings(handshake) {
+            #expect(!text.contains("caseContext"))
+            #expect(!text.contains("PrivateKey"))
+        }
     }
 }

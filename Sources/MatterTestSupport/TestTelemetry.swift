@@ -94,8 +94,13 @@ public struct TestTelemetry: Sendable {
 
 /// The forms a secret could take in a log line or span.
 public enum SecretForms {
-    /// `bytes` as lower-case hex, upper-case hex, base64 and the decimal array `dump` prints
-    /// (`[171, 1]`). Empty input yields no forms: `contains("")` matches everything.
+    /// `bytes` as lower-case hex, upper-case hex, base64, and the decimal array that
+    /// interpolation and `String(describing:)` print for a `[UInt8]` (`[171, 1]`).
+    ///
+    /// No form matches `dump`, which prints `Data` one byte per line: a value's mirror is the
+    /// guard for `dump` (the redaction tests allow only plain mirror children). Empty input
+    /// yields no forms, since `contains("")` matches everything, so a caller checking a
+    /// secret must first require its forms to be non-empty.
     public static func of(_ bytes: Data) -> [String] {
         guard !bytes.isEmpty else { return [] }
         let lower = bytes.map { String(format: "%02x", $0) }.joined()
