@@ -95,6 +95,16 @@ enum SessionOutcome: String, CaseIterable, Sendable {
             self = .error
         }
     }
+
+    /// The outcome to record for a failed establishment, or nil for an aborted one, as
+    /// ``IMRequestOutcome/init(recording:controllerStopped:)``: after `stop()` the messenger's
+    /// `MessagingError.stopped` reaches here already mapped, hence `controllerStopped`.
+    init?(recording error: any Error, controllerStopped: Bool) {
+        if controllerStopped || error is CancellationError || error as? MessagingError == .stopped {
+            return nil
+        }
+        self.init(error)
+    }
 }
 
 /// `reason` of `<prefix>_subscription_lost_total`.

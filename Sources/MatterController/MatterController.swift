@@ -778,7 +778,6 @@ public actor MatterController {
         mrp: MRPParameters? = nil,
         approvingUnverifiedDevice: Data? = nil
     ) async throws -> CommissionedDevice {
-        let timeout = configuration.operationTimeout
         let address = address.canonicalised
 
         loggers.paseHandshake.info("Beginning commissioning to \(MatterLogValue.address(address))")
@@ -790,61 +789,14 @@ public actor MatterController {
             throw ControllerError.paseHandshakeFailed("No free local session ID")
         }
         defer { sessionCache.releaseSessionID(sessionID) }
-        let (pbkdfReq, ctx1) = commissioning.beginPASE(
-            passcode: setupCode,
-            initiatorSessionID: sessionID
+        let paseContext = try await establishPASE(
+            address: address, mrp: mrp, setupCode: setupCode, sessionID: sessionID,
+            context: ServiceContext.current ?? .topLevel
         )
-
-        let handshake = await messenger.openExchange(peer: address, mrp: mrp)
-        let paseContext: CommissioningController.CommissioningContext
-        do {
-            let pbkdfResp = try await handshake.request(
-                protocolID: .secureChannel,
-                opcode: SecureChannelOpcode.pbkdfParamRequest.rawValue,
-                payload: pbkdfReq,
-                timeout: timeout
-            )
-            try Self.expect(pbkdfResp, .pbkdfParamResponse, failure: ControllerError.paseHandshakeFailed)
-            let (pake1, ctx2) = try commissioning.handlePBKDFParamResponse(
-                response: pbkdfResp.payload, context: ctx1
-            )
-
-            let pake2 = try await handshake.request(
-                protocolID: .secureChannel,
-                opcode: SecureChannelOpcode.pasePake1.rawValue,
-                payload: pake1,
-                timeout: timeout
-            )
-            try Self.expect(pake2, .pasePake2, failure: ControllerError.paseHandshakeFailed)
-            let (pake3, ctx3) = try commissioning.handlePake2(
-                response: pake2.payload, context: ctx2
-            )
-
-            let status = try await handshake.request(
-                protocolID: .secureChannel,
-                opcode: SecureChannelOpcode.pasePake3.rawValue,
-                payload: pake3,
-                timeout: timeout
-            )
-            try Self.expect(status, .statusReport, failure: ControllerError.paseHandshakeFailed)
-            let statusReport = try StatusReportMessage.decode(from: status.payload)
-            guard statusReport.generalStatus == .success else {
-                throw ControllerError.paseHandshakeFailed(
-                    "PASE StatusReport: \(statusReport.generalStatus)"
-                )
-            }
-            paseContext = ctx3
-        } catch {
-            await handshake.close()
-            throw Self.commissioningError(error)
-        }
-        await handshake.close()
 
         guard let paseSession = paseContext.paseSession else {
             throw ControllerError.paseHandshakeFailed("No PASE session after Pake3")
         }
-
-        loggers.paseHandshake.info("PASE session established (localSession=\(paseSession.localSessionID))")
 
         // Steps 2-6 over the encrypted PASE session, then CASE and
         // CommissioningComplete. Register the PASE session before the first
@@ -884,6 +836,61 @@ public actor MatterController {
         loggers.paseHandshake.info("Commissioning complete", metadata: .node(device.nodeID))
 
         return device
+    }
+
+    /// Commissioning step 1: PBKDFParamRequest → Pake3 on one unsecured exchange, inside a
+    /// `matter.pase` span, with its info line (duration) and
+    /// `<prefix>_sessions_established_total{type="pase"}`. Errors are mapped as commissioning errors.
+    private func establishPASE(
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        setupCode: UInt32,
+        sessionID: UInt16,
+        context: ServiceContext
+    ) async throws -> CommissioningController.CommissioningContext {
+        let timeout = configuration.operationTimeout
+        let (pbkdfReq, ctx1) = commissioning.beginPASE(passcode: setupCode, initiatorSessionID: sessionID)
+        return try await instrumentedEstablishment(
+            .paseSession, context: context, sessionID: sessionID, mapError: Self.commissioningError
+        ) { paseContext in
+            let handshake = await self.messenger.openExchange(peer: address, mrp: mrp, context: paseContext)
+            do {
+                let pbkdfResp = try await handshake.request(
+                    protocolID: .secureChannel,
+                    opcode: SecureChannelOpcode.pbkdfParamRequest.rawValue,
+                    payload: pbkdfReq,
+                    timeout: timeout
+                )
+                try Self.expect(pbkdfResp, .pbkdfParamResponse, failure: ControllerError.paseHandshakeFailed)
+                let (pake1, ctx2) = try self.commissioning.handlePBKDFParamResponse(response: pbkdfResp.payload, context: ctx1)
+
+                let pake2 = try await handshake.request(
+                    protocolID: .secureChannel,
+                    opcode: SecureChannelOpcode.pasePake1.rawValue,
+                    payload: pake1,
+                    timeout: timeout
+                )
+                try Self.expect(pake2, .pasePake2, failure: ControllerError.paseHandshakeFailed)
+                let (pake3, ctx3) = try self.commissioning.handlePake2(response: pake2.payload, context: ctx2)
+
+                let status = try await handshake.request(
+                    protocolID: .secureChannel,
+                    opcode: SecureChannelOpcode.pasePake3.rawValue,
+                    payload: pake3,
+                    timeout: timeout
+                )
+                try Self.expect(status, .statusReport, failure: ControllerError.paseHandshakeFailed)
+                let statusReport = try StatusReportMessage.decode(from: status.payload)
+                guard statusReport.generalStatus == .success else {
+                    throw ControllerError.paseHandshakeFailed("PASE StatusReport: \(statusReport.generalStatus)")
+                }
+                await handshake.close()
+                return ctx3
+            } catch {
+                await handshake.close()
+                throw error
+            }
+        }
     }
 
     /// Commissioning steps 2-7 over the established PASE session, then
@@ -1045,9 +1052,11 @@ public actor MatterController {
             throw ControllerError.caseSessionFailed("No free local session ID")
         }
         caseReservation = caseSessionID
-        let established = try await caseHandshake(
-            nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID
-        )
+        let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
+            try await self.caseHandshake(
+                nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
+            )
+        }
         try await messenger.registerSession(established, peerAddress: address, mrp: mrp)
         caseSession = established
         try commissioningFailureInjection?(.afterCASE)
@@ -1169,10 +1178,21 @@ public actor MatterController {
     /// Invalidate the cached session for a node (e.g., after a communication
     /// error) and unregister it from the message layer.
     public func invalidateSession(for nodeID: NodeID) async {
+        await invalidateSession(for: nodeID, reason: "requested by the caller")
+    }
+
+    /// As ``invalidateSession(for:)``, logging why at info.
+    func invalidateSession(for nodeID: NodeID, reason: String) async {
         guard let session = sessionCache.session(for: nodeID) else { return }
         // Out of the cache before suspending, so a session established
         // meanwhile is never the one removed.
         sessionCache.remove(for: nodeID)
+        loggers.session.info("Session invalidated: \(reason)", metadata: {
+            var metadata = Logger.Metadata.node(nodeID)
+            metadata[MatterLogKey.session] = MatterLogValue.hex(session.localSessionID)
+            metadata[MatterLogKey.reason] = .string(reason)
+            return metadata
+        }())
         await messenger.unregisterSession(localSessionID: session.localSessionID)
     }
 
@@ -1427,7 +1447,7 @@ public actor MatterController {
         subscriptions.removeAll { $0.nodeID == nodeID }
         for subscription in doomed { await subscription.cancel() }
         await registry.remove(nodeID: nodeID)
-        await invalidateSession(for: nodeID)
+        await invalidateSession(for: nodeID, reason: "device removed")
         await saveState()
     }
 
@@ -1583,48 +1603,125 @@ public actor MatterController {
         }
         defer { sessionCache.releaseSessionID(sessionID) }
 
-        loggers.caseHandshake.debug("Establishing CASE session", metadata: .node(nodeID))
-
-        var usedAddress = address
-        let session: SecureSession
-        do {
-            session = try await caseHandshake(
-                nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: context
-            )
-        } catch {
-            let original = Self.operationalError(error, nodeID: nodeID)
-            guard Self.nothingAnswered(original, nodeID: nodeID),
-                  let refreshed = try await refreshedAddress(nodeID: nodeID, tried: address) else {
-                throw original
-            }
-            loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
-            usedAddress = refreshed.address
+        return try await instrumentedCASE(nodeID: nodeID, context: context) { caseContext in
+            var usedAddress = address
+            let session: SecureSession
             do {
-                session = try await caseHandshake(
-                    nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: context
+                session = try await self.caseHandshake(
+                    nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
                 )
+            } catch {
+                let original = Self.operationalError(error, nodeID: nodeID)
+                guard Self.nothingAnswered(original, nodeID: nodeID),
+                      let refreshed = try await self.refreshedAddress(nodeID: nodeID, tried: address) else {
+                    throw original
+                }
+                self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
+                usedAddress = refreshed.address
+                do {
+                    session = try await self.caseHandshake(
+                        nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
+                    )
+                } catch {
+                    throw Self.operationalError(error, nodeID: nodeID)
+                }
+            }
+
+            // Register before caching so the first request's reply is routable.
+            // Parameters re-read now: setMRPParameters may have run during the
+            // handshake (it then waits for this establishment to finish).
+            // A device removed during the handshake gets no session.
+            guard let current = await self.registry.device(for: nodeID) else {
+                throw ControllerError.deviceNotFound
+            }
+            do {
+                try await self.messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
             } catch {
                 throw Self.operationalError(error, nodeID: nodeID)
             }
+            self.sessionCache.store(session, for: nodeID)
+            return session
         }
+    }
 
-        // Register before caching so the first request's reply is routable.
-        // Parameters re-read now: setMRPParameters may have run during the
-        // handshake (it then waits for this establishment to finish).
-        // A device removed during the handshake gets no session.
-        guard let current = await registry.device(for: nodeID) else {
-            throw ControllerError.deviceNotFound
+    /// Run one CASE establishment inside a `matter.case` span (child of `context`): see
+    /// ``instrumentedEstablishment(_:context:nodeID:sessionID:establishedSessionID:mapError:_:)``;
+    /// on success it also records `<prefix>_case_duration`.
+    private func instrumentedCASE(
+        nodeID: NodeID,
+        context: ServiceContext,
+        _ body: (ServiceContext) async throws -> SecureSession
+    ) async throws -> SecureSession {
+        loggers.caseHandshake.debug("Establishing CASE session", metadata: .node(nodeID))
+        return try await instrumentedEstablishment(
+            .caseSession, context: context, nodeID: nodeID,
+            establishedSessionID: { $0.localSessionID }, body
+        )
+    }
+
+    /// Run one session establishment inside its `matter.case` / `matter.pase` span (child of
+    /// `context`), with its info line on `case` / `pase` (duration, and the outcome on failure)
+    /// and `<prefix>_sessions_established_total{type,outcome}`. The outcome is classified from
+    /// the error `body` threw; `mapError` gives the error logged, recorded on the span and
+    /// thrown. An establishment cancelled or ended by ``stop()`` gets a debug line but is
+    /// neither counted nor timed, and its span ends without error status.
+    private func instrumentedEstablishment<T: Sendable>(
+        _ type: SessionType,
+        context: ServiceContext,
+        nodeID: NodeID? = nil,
+        sessionID: UInt16? = nil,
+        establishedSessionID: (T) -> UInt16? = { _ in nil },
+        mapError: (any Error) -> any Error = { $0 },
+        _ body: (ServiceContext) async throws -> T
+    ) async throws -> T {
+        let span = telemetry.tracer.startSpan(type.spanName, context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording {
+            if let nodeID { span.attributes[MatterLogKey.node] = MatterLogValue.hexString(nodeID.rawValue) }
+            if let sessionID { span.attributes[MatterLogKey.session] = MatterLogValue.hexString(sessionID) }
         }
+        let logger = type == .caseSession ? loggers.caseHandshake : loggers.paseHandshake
+        func metadata(session: UInt16?, elapsed: Duration, reason: String? = nil) -> Logger.Metadata {
+            var metadata = nodeID.map { Logger.Metadata.node($0) } ?? [:]
+            if let session { metadata[MatterLogKey.session] = MatterLogValue.hex(session) }
+            metadata[MatterLogKey.latencyMs] = MatterLogValue.latency(elapsed)
+            if let reason { metadata[MatterLogKey.reason] = .string(reason) }
+            return metadata
+        }
+        let started = messenger.clock.now
         do {
-            try await messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
+            let result = try await body(span.context)
+            let elapsed = messenger.clock.now - started
+            let session = establishedSessionID(result) ?? sessionID
+            if let session, span.isRecording {
+                span.attributes[MatterLogKey.session] = MatterLogValue.hexString(session)
+            }
+            logger.info(
+                "\(type.name) session established in \(MatterLogValue.milliseconds(elapsed)) ms",
+                metadata: metadata(session: session, elapsed: elapsed)
+            )
+            telemetry.metrics.sessionEstablishment(type, .success, duration: elapsed)
+            return result
         } catch {
-            throw Self.operationalError(error, nodeID: nodeID)
+            let elapsed = messenger.clock.now - started
+            let mapped = mapError(error)
+            guard let outcome = SessionOutcome(recording: error, controllerStopped: stopped) else {
+                let aborted = stopped ? "stopped" : "cancelled"
+                logger.debug(
+                    "\(type.name) session \(aborted) after \(MatterLogValue.milliseconds(elapsed)) ms: \(mapped)",
+                    metadata: metadata(session: sessionID, elapsed: elapsed, reason: aborted)
+                )
+                throw mapped
+            }
+            logger.info(
+                "\(type.failed) after \(MatterLogValue.milliseconds(elapsed)) ms: \(mapped)",
+                metadata: metadata(session: sessionID, elapsed: elapsed, reason: outcome.rawValue)
+            )
+            telemetry.metrics.sessionEstablishment(type, outcome, duration: elapsed)
+            span.recordError(mapped)
+            span.setStatus(SpanStatus(code: .error, message: outcome.rawValue))
+            throw mapped
         }
-        sessionCache.store(session, for: nodeID)
-
-        loggers.caseHandshake.debug("CASE session established", metadata: .node(nodeID))
-
-        return session
     }
 
     /// Re-resolve `nodeID`'s operational address after a handshake at
@@ -1775,7 +1872,7 @@ public actor MatterController {
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
                 if sessionCache.session(for: nodeID) === activeSession {
-                    await invalidateSession(for: nodeID)
+                    await invalidateSession(for: nodeID, reason: "peer unreachable")
                 }
             }
             throw mapped
@@ -1908,8 +2005,7 @@ public actor MatterController {
               mapped == .peerUnreachable(nodeID),
               let cached = sessionCache.session(for: nodeID),
               cached.localSessionID == sessionID else { return }
-        loggers.session.info("Node subscription failed on a dead session; invalidating it", metadata: .node(nodeID))
-        await invalidateSession(for: nodeID)
+        await invalidateSession(for: nodeID, reason: "subscription establishment failed on a dead session")
     }
 
     /// Messaging failures on an operational exchange, as `ControllerError`.
@@ -1982,4 +2078,16 @@ private final class CancellableWaiter<T: Sendable>: Sendable {
         }
         continuation?.resume(with: result)
     }
+}
+
+// MARK: - Session establishment wording
+
+private extension SessionType {
+    var spanName: String { "matter.\(rawValue)" }
+
+    /// `CASE` or `PASE`.
+    var name: String { rawValue.uppercased() }
+
+    /// The start of the info line for a failed establishment.
+    var failed: String { self == .caseSession ? "CASE session failed" : "PASE failed" }
 }
