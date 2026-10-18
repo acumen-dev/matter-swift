@@ -84,6 +84,46 @@ struct SessionTelemetryTests {
         await rig.controller.stop()
     }
 
+    @Test("A successful CASE logs its session and duration, counts success, times case_duration once and ends the span without error")
+    func caseEstablished() async throws {
+        let (rig, deviceFabric) = try await makeCASEControllerRig()
+        var peer = TestPeer(link: rig.link)
+        var seen = Set<UInt32>()
+        let node = rig.node
+        let establishing = Task { try await rig.controller.session(for: node) }
+        let sigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(sigma1.exchangeHeader.protocolOpcode == SecureChannelOpcode.caseSigma1.rawValue)
+        let (sigma2, _) = try CASEProtocolHandler(fabricInfo: deviceFabric).handleSigma1(payload: sigma1.payload, responderSessionID: 300)
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: sigma1, protocolID: .secureChannel, opcode: SecureChannelOpcode.caseSigma2.rawValue,
+            payload: sigma2, counter: 800
+        ))
+        let sigma3 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(sigma3.exchangeHeader.protocolOpcode == SecureChannelOpcode.caseSigma3.rawValue)
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: sigma3, protocolID: .secureChannel, opcode: SecureChannelOpcode.statusReport.rawValue,
+            payload: StatusReportMessage(generalStatus: .success, protocolID: 0, protocolStatus: 0).encode(), counter: 801
+        ))
+        let session = try await establishing.value
+        let sessionID = MatterLogValue.hexString(session.localSessionID)
+
+        let line = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("CASE session established in") })
+        #expect(line.level == .info)
+        #expect(line.subsystem == "case")
+        #expect(line.metadata[MatterLogKey.node] == "0x42")
+        #expect(line.metadata[MatterLogKey.session] == sessionID)
+        #expect(line.metadata[MatterLogKey.latencyMs] != nil)
+        #expect(line.metadata[MatterLogKey.reason] == nil)
+        #expect(rig.telemetry.counter("matter_sessions_established_total", [("type", "case"), ("outcome", "success")]) == 1)
+        #expect(rig.telemetry.timerValues("matter_case_duration").count == 1)
+        let span = try #require(rig.telemetry.finishedSpans(named: "matter.case").first)
+        #expect(span.attributes.get(MatterLogKey.session) == .string(sessionID))
+        #expect(span.status?.code != .error)
+        #expect(span.errors.isEmpty)
+        #expect(await rig.controller.messenger.registeredSessionIDs.contains(session.localSessionID))
+        await rig.controller.stop()
+    }
+
     @Test("A caller's context parents the matter.case span, which parents the CASE exchange")
     func caseParentContext() async throws {
         let rig = try await makeControllerRig(installSession: false)

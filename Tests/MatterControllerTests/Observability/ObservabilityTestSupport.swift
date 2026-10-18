@@ -3,6 +3,7 @@
 
 import Foundation
 import Crypto
+import MatterCrypto
 import Logging
 import MatterTypes
 import MatterProtocol
@@ -33,7 +34,8 @@ func makeControllerRig(
     mrp: MRPConfig = .default,
     discovery: any MatterDiscovery = MockDiscovery(),
     installSession: Bool = true,
-    deviceAddress: MatterAddress? = nil
+    deviceAddress: MatterAddress? = nil,
+    fabricManager: FabricManager? = nil
 ) async throws -> ControllerRig {
     let telemetry = TestTelemetry()
     let link = FaultInjectingLink(seed: 11)
@@ -43,12 +45,26 @@ func makeControllerRig(
         metricsFactory: telemetry.metrics,
         tracer: telemetry.tracer
     )
-    let controller = try MatterController(
-        transport: link.a,
-        discovery: discovery,
-        configuration: configuration,
-        logger: telemetry.logger(label: "test.controller")
-    )
+    let logger = telemetry.logger(label: "test.controller")
+    let controller: MatterController
+    if let fabricManager {
+        controller = try MatterController(
+            transport: link.a,
+            discovery: discovery,
+            configuration: configuration,
+            stored: StoredControllerState(
+                identity: fabricManager.toStoredIdentity(), devices: [], nextNodeID: await fabricManager.nextNodeID
+            ),
+            logger: logger
+        )
+    } else {
+        controller = try MatterController(
+            transport: link.a,
+            discovery: discovery,
+            configuration: configuration,
+            logger: logger
+        )
+    }
     let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
     let node = NodeID(rawValue: 0x42)
     try await controller.installForTesting(
@@ -79,4 +95,32 @@ func nextNewUnsecuredFrame(_ peer: inout TestPeer, seen: inout Set<UInt32>) asyn
         if frame.isStandaloneAck { continue }
         if seen.insert(frame.counter).inserted { return frame }
     }
+}
+
+/// A rig whose controller is on a fabric the test knows, with no session installed, and node
+/// 0x42's device-side `FabricInfo` on that fabric (NOC signed by the same root, same IPK): a
+/// `CASEProtocolHandler(fabricInfo:)` on it answers the controller's Sigma1 for real.
+func makeCASEControllerRig() async throws -> (rig: ControllerRig, deviceFabric: FabricInfo) {
+    let rootKey = P256.Signing.PrivateKey()
+    let fabricID = FabricID(rawValue: 1)
+    let manager = try FabricManager(
+        rootKey: rootKey, fabricID: fabricID, controllerNodeID: NodeID(rawValue: 1), vendorID: .test
+    )
+    let node = NodeID(rawValue: 0x42)
+    let rcac = manager.controllerFabricInfo.rcac
+    let deviceKey = P256.Signing.PrivateKey()
+    let deviceNOC = try MatterCertificate.generateNOC(
+        signerKey: rootKey, issuerDN: rcac.subject, nodePublicKey: deviceKey.publicKey, nodeID: node, fabricID: fabricID
+    )
+    let deviceFabric = FabricInfo(
+        fabricIndex: FabricIndex(rawValue: 1),
+        fabricID: fabricID,
+        nodeID: node,
+        rcac: rcac,
+        noc: deviceNOC,
+        operationalKey: deviceKey,
+        ipkEpochKey: manager.ipkEpochKey
+    )
+    let rig = try await makeControllerRig(installSession: false, fabricManager: manager)
+    return (rig, deviceFabric)
 }

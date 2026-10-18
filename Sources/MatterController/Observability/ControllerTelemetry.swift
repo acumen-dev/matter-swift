@@ -66,11 +66,16 @@ enum IMRequestOutcome: String, CaseIterable, Sendable {
     /// `stop()` are not failures and are not counted. After `stop()` the messenger's
     /// `MessagingError.stopped` reaches the caller already mapped, hence `controllerStopped`.
     init?(recording error: any Error, controllerStopped: Bool) {
-        if controllerStopped || error is CancellationError || error as? MessagingError == .stopped {
-            return nil
-        }
+        if isAborted(error, controllerStopped: controllerStopped) { return nil }
         self.init(error)
     }
+}
+
+/// Whether `error` ended an operation that was aborted rather than failed: cancellation, or
+/// ``MatterController/stop()`` (the messenger's `MessagingError.stopped`, or `controllerStopped`
+/// once the controller has mapped it).
+fileprivate func isAborted(_ error: any Error, controllerStopped: Bool) -> Bool {
+    controllerStopped || error is CancellationError || error as? MessagingError == .stopped
 }
 
 /// `type` of `<prefix>_sessions_established_total`.
@@ -100,9 +105,7 @@ enum SessionOutcome: String, CaseIterable, Sendable {
     /// ``IMRequestOutcome/init(recording:controllerStopped:)``: after `stop()` the messenger's
     /// `MessagingError.stopped` reaches here already mapped, hence `controllerStopped`.
     init?(recording error: any Error, controllerStopped: Bool) {
-        if controllerStopped || error is CancellationError || error as? MessagingError == .stopped {
-            return nil
-        }
+        if isAborted(error, controllerStopped: controllerStopped) { return nil }
         self.init(error)
     }
 }
@@ -131,6 +134,8 @@ struct ControllerMetrics: Sendable {
     let imRequests: [IMRequestKind: [IMRequestOutcome: Counter]]
     let imRequestDuration: [IMRequestKind: Metrics.Timer]
     let sessionsEstablished: [SessionType: [SessionOutcome: Counter]]
+    /// Successful CASE establishments, handshake through registration. After an address-refresh
+    /// retry it includes the failed attempt, the re-resolve and the second handshake.
     let caseDuration: Metrics.Timer
     let subscriptionLost: [SubscriptionLossReason: Counter]
     let resubscribes: Counter
@@ -181,7 +186,8 @@ struct ControllerMetrics: Sendable {
         imRequestDuration[kind]?.record(duration: duration)
     }
 
-    /// Counts every attempt; `case_duration` records successful CASE establishments only.
+    /// Counts every attempt; `case_duration` records successful CASE establishments only
+    /// (including any address-refresh retry; see ``caseDuration``).
     func sessionEstablishment(_ type: SessionType, _ outcome: SessionOutcome, duration: Duration) {
         sessionsEstablished[type]?[outcome]?.increment()
         if type == .caseSession, outcome == .success {

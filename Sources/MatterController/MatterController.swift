@@ -1053,11 +1053,14 @@ public actor MatterController {
         }
         caseReservation = caseSessionID
         let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
-            try await self.caseHandshake(
+            let session = try await self.caseHandshake(
                 nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
             )
+            // Inside the CASE outcome, as on the operational path: established
+            // means handshake and registration.
+            try await self.messenger.registerSession(session, peerAddress: address, mrp: mrp)
+            return session
         }
-        try await messenger.registerSession(established, peerAddress: address, mrp: mrp)
         caseSession = established
         try commissioningFailureInjection?(.afterCASE)
 
@@ -1646,7 +1649,10 @@ public actor MatterController {
 
     /// Run one CASE establishment inside a `matter.case` span (child of `context`): see
     /// ``instrumentedEstablishment(_:context:nodeID:sessionID:establishedSessionID:mapError:_:)``;
-    /// on success it also records `<prefix>_case_duration`.
+    /// on success it also records `<prefix>_case_duration`. `body` covers the handshake and
+    /// the session's registration; the duration and the CASE line's `matter.latency_ms`
+    /// include any address-refresh retry (the failed attempt, the re-resolve and the second
+    /// handshake).
     private func instrumentedCASE(
         nodeID: NodeID,
         context: ServiceContext,
@@ -1868,7 +1874,6 @@ public actor MatterController {
         } catch {
             let mapped = Self.operationalError(error, nodeID: nodeID)
             if let controllerError = mapped as? ControllerError, controllerError == .peerUnreachable(nodeID) {
-                loggers.session.info("Node unreachable; invalidating its session (the request is not re-sent)", metadata: .node(nodeID))
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
                 if sessionCache.session(for: nodeID) === activeSession {
