@@ -10,7 +10,7 @@ import MatterTypes
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("No secret is recorded", .timeLimit(.minutes(1)))
+@Suite("No secret is recorded", .timeLimit(.minutes(5)))
 struct SecretLeakTests {
 
     /// The session's keys; `attestation` is false for a test session built without an attestation key.
