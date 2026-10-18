@@ -12,6 +12,9 @@ import MatterCrypto
 /// to encrypt/decrypt the exchange header + application payload.
 public enum SecureMessageCodec {
 
+    /// The codec's shared logger, for callers that pass none.
+    @usableFromInline static let defaultLogger = Logger(label: "matter.protocol.codec")
+
     // MARK: - Encode (Encrypt)
 
     /// Encode an encrypted Matter message.
@@ -24,15 +27,15 @@ public enum SecureMessageCodec {
     ///   - payload: The application payload.
     ///   - session: The secure session (must have encryption keys).
     ///   - sourceNodeID: The source node ID for nonce construction.
-    ///   - logger: Where an oversized frame is reported. The default is an injection point for
-    ///     callers that have no logger of their own; the controller messenger passes its own.
+    ///   - logger: Where an oversized frame is reported. The default is the codec's shared
+    ///     logger, used by callers that pass none; the controller messenger passes its own.
     /// - Returns: The complete encoded message (header + ciphertext + MIC).
     public static func encode(
         exchangeHeader: ExchangeHeader,
         payload: Data,
         session: SecureSession,
         sourceNodeID: NodeID,
-        logger: Logger = Logger(label: "matter.protocol.codec")
+        logger: Logger = defaultLogger
     ) throws -> Data {
         guard let encryptKey = session.encryptKey else {
             throw SecureCodecError.missingEncryptionKeys

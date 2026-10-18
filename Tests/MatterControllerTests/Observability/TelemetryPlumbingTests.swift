@@ -77,6 +77,7 @@ struct TelemetryPlumbingTests {
         #expect(entry.label == "test.codec")
         #expect(entry.level == .error)
         #expect(entry.message.contains("exceeds max UDP payload"))
+        #expect(entry.metadata[MatterLogKey.session] == "0x1")
     }
 
     @Test("Metrics are created once, named with the prefix, with bounded dimensions only")
