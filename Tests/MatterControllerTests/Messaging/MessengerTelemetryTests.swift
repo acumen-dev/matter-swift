@@ -89,7 +89,9 @@ struct MessengerTelemetryTests {
         #expect(span.events.last?.attributes.get(MatterLogKey.attempt) == .int64(1))
 
         await exchange.close()
-        #expect(telemetry.finishedSpans(named: "matter.exchange").count == 1)
+        let finished = telemetry.finishedSpans(named: "matter.exchange")
+        #expect(finished.count == 1)
+        #expect(finished.first?.status == nil, "a clean close is not an error")
         #expect(clock.quiescenceTimeouts == 0)
         await messenger.stop()
     }
@@ -196,6 +198,27 @@ struct MessengerTelemetryTests {
         #expect(duplicate.level == .trace)
         #expect(duplicate.metadata[MatterLogKey.reason] == "duplicate")
         await exchange.close()
+        await rig.messenger.stop()
+    }
+
+    @Test("A frame failing its MIC on a known session is dropped as decrypt_failed; garbage as undecodable")
+    func decryptFailed() async throws {
+        let telemetry = TestTelemetry()
+        let rig = try await makeRig(telemetry: telemetry)
+        let peer = TestPeer(link: rig.link)
+        var forged = try ScriptedPeer.secured(session: rig.peerSession, exchangeID: 0x0701, initiator: true, protocolID: .echo, opcode: echoRequest)
+        forged[forged.index(before: forged.endIndex)] ^= 0xFF                 // corrupt the MIC
+        try await peer.send(forged)
+        try await peer.send(Data([0xFF]))
+
+        let rejected = try await telemetry.logs.first { $0.metadata[MatterLogKey.reason] == "decrypt_failed" }
+        #expect(rejected.level == .debug)
+        #expect(rejected.subsystem == "messenger")
+        #expect(rejected.metadata[MatterLogKey.session] == "0xA")
+        let garbage = try await telemetry.logs.first { $0.metadata[MatterLogKey.reason] == "undecodable" }
+        #expect(garbage.message.hasPrefix("Dropping datagram"))
+        #expect(telemetry.logs.entries.filter { $0.metadata[MatterLogKey.reason] == "undecodable" }.count == 1, "the forged frame is not undecodable")
+        #expect(telemetry.counter("matter_controller_messages_total", [("direction", "in"), ("protocol", "echo")]) == 0)
         await rig.messenger.stop()
     }
 

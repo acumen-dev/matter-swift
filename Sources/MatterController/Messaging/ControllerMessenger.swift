@@ -6,6 +6,7 @@ import Logging
 import Metrics
 import Tracing
 import MatterTypes
+import MatterCrypto
 import MatterProtocol
 import MatterTransport
 
@@ -314,7 +315,7 @@ public actor ControllerMessenger {
         } catch where reliable {
             transportLogger.warning(
                 "Send on exchange \(key.exchangeID) to \(MatterLogValue.address(address)) failed; MRP will retransmit: \(error)",
-                metadata: Self.exchangeMetadata(key).merging([MatterLogKey.reason: .string(String(describing: error))]) { $1 }
+                metadata: Self.exchangeMetadata(key).merging([MatterLogKey.reason: "send_failed"]) { $1 }
             )
         }
     }
@@ -445,7 +446,17 @@ public actor ControllerMessenger {
             unsecuredDedup[sender] = dedup
         } else if messageHeader.securityFlags.sessionType == .unicast, var entry = sessions[messageHeader.sessionID] {
             // Decrypt first: a forged header must not move the counter window.
-            let decoded = try SecureMessageCodec.decode(data: data, session: entry.session)
+            let decoded: (messageHeader: MessageHeader, exchangeHeader: ExchangeHeader, payload: Data)
+            do {
+                decoded = try SecureMessageCodec.decode(data: data, session: entry.session)
+            } catch CryptoError.authenticationFailed, CryptoError.invalidCiphertext {
+                logger.debug("Dropping message on session \(messageHeader.sessionID) from \(MatterLogValue.address(sender)): decryption failed", metadata: [
+                    MatterLogKey.session: MatterLogValue.hex(messageHeader.sessionID),
+                    MatterLogKey.counter: MatterLogValue.decimal(messageHeader.messageCounter),
+                    MatterLogKey.reason: "decrypt_failed",
+                ])
+                return
+            }
             exchangeHeader = decoded.exchangeHeader
             payload = decoded.payload
             scope = .secured(localSessionID: messageHeader.sessionID)
@@ -775,7 +786,7 @@ public actor ControllerMessenger {
                 try await transport.send(item.bytes, to: item.address)
             } catch {
                 transportLogger.warning("Send failed (\(item.note)) to \(MatterLogValue.address(item.address)): \(error)", metadata: [
-                    MatterLogKey.reason: .string(String(describing: error)),
+                    MatterLogKey.reason: "send_failed",
                 ])
             }
         }
@@ -888,8 +899,10 @@ public actor ControllerMessenger {
     }
 
     /// An event on the exchange's span, if it has one.
-    func recordExchangeEvent(_ key: ExchangeKey, _ name: String, attributes: SpanAttributes = [:]) {
-        exchangeSpans[key]?.addEvent(SpanEvent(name: name, attributes: attributes))
+    /// `attributes` are built only when the exchange is traced.
+    func recordExchangeEvent(_ key: ExchangeKey, _ name: String, attributes: @autoclosure () -> SpanAttributes = [:]) {
+        guard let span = exchangeSpans[key] else { return }
+        span.addEvent(SpanEvent(name: name, attributes: attributes()))
     }
 
     /// Count one frame sent or received, and trace it: `send|receive <secured|unsecured> I= R=`.
