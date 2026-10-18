@@ -433,19 +433,19 @@ public actor ControllerSubscription {
         defer { reportSpan.end() }
         let logged = logger.logLevel <= .debug
         guard logged || reportSpan.isRecording else { return }
-        let paths = report.attributes.map(IMFormat.describe)
+        let paths = report.attributes.map(MatterLogValue.describe)
         if logged {
             let reportMetadata = metadata(id)
             logger.debug("ReportData chunk \(chunk)\(report.moreChunkedMessages ? " (more follow)" : ""): \(report.attributes.count) attribute(s), \(report.events.count) event(s) [\(paths.joined(separator: ", "))]", metadata: reportMetadata)
             if logger.logLevel <= .trace {
                 for attribute in report.attributes {
                     guard let data = attribute.attributeData else { continue }
-                    logger.trace("Report \(IMFormat.path(data.path)) = \(IMFormat.value(data.data, clusterID: data.path.clusterID))", metadata: reportMetadata)
+                    logger.trace("Report \(MatterLogValue.path(data.path)) = \(MatterLogValue.value(data.data, clusterID: data.path.clusterID))", metadata: reportMetadata)
                 }
             }
         }
         if reportSpan.isRecording {
-            reportSpan.attributes[MatterLogKey.attribute] = SpanAttribute.stringArray(paths)
+            reportSpan.attributes[MatterLogKey.paths] = SpanAttribute.stringArray(paths)
         }
     }
 }

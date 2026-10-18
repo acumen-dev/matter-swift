@@ -571,7 +571,7 @@ public actor MatterController {
         defer { span.end() }
         if span.isRecording {
             if let node { span.attributes[MatterLogKey.node] = MatterLogValue.hexString(node.rawValue) }
-            span.attributes["matter.instance"] = instance
+            span.attributes[MatterLogKey.instance] = instance
         }
         func metadata(reason: String? = nil) -> Logger.Metadata {
             var metadata = node.map { Logger.Metadata.node($0) } ?? [:]
@@ -1341,7 +1341,7 @@ public actor MatterController {
                     context: spanContext
                 )
                 let value = try IMClient.parseReadResponse(response.payload)
-                self.loggers.im.trace("IM read value: \(IMFormat.value(value, clusterID: clusterID))", metadata: operation.metadata)
+                self.loggers.im.trace("IM read value: \(MatterLogValue.value(value, clusterID: clusterID))", metadata: operation.metadata)
                 return value
             }
         }
@@ -1363,7 +1363,7 @@ public actor MatterController {
         let operation = IMOperation(kind: .write, nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, attributeID: attributeID)
         // The first non-success status the device returned, nil when every write succeeded.
         let failure: UInt8? = try await instrumented(
-            operation, context: context, request: "value \(IMFormat.value(value, clusterID: clusterID))", responseStatus: { $0 }
+            operation, context: context, request: "value \(MatterLogValue.value(value, clusterID: clusterID))", responseStatus: { $0 }
         ) { spanContext in
             try await self.withSession(nodeID: nodeID, context: spanContext) { session in
                 let response = try await self.imRequest(
@@ -1408,7 +1408,7 @@ public actor MatterController {
             kind: timedTimeout == nil ? .invoke : .timed,
             nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, commandID: commandID
         )
-        return try await instrumented(operation, context: context, request: "fields \(IMFormat.value(commandFields, clusterID: clusterID))") { spanContext in
+        return try await instrumented(operation, context: context, request: "fields \(MatterLogValue.value(commandFields, clusterID: clusterID))") { spanContext in
             try await self.withSession(nodeID: nodeID, context: spanContext) { session in
                 let payload = IMClient.invokeCommandRequest(
                     endpointID: endpointID,

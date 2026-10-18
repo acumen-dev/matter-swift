@@ -25,10 +25,13 @@ public enum MatterLogKey {
     public static let latencyMs = "matter.latency_ms"
     public static let attempt = "matter.attempt"
     public static let reason = "matter.reason"
+    public static let instance = "matter.instance"
+    public static let timed = "matter.timed"
+    public static let paths = "matter.paths"
 
     public static let all: [String] = [
         subsystem, node, session, exchange, protocolID, opcode, counter, ack, endpoint, cluster,
-        command, attribute, imStatus, subscription, latencyMs, attempt, reason,
+        command, attribute, imStatus, subscription, latencyMs, attempt, reason, instance, timed, paths,
     ]
 }
 
@@ -51,7 +54,7 @@ extension Logger {
 
 /// Formatting for `matter.*` metadata values and span attributes.
 public enum MatterLogValue {
-    /// ``MatterHex/string(_:)``: `0x` plus upper-case hex, no padding.
+    /// `0x` plus upper-case hex, no padding: `0xA`, `0x102`.
     public static func hexString<T: BinaryInteger>(_ value: T) -> String {
         MatterHex.string(value)
     }
@@ -78,5 +81,42 @@ public enum MatterLogValue {
     public static func address(_ address: MatterAddress) -> String {
         let host = MatterAddress.strippingBrackets(address.host)
         return host.contains(":") ? "[\(host)]:\(address.port)" : "\(host):\(address.port)"
+    }
+}
+
+// MARK: - Interaction Model values
+
+extension MatterLogValue {
+    /// Clusters whose command fields or attribute values can carry secrets: Administrator
+    /// Commissioning (PAKE verifier, salt), Operational Credentials (IPK in AddNOC), Group Key
+    /// Management (epoch keys). Their values are never rendered.
+    public static let sensitiveClusters: Set<UInt32> = [0x003C, 0x003E, 0x003F]
+
+    /// A decoded TLV value (command fields, an attribute value) as text; `none` for no value.
+    /// Fails closed: `<redacted>` for a cluster in ``sensitiveClusters``, and for an unknown
+    /// one (a wildcard path) that could be one.
+    ///
+    /// The renderer for IM values in `matter.*` log lines and spans, including a consumer's own.
+    public static func value(_ value: TLVElement?, clusterID: ClusterID?) -> String {
+        guard let clusterID, !sensitiveClusters.contains(clusterID.rawValue) else { return "<redacted>" }
+        guard let value else { return "none" }
+        return String(describing: value)
+    }
+
+    /// `endpoint/cluster/attribute` in hex, `*` for a wildcard.
+    public static func path(_ path: AttributePath) -> String {
+        let endpoint = path.endpointID.map { hexString($0.rawValue) } ?? "*"
+        let cluster = path.clusterID.map { hexString($0.rawValue) } ?? "*"
+        let attribute = path.attributeID.map { hexString($0.rawValue) } ?? "*"
+        return "\(endpoint)/\(cluster)/\(attribute)"
+    }
+
+    /// A report entry's path, with its status when the device sent one instead of data.
+    public static func describe(_ report: AttributeReportIB) -> String {
+        if let data = report.attributeData { return path(data.path) }
+        if let status = report.attributeStatus {
+            return "\(path(status.path)) status \(hexString(status.status.status))"
+        }
+        return "?"
     }
 }

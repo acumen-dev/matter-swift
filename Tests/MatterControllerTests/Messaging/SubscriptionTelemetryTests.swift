@@ -105,7 +105,7 @@ struct SubscriptionTelemetryTests {
         #expect(telemetry.tracer.activeSpans.allSatisfy { $0.operationName == "test.parent" }, "no long-lived span")
         let reportSpans = telemetry.finishedSpans(named: "matter.report")
         #expect(reportSpans.count == 2)
-        #expect(reportSpans.first?.attributes.get(MatterLogKey.attribute) == .stringArray(["0x1/0x6/0x0"]))
+        #expect(reportSpans.first?.attributes.get(MatterLogKey.paths) == .stringArray(["0x1/0x6/0x0"]))
         #expect(reportSpans.first?.attributes.get(MatterLogKey.subscription) == .string("0x7"))
         #expect(reportSpans.first?.attributes.get(MatterLogKey.node) == .string("0x42"))
         for span in reportSpans {
@@ -229,7 +229,7 @@ struct SubscriptionTelemetryTests {
         try await started.value
 
         #expect(telemetry.logs.entries.contains { $0.level == .trace && $0.message == "Report 0x0/0x3E/0x1 = <redacted>" })
-        #expect(telemetry.finishedSpans(named: "matter.report").first?.attributes.get(MatterLogKey.attribute) == .stringArray(["0x0/0x3E/0x1"]))
+        #expect(telemetry.finishedSpans(named: "matter.report").first?.attributes.get(MatterLogKey.paths) == .stringArray(["0x0/0x3E/0x1"]))
         let forms = SecretForms.of(secretBytes) + [String(describing: secret)]
         let leaked = telemetry.allRecordedText().filter { text in forms.contains { text.contains($0) } }
         #expect(leaked.isEmpty)

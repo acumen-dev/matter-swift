@@ -39,6 +39,10 @@ struct DiscoveryTelemetryTests {
         #expect(result.message.hasPrefix("mDNS resolve result: 10.0.0.2:5540"))
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.resolve").first)
         #expect(span.attributes.get(MatterLogKey.node) == .string("0x42"))
+        let instance = OperationalInstanceName(
+            compressedFabricID: await rig.controller.compressedFabricIDForTesting, nodeID: rig.node.rawValue
+        ).instanceName
+        #expect(span.attributes.get(MatterLogKey.instance) == .string(instance))
         #expect(span.status?.code != .error)
         await rig.controller.stop()
     }

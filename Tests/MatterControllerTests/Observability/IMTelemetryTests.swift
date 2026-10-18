@@ -167,7 +167,7 @@ struct IMTelemetryTests {
         #expect(rig.telemetry.logs.entries.contains { $0.message == "Timed request accepted" })
         #expect(rig.telemetry.counter("matter_im_requests_total", [("kind", "timed"), ("outcome", "success")]) == 1)
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.im.invoke").first)
-        #expect(span.attributes.get("matter.timed") == .bool(true))
+        #expect(span.attributes.get(MatterLogKey.timed) == .bool(true))
         await rig.controller.stop()
     }
 
@@ -286,28 +286,28 @@ struct IMTelemetryTests {
         await rig.controller.stop()
     }
 
-    @Test("IMFormat redacts the three sensitive clusters and renders paths in hex")
+    @Test("MatterLogValue redacts the three sensitive clusters and renders paths in hex")
     func formatting() {
         let value: TLVElement = .unsignedInt(7)
         for cluster: UInt32 in [0x003C, 0x003E, 0x003F] {
-            #expect(IMFormat.value(value, clusterID: ClusterID(rawValue: cluster)) == "<redacted>")
-            #expect(IMFormat.value(nil, clusterID: ClusterID(rawValue: cluster)) == "<redacted>")
+            #expect(MatterLogValue.value(value, clusterID: ClusterID(rawValue: cluster)) == "<redacted>")
+            #expect(MatterLogValue.value(nil, clusterID: ClusterID(rawValue: cluster)) == "<redacted>")
         }
-        #expect(IMFormat.value(value, clusterID: ClusterID(rawValue: 0x0006)) == "unsignedInt(7)")
-        #expect(IMFormat.value(nil, clusterID: ClusterID(rawValue: 0x0006)) == "none")
+        #expect(MatterLogValue.value(value, clusterID: ClusterID(rawValue: 0x0006)) == "unsignedInt(7)")
+        #expect(MatterLogValue.value(nil, clusterID: ClusterID(rawValue: 0x0006)) == "none")
 
         let path = AttributePath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0102), attributeID: AttributeID(rawValue: 0x1A))
-        #expect(IMFormat.path(path) == "0x1/0x102/0x1A")
-        #expect(IMFormat.path(AttributePath(endpointID: nil, clusterID: ClusterID(rawValue: 6), attributeID: nil)) == "*/0x6/*")
-        #expect(IMFormat.describe(AttributeReportIB(attributeData: AttributeDataIB(path: path, data: value))) == "0x1/0x102/0x1A")
-        #expect(IMFormat.describe(AttributeReportIB(attributeStatus: AttributeStatusIB(path: path, status: StatusIB(status: 0x86))))
+        #expect(MatterLogValue.path(path) == "0x1/0x102/0x1A")
+        #expect(MatterLogValue.path(AttributePath(endpointID: nil, clusterID: ClusterID(rawValue: 6), attributeID: nil)) == "*/0x6/*")
+        #expect(MatterLogValue.describe(AttributeReportIB(attributeData: AttributeDataIB(path: path, data: value))) == "0x1/0x102/0x1A")
+        #expect(MatterLogValue.describe(AttributeReportIB(attributeStatus: AttributeStatusIB(path: path, status: StatusIB(status: 0x86))))
                 == "0x1/0x102/0x1A status 0x86")
     }
 
-    @Test("IMFormat fails closed: a value with no cluster (a wildcard path) is redacted")
+    @Test("MatterLogValue fails closed: a value with no cluster (a wildcard path) is redacted")
     func formattingFailsClosed() {
-        #expect(IMFormat.value(.unsignedInt(7), clusterID: nil) == "<redacted>")
-        #expect(IMFormat.value(nil, clusterID: nil) == "<redacted>")
+        #expect(MatterLogValue.value(.unsignedInt(7), clusterID: nil) == "<redacted>")
+        #expect(MatterLogValue.value(nil, clusterID: nil) == "<redacted>")
     }
 
     // MARK: - Outcomes
