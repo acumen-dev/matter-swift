@@ -1276,9 +1276,9 @@ public actor MatterController {
         context: ServiceContext = .current ?? .topLevel
     ) async throws -> Bool {
         let operation = IMOperation(kind: .write, nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, attributeID: attributeID)
-        // `false` is the device refusing the write: counted as im_status.
-        return try await instrumented(
-            operation, context: context, request: "value \(IMFormat.value(value, clusterID: clusterID))", succeeded: { $0 }
+        // The first non-success status the device returned, nil when every write succeeded.
+        let failure: UInt8? = try await instrumented(
+            operation, context: context, request: "value \(IMFormat.value(value, clusterID: clusterID))", responseStatus: { $0 }
         ) { spanContext in
             try await self.withSession(nodeID: nodeID, context: spanContext) { session in
                 let response = try await self.imRequest(
@@ -1292,9 +1292,10 @@ public actor MatterController {
                     ),
                     context: spanContext
                 )
-                return try IMClient.parseWriteResponse(response.payload)
+                return try IMClient.firstWriteFailure(response.payload)
             }
         }
+        return failure == nil
     }
 
     /// Invoke a command on a commissioned device.
@@ -1784,15 +1785,16 @@ public actor MatterController {
     /// Run one public IM call inside its `matter.im.<kind>` span (child of
     /// `context`), with its debug request and response lines,
     /// `<prefix>_im_requests_total{kind,outcome}` and
-    /// `<prefix>_im_request_duration{kind}`. `succeeded` judges a result that
-    /// did not throw (a write the device refused returns `false`). A call
-    /// cancelled or ended by ``stop()`` gets its response line but is neither
-    /// counted nor timed, and its span ends without error status.
+    /// `<prefix>_im_request_duration{kind}`. `responseStatus` reads a
+    /// non-success status from a result that does not throw (a write's
+    /// per-attribute status). A call cancelled or ended by ``stop()`` gets its
+    /// response line but is neither counted nor timed, and its span ends
+    /// without error status.
     private func instrumented<T: Sendable>(
         _ operation: IMOperation,
         context: ServiceContext,
         request detail: @autoclosure () -> String,
-        succeeded: (T) -> Bool = { _ in true },
+        responseStatus: (T) -> UInt8? = { _ in nil },
         _ body: (ServiceContext) async throws -> T
     ) async throws -> T {
         let span = telemetry.tracer.startSpan(operation.spanName, context: context, ofKind: .client)
@@ -1802,34 +1804,30 @@ public actor MatterController {
         loggers.im.debug("IM \(operation.kind.rawValue) request: \(detail())", metadata: operation.metadata)
         do {
             let result = try await body(span.context)
-            let elapsed = messenger.clock.now - started
-            if succeeded(result) {
-                finishIM(operation, span: span, outcome: .success, status: IMStatusResponse.success.status, elapsed: elapsed)
-            } else {
-                finishIM(operation, span: span, outcome: .imStatus, status: nil, elapsed: elapsed)
-            }
+            let status = responseStatus(result) ?? IMStatusResponse.success.status
+            finishIM(
+                operation, span: span,
+                outcome: status == IMStatusResponse.success.status ? .success : .imStatus,
+                status: status, elapsed: messenger.clock.now - started
+            )
             return result
         } catch {
-            let elapsed = messenger.clock.now - started
-            if let outcome = IMRequestOutcome(recording: error, controllerStopped: stopped) {
-                finishIM(operation, span: span, outcome: outcome, status: Self.imStatus(of: error), elapsed: elapsed, error: error)
-            } else {
-                let aborted = stopped ? "stopped" : "cancelled"
-                loggers.im.debug(
-                    "IM \(operation.kind.rawValue) response: \(aborted) in \(MatterLogValue.milliseconds(elapsed)) ms",
-                    metadata: operation.responseMetadata(elapsed: elapsed, imStatus: nil)
-                )
-            }
+            finishIM(
+                operation, span: span,
+                outcome: IMRequestOutcome(recording: error, controllerStopped: stopped),
+                status: Self.imStatus(of: error), elapsed: messenger.clock.now - started, error: error
+            )
             throw error
         }
     }
 
-    /// The response line, metric and span status of a call that completed
-    /// or failed (not one that was aborted).
+    /// The response line, metric and span status of a call. A nil `outcome`
+    /// is an aborted call (cancelled, or ended by ``stop()``): its line reads
+    /// `cancelled` or `stopped`, and it records no metric and no span error.
     private func finishIM(
         _ operation: IMOperation,
         span: any Span,
-        outcome: IMRequestOutcome,
+        outcome: IMRequestOutcome?,
         status: UInt8?,
         elapsed: Duration,
         error: (any Error)? = nil
@@ -1837,10 +1835,12 @@ public actor MatterController {
         if let status, span.isRecording {
             span.attributes[MatterLogKey.imStatus] = MatterLogValue.hexString(status)
         }
+        let stopped = self.stopped
         loggers.im.debug(
-            "IM \(operation.kind.rawValue) response: \(outcome.rawValue) in \(MatterLogValue.milliseconds(elapsed)) ms\(error.map { ": \($0)" } ?? "")",
+            "IM \(operation.kind.rawValue) response: \(outcome?.rawValue ?? (stopped ? "stopped" : "cancelled")) in \(MatterLogValue.milliseconds(elapsed)) ms\(error.map { ": \($0)" } ?? "")",
             metadata: operation.responseMetadata(elapsed: elapsed, imStatus: status)
         )
+        guard let outcome else { return }
         telemetry.metrics.imRequest(operation.kind, outcome, duration: elapsed)
         if outcome != .success {
             if let error { span.recordError(error) }

@@ -5,6 +5,7 @@ import Foundation
 import Logging
 import Metrics
 import Tracing
+import MatterTypes
 import MatterProtocol
 
 // MARK: - Bounded dimensions
@@ -198,6 +199,15 @@ struct ControllerTelemetry: Sendable {
             factory: configuration.metricsFactory ?? MetricsSystem.factory
         )
         tracer = configuration.tracer ?? InstrumentationSystem.tracer
+    }
+}
+
+// MARK: - Log metadata
+
+extension Logger.Metadata {
+    /// `matter.node` of a line about one node.
+    static func node(_ nodeID: NodeID) -> Logger.Metadata {
+        [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)]
     }
 }
 

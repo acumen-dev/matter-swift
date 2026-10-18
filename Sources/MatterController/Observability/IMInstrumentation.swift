@@ -7,15 +7,6 @@ import Tracing
 import MatterTypes
 import MatterProtocol
 
-// MARK: - Node metadata
-
-extension Logger.Metadata {
-    /// `matter.node` of a line about one node.
-    static func node(_ nodeID: NodeID) -> Logger.Metadata {
-        [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)]
-    }
-}
-
 // MARK: - IM operation
 
 /// What one public IM call addresses: the metric `kind`, its span name and its log/span fields.

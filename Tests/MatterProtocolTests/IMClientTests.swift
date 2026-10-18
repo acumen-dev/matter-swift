@@ -96,6 +96,13 @@ struct IMClientWriteResponseTests {
         #expect(try IMClient.parseWriteResponse(data) == false)
     }
 
+    @Test("firstWriteFailure returns the first non-success status, nil when all succeed")
+    func firstWriteFailure() throws {
+        #expect(try IMClient.firstWriteFailure(encode([StatusIB(status: 0), StatusIB(status: 0, clusterStatus: 3)])) == nil)
+        #expect(try IMClient.firstWriteFailure(encode([StatusIB(status: 0), StatusIB(status: 0x87)])) == 0x87)
+        #expect(try IMClient.firstWriteFailure(encode([StatusIB(status: 0x88), StatusIB(status: 0x87)])) == 0x88)
+    }
+
     // A real device refuses a write conditional on a stale data version
     // (connectedhomeip: "Write Version mismatch" → DataVersionMismatch), so
     // writes carry no DataVersion unless the caller asks for one.

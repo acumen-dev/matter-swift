@@ -171,6 +171,36 @@ struct IMTelemetryTests {
         await rig.controller.stop()
     }
 
+    @Test("A command the device refuses with a CommandStatusIB carries its IM status on the line and span")
+    func commandRefusal() async throws {
+        let rig = try await makeControllerRig()
+        var peer = TestPeer(link: rig.link)
+        var seen = Set<UInt32>()
+        let endpoint = endpoint, cluster = windowCovering, command = goToLift
+        let call = Task {
+            try await rig.controller.invokeCommand(nodeID: rig.node, endpointID: endpoint, clusterID: cluster, commandID: command)
+        }
+        let request = try await nextNewFrame(&peer, session: rig.peerSession, seen: &seen)
+        let commandPath = CommandPath(endpointID: endpoint, clusterID: cluster, commandID: command)
+        try await peer.send(ScriptedPeer.securedReply(
+            to: request, session: rig.peerSession, protocolID: .interactionModel,
+            opcode: InteractionModelOpcode.invokeResponse.rawValue,
+            payload: InvokeResponse(invokeResponses: [InvokeResponseIB(status: CommandStatusIB(
+                commandPath: commandPath, status: StatusIB(status: 0x81)
+            ))]).tlvEncode()
+        ))
+        await #expect(throws: IMError.commandStatus(path: commandPath, status: 0x81, clusterStatus: nil)) { _ = try await call.value }
+
+        let responseLine = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("IM invoke response") })
+        #expect(responseLine.message.hasPrefix("IM invoke response: im_status in "))
+        #expect(responseLine.metadata[MatterLogKey.imStatus] == "0x81")
+        let span = try #require(rig.telemetry.finishedSpans(named: "matter.im.invoke").first)
+        #expect(span.attributes.get(MatterLogKey.imStatus) == .string("0x81"))
+        #expect(span.status?.code == .error)
+        #expect(rig.telemetry.counter("matter_im_requests_total", [("kind", "invoke"), ("outcome", "im_status")]) == 1)
+        await rig.controller.stop()
+    }
+
     // MARK: - Redaction
 
     @Test("Command fields of a sensitive cluster are redacted everywhere")
@@ -247,8 +277,12 @@ struct IMTelemetryTests {
             #expect(!text.contains { $0.contains(rendering) }, "\(rendering) appears in a log line or span")
         }
         #expect(rig.telemetry.counter("matter_im_requests_total", [("kind", "write"), ("outcome", "im_status")]) == 1)
+        let writeLine = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("IM write response") })
+        #expect(writeLine.message.hasPrefix("IM write response: im_status in "))
+        #expect(writeLine.metadata[MatterLogKey.imStatus] == "0x88")
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.im.write").first)
         #expect(span.status?.code == .error)
+        #expect(span.attributes.get(MatterLogKey.imStatus) == .string("0x88"))
         await rig.controller.stop()
     }
 
@@ -324,7 +358,8 @@ struct IMTelemetryTests {
         expectNoIMMetrics(rig.telemetry, kind: .invoke)
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.im.invoke").first)
         #expect(span.status?.code != .error)
-        #expect(rig.telemetry.logs.entries.contains { $0.message.hasPrefix("IM invoke response: cancelled in ") })
+        let line = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("IM invoke response: cancelled in ") })
+        #expect(line.message.hasSuffix(": CancellationError()"), "the aborted line keeps the error")
         await rig.controller.stop()
     }
 
@@ -344,6 +379,7 @@ struct IMTelemetryTests {
         expectNoIMMetrics(rig.telemetry, kind: .invoke)
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.im.invoke").first)
         #expect(span.status?.code != .error)
-        #expect(rig.telemetry.logs.entries.contains { $0.message.hasPrefix("IM invoke response: stopped in ") })
+        let line = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("IM invoke response: stopped in ") })
+        #expect(line.message.hasSuffix(": transportError(\"stopped\")"), "the aborted line keeps the error")
     }
 }
