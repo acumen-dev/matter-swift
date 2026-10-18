@@ -300,9 +300,9 @@ As a rule, info is lifecycle, debug is per interaction and trace is per message.
 
 | Level | What |
 |---|---|
-| info | CASE / PASE session established or failed (latency, outcome); commissioning started, complete, failed; device attestation verified; session invalidated (why); session peer address changed; controller restored from persisted state; subscription established, lost or closed (reason); re-subscribing (attempt, backoff); operational address changed (old, new); CASE retry at a re-resolved address; peer unreachable (transmissions) |
+| info | CASE / PASE session established or failed (latency, outcome); commissioning started, complete, failed; device attestation verified; session invalidated (why); session peer address changed; controller restored from persisted state; subscription established, lost or closed (reason); re-subscribing (attempt, backoff); operational address changed (old, new); CASE retry at a re-resolved address; peer unreachable (transmissions); a final message on a closed exchange that went unacknowledged |
 | notice, warning, error | Unusual conditions, for example: a commissionable instance skipped, attestation failed and continuing on the caller's approval, an operational re-resolve failed (notice); a failed state save, commissioning failed and the fail-safe could not be disarmed, a transport send failure, a full inbound queue, "Cannot encode standalone ack", a subscription report that could not be decoded, recorded or answered, a chunk carrying a wrong subscription ID, a broken chunk chain (warning); the transport receive stream ending under a running messenger, and an encrypted frame larger than the UDP payload limit, reported by `SecureMessageCodec` through the messenger's `transport` logger (error) |
-| debug | IM invoke / read / write request and response (status, latency, and the decoded command fields or written value); timed-request steps; subscribe request, response and refusal; each ReportData chunk; mDNS resolve start / result / failure; exchange response timeout; undecodable and undecryptable datagrams; establishments and IM calls that were cancelled or stopped |
+| debug | IM invoke / read / write request and response (status, latency, and the decoded command fields or written value); timed-request steps; subscribe request, response and refusal; each ReportData chunk; mDNS resolve start / result / failure; exchange response timeout; an unsolicited message with no handler; undecodable and undecryptable datagrams; establishments and IM calls that were cancelled or stopped |
 | trace | Every frame sent and received (session, exchange, protocol, opcode, counter, ack); MRP retransmit, ack received, standalone ack; dropped duplicate, out-of-window, stale-exchange and unknown-session frames; attribute values in reports and reads; liveness deadline recomputation |
 
 #### Metadata keys
@@ -312,7 +312,7 @@ The keys are public constants in `MatterLogKey`; spans use the same names for th
 | Key | Value |
 |---|---|
 | `matter.subsystem` | One of the ten subsystems above |
-| `matter.node` | Node ID, hex |
+| `matter.node` | Node ID, hex. Frame lines carry it on an operational session, not on a PASE one |
 | `matter.session` | Local session ID, hex; the literal `unsecured` for an unsecured scope |
 | `matter.exchange` | Exchange ID, hex |
 | `matter.protocol` | Protocol ID, hex |
@@ -322,22 +322,26 @@ The keys are public constants in `MatterLogKey`; spans use the same names for th
 | `matter.endpoint`, `matter.cluster`, `matter.command`, `matter.attribute` | Path components, hex |
 | `matter.im_status` | IM status code, hex |
 | `matter.subscription` | Subscription ID, hex |
-| `matter.latency_ms` | Whole milliseconds (truncated), integer |
+| `matter.latency_ms` | Whole milliseconds (truncated), as a decimal string |
 | `matter.attempt` | Retransmit, re-subscribe or transmission count, decimal |
 | `matter.reason` | Why a frame was dropped, a session ended or a subscription was lost (see below) |
+| `matter.instance` | mDNS instance name (span attribute of `matter.resolve`) |
+| `matter.timed` | `true` on a timed invoke's `matter.im.invoke` span |
+| `matter.paths` | The `endpoint/cluster/attribute` paths of a report (span attribute of `matter.report`) |
 
-Ids are `0x` plus upper-case hex with no padding (session `0xA`, cluster `0x102`). Counters, acks and attempts are decimal.
+Ids are `0x` plus upper-case hex with no padding (session `0xA`, cluster `0x102`). Counters, acks and attempts are decimal. Every metadata value is a string, numbers included.
 
 #### Reasons
 
-`matter.reason` is bounded where it matters for filtering:
+`matter.reason` is a closed vocabulary; it is safe to filter and group on:
 
-- Messenger drops and failures: `duplicate`, `out_of_window`, `unknown_session`, `stale_exchange`, `undecodable`, `decrypt_failed`, `queue_full`, `send_failed` (a failed send of a message MRP tracks is retransmitted; a failed send of a standalone ack is not).
+- Messenger drops and failures: `duplicate`, `out_of_window`, `unknown_session`, `stale_exchange`, `undecodable`, `decrypt_failed`, `queue_full`, `send_failed` (a failed send of a message MRP tracks is retransmitted; a failed send of a standalone ack is not), `no_handler` (an unsolicited message nothing handles: acknowledged and closed).
+- Session invalidation: `caller_request` (`invalidateSession(for:)`), `device_removed`, `peer_unreachable`, `dead_session` (a subscription could not be established on it). The line's message gives the same reason as a phrase.
 - Subscription end: `liveness` (no report within the negotiated maximum interval plus the liveness margin), `resubscribe_failed`, `session` (the session it ran on is gone, or its record was removed), `closed` (cancelled by its owner, including `stop()` and `removeDevice`).
 - CASE / PASE: the outcome of a failed establishment (`refused`, `timeout`, `unreachable`, `error`), or `cancelled` / `stopped` on the debug line of an aborted one.
-- mDNS resolve: `aborted` on the debug line of a cancelled or stopped resolve.
+- mDNS resolve: `timeout` (the resolve outlived its bound), `failed` (any other error; its text is in the message only), or `aborted` on the debug line of a cancelled or stopped resolve.
 
-Two kinds of reason are not a closed vocabulary, so do not use them as a label. A session invalidation reports why in fixed phrases (`requested by the caller`, `device removed`, `peer unreachable`, `subscription establishment failed on a dead session`). A failed mDNS resolve's reason may carry the error's text. The `SubscriptionEvent.lost` text is unchanged and is separate from `matter.reason`.
+The `SubscriptionEvent.lost` text is unchanged and is separate from `matter.reason`.
 
 ### Metrics
 
@@ -354,7 +358,7 @@ Metrics use swift-metrics. Every label is `<prefix>_<name>`; the prefix is `metr
 | `matter_sessions_established_total` | counter | `type` (`case`, `pase`), `outcome` (`success`, `refused`, `timeout`, `unreachable`, `error`) |
 | `matter_case_duration` | timer | none |
 | `matter_subscription_lost_total` | counter | `reason` (`liveness`, `resubscribe_failed`, `session`, `closed`) |
-| `matter_resubscribes_total` | counter | none |
+| `matter_resubscribes_total` | counter | none. Counts re-subscribe attempts, successful or not |
 | `matter_report_interval` | timer | none |
 
 What the durations cover:
@@ -383,11 +387,11 @@ try await withSpan("apply cover target") { span in
 | Span | Notes |
 |---|---|
 | `matter.im.invoke`, `matter.im.read`, `matter.im.write` | One per public IM call. A timed invoke is a `matter.im.invoke` span with `matter.timed` set |
-| `matter.exchange` | Child of the span that opened it: `matter.case` or `matter.pase` for handshake exchanges, `matter.subscribe` for subscribe exchanges, the IM span for IM calls. Events: `send`, `retransmit` (with `matter.attempt`), `ack` (with `matter.ack`); both are integers. Error status on give-up, response timeout or session closed |
+| `matter.exchange` | Child of the span that opened it: `matter.case` or `matter.pase` for handshake exchanges, `matter.subscribe` for subscribe exchanges, the IM span for IM calls. Events: `send` (with `matter.counter`), `retransmit` (with `matter.attempt`), `ack` (with `matter.ack`); all three values are integers. A span the tracer does not record is ended at once and gets no events. Error status on give-up, response timeout or session closed |
 | `matter.case`, `matter.pase` | Session establishment; `matter.case` parents the address-refresh `matter.resolve` |
 | `matter.resolve` | An mDNS resolve, with `matter.instance`. Only `findCommissionable`, `discoverDevice(nodeID:)` and the CASE address-refresh are instrumented (span and `mDNS resolve` debug lines). The public `resolve(_:)` on a browse record has neither. `findCommissionable` and `discoverDevice` parent it on the task's current context |
 | `matter.subscribe` | One establishment round (initial or re-subscribe), child of the caller's context |
-| `matter.report` | One per ReportData chunk, a root span linked to the round's `matter.subscribe` span; `matter.attribute` is an array of `endpoint/cluster/attribute` path strings |
+| `matter.report` | One per ReportData chunk, a root span linked to the round's `matter.subscribe` span; `matter.paths` is an array of `endpoint/cluster/attribute` path strings |
 | `matter.subscription.lost` | One per loss or close, a root span linked to the round's `matter.subscribe` span, with `matter.reason`. Error status for a loss, none for a close |
 
 There is no long-lived subscription span. A subscription can live for days, and a trace that long cannot be exported, sampled or viewed, so each report and loss is its own short root trace that links back to the `matter.subscribe` span that established the subscription.
@@ -408,7 +412,8 @@ These never appear in a log message, metadata value, span attribute or span even
   - MatterCrypto: `SessionKeys`, `FabricInfo`, `ResumptionTicket`, `ResumptionTicketStore`, `DeviceAttestationCredentials`, `CASESession.InitiatorContext` and `.ResponderContext`, `Spake2pProverContext`, `Spake2pVerifierContext`, `Spake2pVerifier`.
   - MatterTypes: `SetupCode`, `StoredFabric`, `StoredControllerIdentity`.
 - The internal IM request path never logs payloads. Only the public IM API logs decoded command fields and values.
-- Fields and values of clusters 0x003C (Administrator Commissioning), 0x003E (Operational Credentials) and 0x003F (Group Key Management) are always `<redacted>`. The redaction fails closed: a path whose cluster is unknown, such as a wildcard, is redacted too.
+- Fields and values of the clusters in `MatterLogValue.sensitiveClusters` are always `<redacted>`: 0x0031 (Network Commissioning), 0x003C (Administrator Commissioning), 0x003E (Operational Credentials), 0x003F (Group Key Management), 0x0046 (ICD Management), 0x0101 (Door Lock), 0x0452 (Thread Border Router Management), 0x0453 (Thread Network Directory) and 0x050E (Account Login). The redaction fails closed: a path whose cluster is unknown, such as a wildcard, is redacted too.
+- `MatterLogValue.value(_:clusterID:)`, `MatterLogValue.path(_:)` and `MatterLogValue.describe(_:)` are the controller's own renderers for IM values, paths and report entries. A consumer that logs IM values under `matter.*` keys, or in its own lines, should render them with these, so they are redacted by the same rule.
 - TLV values elsewhere are rendered with `String(describing:)`, which is module-qualified, so debug lines that carry values are noisy.
 
 ### Limits
