@@ -218,8 +218,10 @@ public actor ControllerSubscription {
     /// (`id`, else the linked subscription's).
     private func startLinkedSpan(_ name: String, ofKind kind: SpanKind, id: SubscriptionID?) -> any Span {
         let span = telemetry.tracer.startSpan(name, context: .topLevel, ofKind: kind)
-        if let link = subscribeLink { span.addLink(SpanLink(context: link.context, attributes: [:])) }
-        if span.isRecording { annotate(span, id: id ?? subscribeLink?.id) }
+        if span.isRecording {
+            if let link = subscribeLink { span.addLink(SpanLink(context: link.context, attributes: [:])) }
+            annotate(span, id: id ?? subscribeLink?.id)
+        }
         return span
     }
 

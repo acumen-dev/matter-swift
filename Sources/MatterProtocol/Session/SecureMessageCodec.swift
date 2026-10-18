@@ -37,6 +37,21 @@ public enum SecureMessageCodec {
         sourceNodeID: NodeID,
         logger: Logger = defaultLogger
     ) throws -> Data {
+        try encodeCounted(
+            exchangeHeader: exchangeHeader, payload: payload, session: session,
+            sourceNodeID: sourceNodeID, logger: logger
+        ).message
+    }
+
+    /// As ``encode(exchangeHeader:payload:session:sourceNodeID:logger:)``, also returning the
+    /// message counter the frame was given, so a caller need not decode its header for it.
+    package static func encodeCounted(
+        exchangeHeader: ExchangeHeader,
+        payload: Data,
+        session: SecureSession,
+        sourceNodeID: NodeID,
+        logger: Logger = defaultLogger
+    ) throws -> (message: Data, counter: UInt32) {
         guard let encryptKey = session.encryptKey else {
             throw SecureCodecError.missingEncryptionKeys
         }
@@ -94,7 +109,7 @@ public enum SecureMessageCodec {
             ])
         }
 
-        return result
+        return (result, counter)
     }
 
     // MARK: - Decode (Decrypt)

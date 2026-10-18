@@ -59,6 +59,101 @@ struct MessengerTelemetryTests {
         await rig.messenger.stop()
     }
 
+    @Test("Frame lines on a secure session carry its peer's matter.node; a PASE peer's unspecified node is left out")
+    func framesCarryNode() async throws {
+        let telemetry = TestTelemetry()
+        let rig = try await makeRig(telemetry: telemetry)
+        var peer = TestPeer(link: rig.link)
+        let (operational, operationalPeer) = ScriptedPeer.mirroredSessions(
+            controllerSessionID: 30, peerSessionID: 40, peerNodeID: NodeID(rawValue: 0x42)
+        )
+        try await rig.messenger.registerSession(operational, peerAddress: rig.link.b.address)
+
+        for (sessionID, session) in [(UInt16(30), operationalPeer), (UInt16(10), rig.peerSession)] {
+            let exchange = try await rig.messenger.openExchange(sessionID: sessionID)
+            try await exchange.send(protocolID: .echo, opcode: echoRequest, payload: Data([1]))
+            _ = try await peer.nextSecured(session: session)
+            await exchange.close()
+        }
+
+        let sends = telemetry.logs.entries.filter { $0.message.hasPrefix("send secured") }
+        let operationalSend = try #require(sends.first { $0.metadata[MatterLogKey.session] == "0x1E" })
+        #expect(operationalSend.metadata[MatterLogKey.node] == "0x42")
+        let paseSend = try #require(sends.first { $0.metadata[MatterLogKey.session] == "0xA" })
+        #expect(paseSend.metadata[MatterLogKey.node] == nil)
+        await rig.messenger.stop()
+    }
+
+    @Test("An unsolicited message with no handler is logged with matter.reason no_handler")
+    func noHandlerReason() async throws {
+        let telemetry = TestTelemetry()
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: ManualClock(), telemetry: telemetry)
+        var peer = TestPeer(link: link)
+        await messenger.start()
+        try await peer.send(ScriptedPeer.unsecured(exchangeID: 0x4242, initiator: true, protocolID: .echo, opcode: echoRequest, counter: 500))
+        #expect(try await peer.next().isStandaloneAck)
+
+        let line = try await telemetry.logs.first { $0.message.hasPrefix("No handler for unsolicited") }
+        #expect(line.level == .debug)
+        #expect(line.metadata[MatterLogKey.reason] == "no_handler")
+        #expect(line.metadata[MatterLogKey.session] == "unsecured")
+        await messenger.stop()
+    }
+
+    @Test("An exchange span that is not recording is ended at once and never kept")
+    func unrecordedExchangeSpanNotKept() async throws {
+        let tracer = CountingTracer()
+        let link = FaultInjectingLink(seed: 1)
+        var configuration = ControllerMessenger.Configuration()
+        configuration.mrp = MRPConfig(peer: testPeerParameters, maxRetransmissions: 4)
+        configuration.tracer = tracer
+        let messenger = ControllerMessenger(
+            transport: link.a, localNodeID: NodeID(rawValue: 1), configuration: configuration,
+            clock: ManualClock(), jitterSource: { 0 }
+        )
+        var peer = TestPeer(link: link)
+        let exchange = await messenger.openExchange(peer: link.b.address, context: .topLevel)
+        try await exchange.send(protocolID: .echo, opcode: echoRequest, payload: Data([1]))
+        _ = try await peer.next()
+
+        #expect(tracer.started.value == 1)
+        #expect(tracer.ended.value == 1, "ended at once")
+        #expect(await messenger.exchangeSpans.isEmpty)
+        await exchange.close()
+        await messenger.stop()
+    }
+
+    @Test("A final message on a closed exchange that goes unacknowledged is a give-up at info")
+    func closedExchangeGiveUp() async throws {
+        let telemetry = TestTelemetry()
+        let clock = ManualClock()
+        let origin = clock.now
+        let link = FaultInjectingLink(seed: 1)
+        let messenger = makeMessenger(link: link, clock: clock, telemetry: telemetry)
+        link.setDropProbability(1, from: .a)
+        let exchange = await messenger.openExchange(peer: link.b.address)
+        try await exchange.send(protocolID: .echo, opcode: echoRequest, payload: Data())
+        await exchange.close()
+
+        var previous = origin
+        for deadline in [550.0, 1430.0, 2838.0, 5090.8] {
+            let instant = origin + .microseconds(Int64(deadline * 1000))
+            #expect(await clock.waitForSleeper(until: instant))
+            await clock.advance(by: instant - previous)
+            previous = instant
+        }
+        let exhaustion = origin + .nanoseconds(8_695_280_000)
+        #expect(await clock.waitForSleeper(until: exhaustion))
+        await clock.advance(by: exhaustion - previous)
+
+        let line = try await telemetry.logs.first { $0.message.hasPrefix("Final message on closed exchange") }
+        #expect(line.level == .info)
+        #expect(line.subsystem == "mrp")
+        #expect(telemetry.counter("matter_mrp_give_ups_total") == 1)
+        await messenger.stop()
+    }
+
     @Test("A dropped request: a trace retransmit line, the retransmit counter, and a retransmit span event")
     func droppedDatagram() async throws {
         let telemetry = TestTelemetry()
@@ -241,5 +336,63 @@ struct MessengerTelemetryTests {
         #expect(line.metadata[MatterLogKey.session] == "0xA")
         await exchange.close()
         await rig.messenger.stop()
+    }
+}
+
+// MARK: - Counting Tracer
+
+/// A tracer whose spans never record, counting how many it started and how many were ended.
+private final class CountingTracer: Tracer, Sendable {
+    let started = LockedValue(0)
+    let ended = LockedValue(0)
+
+    func startSpan<Instant: TracerInstant>(
+        _ operationName: String,
+        context: @autoclosure () -> ServiceContext,
+        ofKind kind: SpanKind,
+        at instant: @autoclosure () -> Instant,
+        function: String,
+        file fileID: String,
+        line: UInt
+    ) -> UnrecordedSpan {
+        started.withLock { $0 += 1 }
+        return UnrecordedSpan(context: context(), ended: ended)
+    }
+
+    func activeSpan(identifiedBy context: ServiceContext) -> UnrecordedSpan? { nil }
+
+    func forceFlush() {}
+
+    func inject<Carrier, Inject: Injector>(_ context: ServiceContext, into carrier: inout Carrier, using injector: Inject)
+    where Inject.Carrier == Carrier {}
+
+    func extract<Carrier, Extract: Extractor>(_ carrier: Carrier, into context: inout ServiceContext, using extractor: Extract)
+    where Extract.Carrier == Carrier {}
+}
+
+/// A span that records nothing and counts its `end`.
+private struct UnrecordedSpan: Span {
+    let context: ServiceContext
+    let ended: LockedValue<Int>
+
+    var operationName: String {
+        get { "" }
+        nonmutating set {}
+    }
+
+    var attributes: SpanAttributes {
+        get { [:] }
+        nonmutating set {}
+    }
+
+    var isRecording: Bool { false }
+
+    func setStatus(_ status: SpanStatus) {}
+    func addEvent(_ event: SpanEvent) {}
+    func recordError<Instant: TracerInstant>(_ error: any Error, attributes: SpanAttributes, at instant: @autoclosure () -> Instant) {}
+    func addLink(_ link: SpanLink) {}
+
+    func end<Instant: TracerInstant>(at instant: @autoclosure () -> Instant) {
+        ended.withLock { $0 += 1 }
     }
 }

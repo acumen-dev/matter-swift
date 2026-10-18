@@ -301,11 +301,10 @@ public actor ControllerMessenger {
             protocolID: protocolID.rawValue,
             acknowledgedMessageCounter: manager.takePendingAck(key)
         )
-        let bytes = try encode(header, payload: payload, key: key)
+        let (bytes, counter) = try encode(header, payload: payload, key: key)
         if reliable {
             try manager.trackTransmission(key, message: bytes, now: clock.now)
         }
-        let counter = Self.messageCounter(of: bytes)
         recordFrame(.outbound, key: key, header: header, counter: counter)
         recordExchangeEvent(key, "send", attributes: Self.counterAttributes(counter))
         // State is final: arm the timer before suspending in the send.
@@ -491,7 +490,7 @@ public actor ControllerMessenger {
             let duplicate = verdict == .duplicate
             logger.trace(
                 "Dropping \(duplicate ? "duplicate" : "out-of-window") counter \(counter) on exchange \(key.exchangeID)",
-                metadata: Self.frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: duplicate ? "duplicate" : "out_of_window")
+                metadata: frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: duplicate ? "duplicate" : "out_of_window")
             )
             if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                 outgoing.append(ack)
@@ -546,7 +545,7 @@ public actor ControllerMessenger {
             guard manager.exchange(for: key) != nil else {
                 logger.trace(
                     "Stale message on closed exchange \(key.exchangeID) (counter \(counter)); acknowledging and dropping",
-                    metadata: Self.frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: "stale_exchange")
+                    metadata: frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: "stale_exchange")
                 )
                 if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                     outgoing.append(ack)
@@ -575,7 +574,7 @@ public actor ControllerMessenger {
         guard let handler = routeHandler(for: message) else {
             logger.debug(
                 "No handler for unsolicited protocol \(message.protocolID) opcode \(message.opcode); acknowledging and closing",
-                metadata: Self.frameMetadata(key: key, header: exchangeHeader, counter: counter)
+                metadata: frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: "no_handler")
             )
             finishExchange(key, failing: .exchangeClosed, into: &outgoing)
             return
@@ -720,7 +719,7 @@ public actor ControllerMessenger {
             case .exhausted where closing.contains(key):
                 // The owner already closed the exchange; nobody to tell.
                 telemetry.metrics.mrpGiveUps.increment()
-                mrpLogger.debug("Final message on closed exchange \(key.exchangeID) went unacknowledged", metadata: Self.exchangeMetadata(key))
+                mrpLogger.info("Final message on closed exchange \(key.exchangeID) went unacknowledged", metadata: Self.exchangeMetadata(key))
                 removeExchange(key)
             case .exhausted:
                 // Exhaustion happens only once transmissions > maxRetransmissions,
@@ -805,9 +804,9 @@ public actor ControllerMessenger {
             acknowledgedMessageCounter: ackCounter
         )
         do {
-            let bytes = try encode(header, payload: Data(), key: key, inbound: inbound)
+            let (bytes, counter) = try encode(header, payload: Data(), key: key, inbound: inbound)
             telemetry.metrics.message(.outbound, protocolID: header.protocolID)
-            mrpLogger.trace("standalone ack", metadata: Self.frameMetadata(key: key, header: header, counter: Self.messageCounter(of: bytes)))
+            mrpLogger.trace("standalone ack", metadata: frameMetadata(key: key, header: header, counter: counter))
             return Outgoing(bytes: bytes, address: address, note: "standalone ack \(ackCounter)")
         } catch {
             mrpLogger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)", metadata: Self.exchangeMetadata(key))
@@ -815,14 +814,14 @@ public actor ControllerMessenger {
         }
     }
 
-    /// Encode one frame of exchange `key`; `inbound` is the header of the
-    /// frame it answers, if any (see ``unsecuredNodeIDs(for:inbound:)``).
-    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey, inbound: MessageHeader? = nil) throws -> Data {
+    /// Encode one frame of exchange `key`, with the message counter it was given; `inbound`
+    /// is the header of the frame it answers, if any (see ``unsecuredNodeIDs(for:inbound:)``).
+    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey, inbound: MessageHeader? = nil) throws -> (bytes: Data, counter: UInt32) {
         switch key.scope {
         case .unsecured:
             unsecuredCounter &+= 1
             let nodeIDs = unsecuredNodeIDs(for: key, inbound: inbound)
-            return MatterMessage.encodeUnsecured(
+            let bytes = MatterMessage.encodeUnsecured(
                 messageHeader: MessageHeader(
                     sessionID: 0,
                     messageCounter: unsecuredCounter,
@@ -832,11 +831,13 @@ public actor ControllerMessenger {
                 exchangeHeader: header,
                 payload: payload
             )
+            return (bytes, unsecuredCounter)
         case .secured(let localSessionID):
             guard let entry = sessions[localSessionID] else {
                 throw MessagingError.unknownSession(localSessionID)
             }
-            return try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID, logger: transportLogger)
+            let encoded = try SecureMessageCodec.encodeCounted(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID, logger: transportLogger)
+            return (encoded.message, encoded.counter)
         }
     }
 
@@ -883,6 +884,11 @@ public actor ControllerMessenger {
     func startExchangeSpan(_ key: ExchangeKey, context: ServiceContext?) {
         guard let context else { return }
         let span = telemetry.tracer.startSpan("matter.exchange", context: context, ofKind: .client)
+        // A span that records nothing is not kept: its events would be built for nobody.
+        guard span.isRecording else {
+            span.end()
+            return
+        }
         span.attributes[MatterLogKey.session] = Self.sessionText(key.scope)
         span.attributes[MatterLogKey.exchange] = MatterLogValue.hexString(key.exchangeID)
         exchangeSpans[key] = span
@@ -898,10 +904,10 @@ public actor ControllerMessenger {
         span.end()
     }
 
-    /// An event on the exchange's span, if it has one.
+    /// An event on the exchange's span, if it has one and it is recording.
     /// `attributes` are built only when the exchange is traced.
     func recordExchangeEvent(_ key: ExchangeKey, _ name: String, attributes: @autoclosure () -> SpanAttributes = [:]) {
-        guard let span = exchangeSpans[key] else { return }
+        guard let span = exchangeSpans[key], span.isRecording else { return }
         span.addEvent(SpanEvent(name: name, attributes: attributes()))
     }
 
@@ -911,8 +917,20 @@ public actor ControllerMessenger {
         let verb = direction == .outbound ? "send" : "receive"
         logger.trace(
             "\(verb) \(Self.scopeName(key.scope)) I=\(header.flags.initiator ? 1 : 0) R=\(header.flags.reliableDelivery ? 1 : 0)",
-            metadata: Self.frameMetadata(key: key, header: header, counter: counter)
+            metadata: frameMetadata(key: key, header: header, counter: counter)
         )
+    }
+
+    /// The static frame metadata plus, on a secure session, its peer's `matter.node` (none
+    /// for a PASE session, whose peer has no operational node ID yet). Call it only inside a
+    /// log call's metadata autoclosure.
+    func frameMetadata(key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, reason: String? = nil) -> Logger.Metadata {
+        var metadata = Self.frameMetadata(key: key, header: header, counter: counter, reason: reason)
+        if case .secured(let localSessionID) = key.scope,
+           let peer = sessions[localSessionID]?.session.peerNodeID, peer != .unspecified {
+            metadata[MatterLogKey.node] = MatterLogValue.hex(peer.rawValue)
+        }
+        return metadata
     }
 
     /// `matter.session` and `matter.exchange` of `key`.
