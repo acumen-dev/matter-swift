@@ -3,6 +3,8 @@
 
 import Foundation
 import Logging
+import Metrics
+import Tracing
 import MatterTypes
 import MatterProtocol
 import MatterTransport
@@ -43,6 +45,12 @@ public actor ControllerMessenger {
         /// Messages held per exchange while no `receive()` waits; beyond this
         /// a message is dropped (it has already been acknowledged).
         public var inboundQueueLimit: Int = 8
+        /// Prefix of every metric label: `<prefix>_controller_messages_total`, … (default `matter`).
+        public var metricsLabelPrefix: String = "matter"
+        /// Metrics backend; nil uses `MetricsSystem.factory` as it is when the messenger is created.
+        public var metricsFactory: (any MetricsFactory)? = nil
+        /// Tracer for exchange spans; nil uses `InstrumentationSystem.tracer` at creation.
+        public var tracer: (any Tracer)? = nil
 
         public init() {}
     }
@@ -85,7 +93,14 @@ public actor ControllerMessenger {
     let localNodeID: NodeID
     let configuration: Configuration
     let clock: any MRPClock
-    let logger: Logger
+    /// The injected logger per subsystem (label unchanged).
+    nonisolated let logger: Logger
+    nonisolated let mrpLogger: Logger
+    nonisolated let exchangeLogger: Logger
+    nonisolated let sessionLogger: Logger
+    nonisolated let transportLogger: Logger
+    /// Metrics and tracer, shared with the controller and its subscriptions.
+    nonisolated let telemetry: ControllerTelemetry
 
     // MARK: - State
 
@@ -146,7 +161,12 @@ public actor ControllerMessenger {
         self.localNodeID = localNodeID
         self.configuration = configuration
         self.clock = clock
-        self.logger = logger
+        self.logger = logger.withSubsystem(.messenger)
+        self.mrpLogger = logger.withSubsystem(.mrp)
+        self.exchangeLogger = logger.withSubsystem(.exchange)
+        self.sessionLogger = logger.withSubsystem(.session)
+        self.transportLogger = logger.withSubsystem(.transport)
+        self.telemetry = ControllerTelemetry(configuration: configuration)
         self.manager = ExchangeManager(defaultConfig: configuration.mrp, jitterSource: jitterSource)
     }
 
@@ -734,7 +754,7 @@ public actor ControllerMessenger {
             guard let entry = sessions[localSessionID] else {
                 throw MessagingError.unknownSession(localSessionID)
             }
-            return try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID)
+            return try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID, logger: transportLogger)
         }
     }
 

@@ -4,6 +4,8 @@
 import Foundation
 import Crypto
 import Logging
+import Metrics
+import Tracing
 import Synchronization
 import MatterTypes
 import MatterModel
@@ -122,6 +124,18 @@ public actor MatterController {
         /// bundle must pass a store.
         public var attestationTrustStore: AttestationTrustStore?
 
+        /// Prefix of every metric label (default `matter`): `<prefix>_controller_messages_total`,
+        /// `<prefix>_im_requests_total`, …
+        public var metricsLabelPrefix: String
+
+        /// Metrics backend. `nil` (the default) uses `MetricsSystem.factory` as it is when the
+        /// controller is created: bootstrap `MetricsSystem` first.
+        public var metricsFactory: (any MetricsFactory)?
+
+        /// Tracer for the controller's spans. `nil` (the default) uses
+        /// `InstrumentationSystem.tracer` as it is when the controller is created.
+        public var tracer: (any Tracer)?
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -134,7 +148,10 @@ public actor MatterController {
             addressRefreshTimeout: Duration = .seconds(5),
             commissionableResolveTimeout: Duration = .seconds(5),
             discoveryClock: any MRPClock = ContinuousClock(),
-            attestationTrustStore: AttestationTrustStore? = nil
+            attestationTrustStore: AttestationTrustStore? = nil,
+            metricsLabelPrefix: String = "matter",
+            metricsFactory: (any MetricsFactory)? = nil,
+            tracer: (any Tracer)? = nil
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -148,6 +165,9 @@ public actor MatterController {
             self.commissionableResolveTimeout = commissionableResolveTimeout
             self.discoveryClock = discoveryClock
             self.attestationTrustStore = attestationTrustStore
+            self.metricsLabelPrefix = metricsLabelPrefix
+            self.metricsFactory = metricsFactory
+            self.tracer = tracer
         }
     }
 
@@ -160,7 +180,11 @@ public actor MatterController {
     private let subscriptionClient: SubscriptionClient
     private let discovery: any MatterDiscovery
     private let configuration: Configuration
-    private let logger: Logger
+    /// The injected logger, per subsystem.
+    private let loggers: ControllerLoggers
+
+    /// Metrics and tracer (owned by the messenger, shared with subscriptions).
+    private var telemetry: ControllerTelemetry { messenger.telemetry }
     private let store: (any MatterControllerStore)?
     private let attestationVerifier: DeviceAttestationVerifier
 
@@ -191,6 +215,21 @@ public actor MatterController {
     func setCommissioningFailureInjection(_ injection: (@Sendable (CommissioningStep) throws -> Void)?) {
         commissioningFailureInjection = injection
     }
+
+    /// Test seam: make `device` known at `address` and, when given, `session` its registered,
+    /// cached operational session — as a completed commissioning leaves them. Never used in production.
+    func installForTesting(device: CommissionedDevice, session: SecureSession?, address: MatterAddress) async throws {
+        var device = device
+        device.setOperationalAddress(address)
+        await registry.register(device)
+        if let session {
+            try await messenger.registerSession(session, peerAddress: address, mrp: device.mrpParameters)
+            sessionCache.store(session, for: device.nodeID)
+        }
+    }
+
+    /// The fabric's compressed fabric ID (for tests that advertise an operational instance).
+    var compressedFabricIDForTesting: UInt64 { fabricManager.compressedFabricID() }
 
     /// CASE establishments in flight, one per node: concurrent callers of
     /// ``session(for:)`` await the same handshake.
@@ -233,12 +272,13 @@ public actor MatterController {
         self.messenger = Self.makeMessenger(
             transport: transport,
             localNodeID: fabricManager.controllerFabricInfo.nodeID,
-            configuration: configuration
+            configuration: configuration,
+            logger: logger
         )
         self.discovery = discovery
         self.configuration = configuration
         self.store = store
-        self.logger = logger
+        self.loggers = ControllerLoggers(logger)
     }
 
     /// Restore a controller from persisted state.
@@ -280,14 +320,15 @@ public actor MatterController {
         self.messenger = Self.makeMessenger(
             transport: transport,
             localNodeID: fabricManager.controllerFabricInfo.nodeID,
-            configuration: configuration
+            configuration: configuration,
+            logger: logger
         )
         self.discovery = discovery
         self.configuration = configuration
         self.store = store
-        self.logger = logger
+        self.loggers = ControllerLoggers(logger)
 
-        logger.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
+        loggers.session.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
     }
 
     /// The configured trust store, or the bundled production store when none is configured.
@@ -400,7 +441,7 @@ public actor MatterController {
     public func findCommissionable(_ code: SetupCode, timeout: Duration? = nil) async throws -> CommissionableDevice {
         let limit = timeout ?? configuration.discoveryTimeout
         let discovery = self.discovery
-        let logger = self.logger
+        let logger = loggers.discovery
         let resolveLimit = configuration.commissionableResolveTimeout
         let clock = configuration.discoveryClock
         let deadline = clock.now + limit
@@ -740,7 +781,7 @@ public actor MatterController {
         let timeout = configuration.operationTimeout
         let address = address.canonicalised
 
-        logger.info("Beginning commissioning to \(address.host):\(address.port)")
+        loggers.paseHandshake.info("Beginning commissioning to \(MatterLogValue.address(address))")
 
         // Step 1: PASE on one unsecured exchange. The local session ID stays
         // reserved until commissioning ends (the PASE session is unregistered
@@ -803,7 +844,7 @@ public actor MatterController {
             throw ControllerError.paseHandshakeFailed("No PASE session after Pake3")
         }
 
-        logger.info("PASE session established (localSession=\(paseSession.localSessionID))")
+        loggers.paseHandshake.info("PASE session established (localSession=\(paseSession.localSessionID))")
 
         // Steps 2-6 over the encrypted PASE session, then CASE and
         // CommissioningComplete. Register the PASE session before the first
@@ -840,7 +881,7 @@ public actor MatterController {
         // Persist controller state
         await saveState()
 
-        logger.info("Commissioning complete: nodeID=\(device.nodeID.rawValue)")
+        loggers.paseHandshake.info("Commissioning complete", metadata: [MatterLogKey.node: MatterLogValue.hex(device.nodeID.rawValue)])
 
         return device
     }
@@ -913,9 +954,9 @@ public actor MatterController {
             _ = try await imRequest(
                 sessionID: sessionID, opcode: .invokeRequest, payload: commissioning.buildDisarmFailSafe()
             )
-            logger.info("Commissioning failed; fail-safe disarmed on the device")
+            loggers.paseHandshake.info("Commissioning failed; fail-safe disarmed on the device")
         } catch {
-            logger.warning("Commissioning failed and the fail-safe could not be disarmed: \(error)")
+            loggers.paseHandshake.warning("Commissioning failed and the fail-safe could not be disarmed: \(error)")
         }
     }
 
@@ -975,7 +1016,7 @@ public actor MatterController {
         let (addRootMsg, addNOCMsg, ctx6) = try await commissioning.handleCSRResponse(
             response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctxAttested
         )
-        logger.debug("Device will be node \(deviceNodeID.rawValue)")
+        loggers.paseHandshake.debug("Device will be node \(MatterLogValue.hexString(deviceNodeID.rawValue))")
         try commissioningFailureInjection?(.afterCSR)
 
         // Step 6: AddTrustedRootCert
@@ -1087,9 +1128,9 @@ public actor MatterController {
         )
         switch attested.attestation {
         case .verified(let paaSubject, _, _)?:
-            logger.info("Device attestation verified (PAA \(paaSubject))")
+            loggers.paseHandshake.info("Device attestation verified (PAA \(paaSubject))")
         case .overridden(_, let reason, _)?:
-            logger.notice("Device attestation failed (\(reason.rawValue)); commissioning continues on the caller's approval of this DAC")
+            loggers.paseHandshake.notice("Device attestation failed (\(reason.rawValue)); commissioning continues on the caller's approval of this DAC")
         case nil:
             break
         }
@@ -1299,6 +1340,7 @@ public actor MatterController {
             },
             livenessMargin: margin,
             operationTimeout: configuration.operationTimeout,
+            logger: loggers.subscription,
             onEstablishFailure: { [weak self] sessionID, error in
                 await self?.invalidateStaleSession(for: nodeID, sessionID: sessionID, error: error)
             }
@@ -1367,7 +1409,7 @@ public actor MatterController {
         do {
             try await store.save(await currentState())
         } catch {
-            logger.warning("Failed to persist controller state: \(error)")
+            loggers.session.warning("Failed to persist controller state: \(error)")
         }
     }
 
@@ -1384,11 +1426,15 @@ public actor MatterController {
     private static func makeMessenger(
         transport: any MatterUDPTransport,
         localNodeID: NodeID,
-        configuration: Configuration
+        configuration: Configuration,
+        logger: Logger
     ) -> ControllerMessenger {
         var messaging = ControllerMessenger.Configuration()
         messaging.mrp = configuration.mrp
-        return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging)
+        messaging.metricsLabelPrefix = configuration.metricsLabelPrefix
+        messaging.metricsFactory = configuration.metricsFactory
+        messaging.tracer = configuration.tracer
+        return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging, logger: logger)
     }
 
     /// Send one Interaction Model request on a fresh exchange of `sessionID`
@@ -1490,7 +1536,7 @@ public actor MatterController {
         }
         defer { sessionCache.releaseSessionID(sessionID) }
 
-        logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
+        loggers.caseHandshake.debug("Establishing CASE session", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
 
         var usedAddress = address
         let session: SecureSession
@@ -1504,7 +1550,7 @@ public actor MatterController {
                   let refreshed = try await refreshedAddress(nodeID: nodeID, tried: address) else {
                 throw original
             }
-            logger.info("Node \(nodeID.rawValue) did not answer CASE; retrying at its re-resolved address")
+            loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
             usedAddress = refreshed.address
             do {
                 session = try await caseHandshake(
@@ -1529,7 +1575,7 @@ public actor MatterController {
         }
         sessionCache.store(session, for: nodeID)
 
-        logger.debug("CASE session established to node \(nodeID.rawValue)")
+        loggers.caseHandshake.debug("CASE session established", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
 
         return session
     }
@@ -1556,7 +1602,7 @@ public actor MatterController {
             throw cancellation
         } catch {
             try Task.checkCancellation()
-            logger.notice("Node \(nodeID.rawValue): operational re-resolve failed: \(error)")
+            loggers.discovery.notice("Node \(MatterLogValue.hexString(nodeID.rawValue)): operational re-resolve failed: \(error)")
             return nil
         }
         guard !stopped, await registry.device(for: nodeID) != nil else { return nil }
@@ -1676,7 +1722,7 @@ public actor MatterController {
         } catch {
             let mapped = Self.operationalError(error, nodeID: nodeID)
             if let controllerError = mapped as? ControllerError, controllerError == .peerUnreachable(nodeID) {
-                logger.info("Node \(nodeID.rawValue) unreachable; invalidating its session (the request is not re-sent)")
+                loggers.session.info("Node unreachable; invalidating its session (the request is not re-sent)", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
                 if sessionCache.session(for: nodeID) === activeSession {
@@ -1738,7 +1784,7 @@ public actor MatterController {
               mapped == .peerUnreachable(nodeID),
               let cached = sessionCache.session(for: nodeID),
               cached.localSessionID == sessionID else { return }
-        logger.info("Node \(nodeID.rawValue) subscription failed on a dead session; invalidating it")
+        loggers.session.info("Node subscription failed on a dead session; invalidating it", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
         await invalidateSession(for: nodeID)
     }
 

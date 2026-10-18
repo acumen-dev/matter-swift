@@ -44,7 +44,7 @@ public actor ControllerSubscription {
     private let livenessMargin: Duration
     private let operationTimeout: Duration
     private let onEstablishFailure: EstablishFailureHook
-    private nonisolated let logger = Logger(label: "matter.controller.subscription")
+    nonisolated let logger: Logger
 
     public private(set) var currentSubscriptionID: SubscriptionID?
     /// The local session ID the current subscription was established on.
@@ -62,6 +62,7 @@ public actor ControllerSubscription {
         sessionProvider: @escaping SessionProvider,
         livenessMargin: Duration,
         operationTimeout: Duration,
+        logger: Logger,
         onEstablishFailure: @escaping EstablishFailureHook = { _, _ in }
     ) {
         (events, continuation) = AsyncStream.makeStream(of: SubscriptionEvent.self)
@@ -72,6 +73,7 @@ public actor ControllerSubscription {
         self.sessionProvider = sessionProvider
         self.livenessMargin = livenessMargin
         self.operationTimeout = operationTimeout
+        self.logger = logger.withSubsystem(.subscription)
         self.onEstablishFailure = onEstablishFailure
     }
 
