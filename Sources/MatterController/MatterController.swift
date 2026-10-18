@@ -195,7 +195,7 @@ public actor MatterController {
 
     private var sessionCache = SessionCache()
 
-    /// Subscriptions created by ``subscribe(nodeID:_:)``. A subscription keeps
+    /// Subscriptions created by ``subscribe(nodeID:_:context:)``. A subscription keeps
     /// itself alive until cancelled, so ``stop()`` cancels each one.
     private var subscriptions: [ControllerSubscription] = []
     private var stopped = false
@@ -1374,7 +1374,13 @@ public actor MatterController {
     /// the peer; a dead subscription is re-established with backoff, asking only
     /// for events not yet delivered. Cancel it with ``ControllerSubscription/cancel()``;
     /// ``stop()`` cancels any still running.
-    public func subscribe(nodeID: NodeID, _ request: SubscriptionRequest) async throws -> ControllerSubscription {
+    ///
+    /// - Parameter context: parents the subscribe and subscription spans.
+    public func subscribe(
+        nodeID: NodeID,
+        _ request: SubscriptionRequest,
+        context: ServiceContext = .current ?? .topLevel
+    ) async throws -> ControllerSubscription {
         guard !stopped else { throw MessagingError.stopped }
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
@@ -1391,11 +1397,12 @@ public actor MatterController {
             client: subscriptionClient,
             sessionProvider: { [weak self] in
                 guard let self else { throw MessagingError.stopped }
-                return try await self.session(for: nodeID).localSessionID
+                return try await self.session(for: nodeID, context: context).localSessionID
             },
             livenessMargin: margin,
             operationTimeout: configuration.operationTimeout,
             logger: loggers.subscription,
+            context: context,
             onEstablishFailure: { [weak self] sessionID, error in
                 await self?.invalidateStaleSession(for: nodeID, sessionID: sessionID, error: error)
             }

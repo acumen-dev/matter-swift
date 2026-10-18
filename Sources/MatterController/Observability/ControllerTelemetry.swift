@@ -78,6 +78,12 @@ fileprivate func isAborted(_ error: any Error, controllerStopped: Bool) -> Bool 
     controllerStopped || error is CancellationError || error as? MessagingError == .stopped
 }
 
+/// ``isAborted(_:controllerStopped:)`` for a subscription. Its own cancellation stands in for
+/// `stop()`, which cancels every subscription before it stops the messenger.
+func isSubscriptionAborted(_ error: any Error, cancelled: Bool) -> Bool {
+    isAborted(error, controllerStopped: cancelled)
+}
+
 /// `type` of `<prefix>_sessions_established_total`.
 enum SessionType: String, CaseIterable, Sendable {
     case caseSession = "case"
