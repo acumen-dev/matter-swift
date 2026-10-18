@@ -232,6 +232,47 @@ struct IMTelemetryTests {
         await rig.controller.stop()
     }
 
+    @Test("A Door Lock UnlockDoor's PIN code is redacted on a timed invoke")
+    func doorLockPINRedacted() async throws {
+        let rig = try await makeControllerRig()
+        var peer = TestPeer(link: rig.link)
+        var seen = Set<UInt32>()
+        let doorLock = ClusterID(rawValue: 0x0101)
+        let unlockDoor = CommandID(rawValue: 0x01)
+        // PINCode (field 0) is an octet string on the wire, but `Data` describes itself as
+        // `N bytes`: an unredacted render would not show it. The secret value does show.
+        let fields: TLVElement = .structure([.init(tag: .contextSpecific(0), value: .unsignedInt(Self.secretValue))])
+        let endpoint = EndpointID(rawValue: 1)
+        let call = Task {
+            try await rig.controller.invokeCommand(
+                nodeID: rig.node, endpointID: endpoint, clusterID: doorLock, commandID: unlockDoor,
+                commandFields: fields, timedTimeout: .seconds(2)
+            )
+        }
+        let timed = try await nextNewFrame(&peer, session: rig.peerSession, seen: &seen)
+        #expect(timed.exchangeHeader.protocolOpcode == InteractionModelOpcode.timedRequest.rawValue)
+        try await peer.send(ScriptedPeer.securedReply(
+            to: timed, session: rig.peerSession, protocolID: .interactionModel,
+            opcode: InteractionModelOpcode.statusResponse.rawValue, payload: IMStatusResponse.success.tlvEncode()
+        ))
+        let invoke = try await nextNewFrame(&peer, session: rig.peerSession, seen: &seen)
+        try await peer.send(ScriptedPeer.securedReply(
+            to: invoke, session: rig.peerSession, protocolID: .interactionModel,
+            opcode: InteractionModelOpcode.invokeResponse.rawValue,
+            payload: successResponse(cluster: doorLock, command: unlockDoor)
+        ))
+        _ = try await call.value
+
+        let requestLine = try #require(rig.telemetry.logs.entries.first { $0.message.hasPrefix("IM timed request") })
+        #expect(requestLine.message == "IM timed request: fields <redacted>")
+        let text = rig.telemetry.allRecordedText()
+        for rendering in Self.secretRenderings {
+            #expect(!text.contains { $0.contains(rendering) }, "\(rendering) appears in a log line or span")
+        }
+        #expect(rig.telemetry.counter("matter_im_requests_total", [("kind", "timed"), ("outcome", "success")]) == 1)
+        await rig.controller.stop()
+    }
+
     @Test("Read and write values of sensitive clusters are redacted; a refused write counts im_status")
     func sensitiveReadAndWriteRedacted() async throws {
         let rig = try await makeControllerRig()
@@ -286,10 +327,10 @@ struct IMTelemetryTests {
         await rig.controller.stop()
     }
 
-    @Test("MatterLogValue redacts the three sensitive clusters and renders paths in hex")
+    @Test("MatterLogValue redacts every sensitive cluster and renders paths in hex")
     func formatting() {
         let value: TLVElement = .unsignedInt(7)
-        for cluster: UInt32 in [0x003C, 0x003E, 0x003F] {
+        for cluster: UInt32 in [0x0031, 0x003C, 0x003E, 0x003F, 0x0046, 0x0101, 0x0452, 0x0453, 0x050E] {
             #expect(MatterLogValue.value(value, clusterID: ClusterID(rawValue: cluster)) == "<redacted>")
             #expect(MatterLogValue.value(nil, clusterID: ClusterID(rawValue: cluster)) == "<redacted>")
         }

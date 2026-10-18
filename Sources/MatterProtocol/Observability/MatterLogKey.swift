@@ -87,10 +87,16 @@ public enum MatterLogValue {
 // MARK: - Interaction Model values
 
 extension MatterLogValue {
-    /// Clusters whose command fields or attribute values can carry secrets: Administrator
-    /// Commissioning (PAKE verifier, salt), Operational Credentials (IPK in AddNOC), Group Key
-    /// Management (epoch keys). Their values are never rendered.
-    public static let sensitiveClusters: Set<UInt32> = [0x003C, 0x003E, 0x003F]
+    /// Clusters whose command fields or attribute values can carry secrets or credentials:
+    /// Network Commissioning 0x0031 (Wi-Fi credentials, Thread datasets), Administrator
+    /// Commissioning 0x003C (PAKE verifier, salt), Operational Credentials 0x003E (IPK in
+    /// AddNOC), Group Key Management 0x003F (epoch keys), ICD Management 0x0046 (check-in keys),
+    /// Door Lock 0x0101 (PIN and RFID codes), Thread Border Router Management 0x0452 and Thread
+    /// Network Directory 0x0453 (operational datasets), Account Login 0x050E (setup PINs).
+    /// Their values are never rendered.
+    public static let sensitiveClusters: Set<UInt32> = [
+        0x0031, 0x003C, 0x003E, 0x003F, 0x0046, 0x0101, 0x0452, 0x0453, 0x050E,
+    ]
 
     /// A decoded TLV value (command fields, an attribute value) as text; `none` for no value.
     /// Fails closed: `<redacted>` for a cluster in ``sensitiveClusters``, and for an unknown
