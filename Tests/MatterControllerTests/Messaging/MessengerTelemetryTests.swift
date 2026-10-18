@@ -59,7 +59,7 @@ struct MessengerTelemetryTests {
         await rig.messenger.stop()
     }
 
-    @Test("Frame lines on a secure session carry its peer's matter.node; a PASE peer's unspecified node is left out")
+    @Test("Frame lines on a secure session carry its peer's matter.node, a PASE peer's unspecified 0x0 included")
     func framesCarryNode() async throws {
         let telemetry = TestTelemetry()
         let rig = try await makeRig(telemetry: telemetry)
@@ -80,7 +80,7 @@ struct MessengerTelemetryTests {
         let operationalSend = try #require(sends.first { $0.metadata[MatterLogKey.session] == "0x1E" })
         #expect(operationalSend.metadata[MatterLogKey.node] == "0x42")
         let paseSend = try #require(sends.first { $0.metadata[MatterLogKey.session] == "0xA" })
-        #expect(paseSend.metadata[MatterLogKey.node] == nil)
+        #expect(paseSend.metadata[MatterLogKey.node] == "0x0")
         await rig.messenger.stop()
     }
 

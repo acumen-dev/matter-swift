@@ -312,7 +312,7 @@ The keys are public constants in `MatterLogKey`; spans use the same names for th
 | Key | Value |
 |---|---|
 | `matter.subsystem` | One of the ten subsystems above |
-| `matter.node` | Node ID, hex. Frame lines carry it on an operational session, not on a PASE one |
+| `matter.node` | Node ID, hex. Frame lines on a secure session carry its peer's; a PASE session's peer is `0x0` (unspecified) |
 | `matter.session` | Local session ID, hex; the literal `unsecured` for an unsecured scope |
 | `matter.exchange` | Exchange ID, hex |
 | `matter.protocol` | Protocol ID, hex |
