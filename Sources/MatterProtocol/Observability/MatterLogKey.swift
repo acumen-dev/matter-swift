@@ -72,8 +72,9 @@ public enum MatterLogValue {
         .string(String(milliseconds(duration)))
     }
 
-    /// `host:port`, with an IPv6 host in brackets.
+    /// `host:port`, with an IPv6 host in brackets (once: a host that arrived bracketed keeps its one pair).
     public static func address(_ address: MatterAddress) -> String {
-        address.host.contains(":") ? "[\(address.host)]:\(address.port)" : "\(address.host):\(address.port)"
+        let host = MatterAddress.strippingBrackets(address.host)
+        return host.contains(":") ? "[\(host)]:\(address.port)" : "\(host):\(address.port)"
     }
 }

@@ -442,6 +442,7 @@ public actor MatterController {
         let limit = timeout ?? configuration.discoveryTimeout
         let discovery = self.discovery
         let logger = loggers.discovery
+        let tracer = telemetry.tracer
         let resolveLimit = configuration.commissionableResolveTimeout
         let clock = configuration.discoveryClock
         let deadline = clock.now + limit
@@ -454,7 +455,7 @@ public actor MatterController {
                     try Task.checkCancellation()
                     if let device = try await Self.commissionable(
                         record, matching: code, discovery: discovery,
-                        resolveLimit: resolveLimit, clock: clock, logger: logger
+                        resolveLimit: resolveLimit, clock: clock, logger: logger, tracer: tracer
                     ) {
                         return device
                     }
@@ -480,19 +481,20 @@ public actor MatterController {
         discovery: any MatterDiscovery,
         resolveLimit: Duration,
         clock: any MRPClock,
-        logger: Logger
+        logger: Logger,
+        tracer: any Tracer
     ) async throws -> CommissionableDevice? {
         var resolved: ResolvedService?
         var txt = record.txtRecords
         if txt.isEmpty {
-            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger, tracer: tracer) else { return nil }
             resolved = service
             txt = service.txtRecords
         }
         guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
 
         if resolved == nil {
-            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger, tracer: tracer) else { return nil }
             resolved = service
         }
         guard let resolved else { return nil }
@@ -520,18 +522,24 @@ public actor MatterController {
         discovery: any MatterDiscovery,
         limit: Duration,
         clock: any MRPClock,
-        logger: Logger
+        logger: Logger,
+        tracer: any Tracer
     ) async throws -> ResolvedService? {
         let deadline = clock.now + limit
         do {
-            return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
-                group.addTask { try await discovery.resolveService(record) }
-                group.addTask {
-                    try await clock.sleep(until: deadline)
-                    throw ResolveDeadline()
+            return try await instrumentedResolve(
+                tracer: tracer, logger: logger, context: ServiceContext.current ?? .topLevel,
+                instance: record.name, node: nil, limit: limit, stopped: { false }
+            ) {
+                try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                    group.addTask { try await discovery.resolveService(record) }
+                    group.addTask {
+                        try await clock.sleep(until: deadline)
+                        throw ResolveDeadline()
+                    }
+                    defer { group.cancelAll() }
+                    return try await group.next()!
                 }
-                defer { group.cancelAll() }
-                return try await group.next()!
             }
         } catch let cancellation as CancellationError {
             throw cancellation
@@ -543,6 +551,51 @@ public actor MatterController {
             try Task.checkCancellation()
             logger.notice("Skipping commissionable instance \(record.name): resolve failed: \(error)")
             return nil
+        }
+    }
+
+    /// Run one mDNS resolve inside a `matter.resolve` span (child of `context`), with its debug
+    /// start, result and failure lines. A resolve cancelled or ended by ``stop()`` gets a debug
+    /// line, and its span ends without error status. `node` is nil for a commissionable record.
+    private static func instrumentedResolve(
+        tracer: any Tracer,
+        logger: Logger,
+        context: ServiceContext,
+        instance: String,
+        node: NodeID?,
+        limit: Duration,
+        stopped: @Sendable () async -> Bool,
+        _ body: () async throws -> ResolvedService
+    ) async throws -> ResolvedService {
+        let span = tracer.startSpan("matter.resolve", context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording {
+            if let node { span.attributes[MatterLogKey.node] = MatterLogValue.hexString(node.rawValue) }
+            span.attributes["matter.instance"] = instance
+        }
+        func metadata(reason: String? = nil) -> Logger.Metadata {
+            var metadata = node.map { Logger.Metadata.node($0) } ?? [:]
+            if let reason { metadata[MatterLogKey.reason] = .string(reason) }
+            return metadata
+        }
+        logger.debug("mDNS resolve start: \(instance) (within \(limit))", metadata: metadata())
+        do {
+            let resolved = try await body()
+            // Keys only: a TXT value can carry anything the device advertises.
+            logger.debug(
+                "mDNS resolve result: \(MatterLogValue.address(resolved.address)), TXT keys [\(resolved.txtRecords.keys.sorted().joined(separator: ","))]",
+                metadata: metadata()
+            )
+            return resolved
+        } catch {
+            if isAborted(error, controllerStopped: await stopped()) || Task.isCancelled {
+                logger.debug("mDNS resolve aborted: \(instance)", metadata: metadata(reason: "aborted"))
+                throw error
+            }
+            logger.debug("mDNS resolve failed: \(error)", metadata: metadata(reason: String(describing: error)))
+            span.recordError(error)
+            span.setStatus(SpanStatus(code: .error, message: String(describing: error)))
+            throw error
         }
     }
 
@@ -600,7 +653,11 @@ public actor MatterController {
     /// to a bare IP literal; a host name or a zoned IPv6 literal throws
     /// `discoveryFailed` (naming the node, not the host). The TXT is returned as resolved, so a
     /// caller can tell an empty one from one with defaults.
-    private func resolveOperational(nodeID: NodeID, timeout: Duration? = nil) async throws -> ResolvedService {
+    private func resolveOperational(
+        nodeID: NodeID,
+        timeout: Duration? = nil,
+        context: ServiceContext = .current ?? .topLevel
+    ) async throws -> ResolvedService {
         let limit = timeout ?? configuration.discoveryTimeout
         let name = OperationalInstanceName(
             compressedFabricID: fabricManager.compressedFabricID(),
@@ -612,20 +669,25 @@ public actor MatterController {
         let deadline = clock.now + limit
         let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
-        let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
-            group.addTask { try await discovery.resolveService(record) }
-            group.addTask {
-                try await clock.sleep(until: deadline)
-                throw expired
+        return try await Self.instrumentedResolve(
+            tracer: telemetry.tracer, logger: loggers.discovery, context: context,
+            instance: name, node: nodeID, limit: limit, stopped: { await self.stopped }
+        ) {
+            let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                group.addTask { try await discovery.resolveService(record) }
+                group.addTask {
+                    try await clock.sleep(until: deadline)
+                    throw expired
+                }
+                defer { group.cancelAll() }
+                guard let first = try await group.next() else { throw expired }
+                return first
             }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw expired }
-            return first
+            guard let address = resolved.address.withIPLiteralHost else {
+                throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
+            }
+            return ResolvedService(address: address, txtRecords: resolved.txtRecords)
         }
-        guard let address = resolved.address.withIPLiteralHost else {
-            throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
-        }
-        return ResolvedService(address: address, txtRecords: resolved.txtRecords)
     }
 
     /// Record a node's new operational address and persist it. `mrp`
@@ -1623,7 +1685,7 @@ public actor MatterController {
             } catch {
                 let original = Self.operationalError(error, nodeID: nodeID)
                 guard Self.nothingAnswered(original, nodeID: nodeID),
-                      let refreshed = try await self.refreshedAddress(nodeID: nodeID, tried: address) else {
+                      let refreshed = try await self.refreshedAddress(nodeID: nodeID, tried: address, context: caseContext) else {
                     throw original
                 }
                 self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
@@ -1750,11 +1812,12 @@ public actor MatterController {
     /// propagates.
     private func refreshedAddress(
         nodeID: NodeID,
-        tried: MatterAddress
+        tried: MatterAddress,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> (address: MatterAddress, mrp: MRPParameters?)? {
         let resolved: ResolvedService
         do {
-            resolved = try await resolveOperational(nodeID: nodeID, timeout: configuration.addressRefreshTimeout)
+            resolved = try await resolveOperational(nodeID: nodeID, timeout: configuration.addressRefreshTimeout, context: context)
         } catch let cancellation as CancellationError {
             throw cancellation
         } catch {
@@ -1765,6 +1828,10 @@ public actor MatterController {
         guard !stopped, await registry.device(for: nodeID) != nil else { return nil }
         // `resolved` is canonical; `tried` is as stored, which may predate that.
         guard resolved.address != tried.canonicalised else { return nil }
+        loggers.discovery.info(
+            "Operational address changed: \(MatterLogValue.address(tried.canonicalised)) → \(MatterLogValue.address(resolved.address))",
+            metadata: .node(nodeID)
+        )
         // A device removed from here on is a no-op in the registry; a stop
         // from here on skips the save (see updateOperationalAddress).
         await updateOperationalAddress(

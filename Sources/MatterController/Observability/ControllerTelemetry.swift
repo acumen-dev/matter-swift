@@ -74,7 +74,7 @@ enum IMRequestOutcome: String, CaseIterable, Sendable {
 /// Whether `error` ended an operation that was aborted rather than failed: cancellation, or
 /// ``MatterController/stop()`` (the messenger's `MessagingError.stopped`, or `controllerStopped`
 /// once the controller has mapped it).
-fileprivate func isAborted(_ error: any Error, controllerStopped: Bool) -> Bool {
+func isAborted(_ error: any Error, controllerStopped: Bool) -> Bool {
     controllerStopped || error is CancellationError || error as? MessagingError == .stopped
 }
 
