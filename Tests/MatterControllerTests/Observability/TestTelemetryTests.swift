@@ -79,8 +79,9 @@ struct TestTelemetryTests {
         #expect(telemetry.timerValues("t").isEmpty)
     }
 
-    @Test("SecretForms renders bytes as lower hex, upper hex and base64")
+    @Test("SecretForms renders bytes as lower hex, upper hex, base64 and decimal array")
     func secretForms() {
-        #expect(SecretForms.of(Data([0xAB, 0x01])) == ["ab01", "AB01", "qwE="])
+        #expect(SecretForms.of(Data([0xAB, 0x01])) == ["ab01", "AB01", "qwE=", "[171, 1]"])
+        #expect(SecretForms.of(Data()).isEmpty)
     }
 }

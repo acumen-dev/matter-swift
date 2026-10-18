@@ -94,9 +94,11 @@ public struct TestTelemetry: Sendable {
 
 /// The forms a secret could take in a log line or span.
 public enum SecretForms {
-    /// `bytes` as lower-case hex, upper-case hex and base64.
+    /// `bytes` as lower-case hex, upper-case hex, base64 and the decimal array `dump` prints
+    /// (`[171, 1]`). Empty input yields no forms: `contains("")` matches everything.
     public static func of(_ bytes: Data) -> [String] {
+        guard !bytes.isEmpty else { return [] }
         let lower = bytes.map { String(format: "%02x", $0) }.joined()
-        return [lower, lower.uppercased(), bytes.base64EncodedString()]
+        return [lower, lower.uppercased(), bytes.base64EncodedString(), "\(Array(bytes))"]
     }
 }
