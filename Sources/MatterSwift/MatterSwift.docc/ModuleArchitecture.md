@@ -170,5 +170,7 @@ On Apple platforms, it includes `MatterApple`. On Linux, it includes `MatterLinu
 | [swift-certificates](https://github.com/apple/swift-certificates) | MatterCrypto | X.509 certificate building |
 | [swift-asn1](https://github.com/apple/swift-asn1) | MatterCrypto | ASN.1/DER encoding |
 | [swift-log](https://github.com/apple/swift-log) | MatterTransport, MatterProtocol | Structured logging |
+| [swift-metrics](https://github.com/apple/swift-metrics) | MatterController | Controller metrics |
+| [swift-distributed-tracing](https://github.com/apple/swift-distributed-tracing) | MatterController | Controller spans |
 | [swift-collections](https://github.com/apple/swift-collections) | MatterProtocol | OrderedDictionary, Deque |
 | [swift-nio](https://github.com/apple/swift-nio) | MatterLinux | UDP transport on Linux |

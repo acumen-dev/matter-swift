@@ -294,14 +294,14 @@ The controller reports through three standard Swift server ecosystem APIs: swift
 
 ### Logging
 
-The controller logs through the `Logger` you pass to `MatterController(…logger:)`. Every component keeps that logger's label and handler and adds one metadata key, `matter.subsystem`, which is one of `messenger`, `mrp`, `exchange`, `session`, `case`, `pase`, `im`, `subscription`, `discovery` or `transport`. A level table keyed by label and subsystem can therefore turn on, say, `mrp` at trace without the rest. (`case` and `pase` also cover the commissioning progress and attestation lines; `session` also covers persistence and restore lines.)
+The controller logs through the `Logger` you pass to `MatterController(…logger:)`. Every component keeps that logger's label and handler and adds one metadata key, `matter.subsystem`, which is one of `messenger`, `mrp`, `exchange`, `session`, `case`, `pase`, `im`, `subscription`, `discovery` or `transport`. A level table keyed by label and subsystem can therefore turn on, say, `mrp` at trace without the rest. (`case` carries CASE establishment lines only. Commissioning progress and attestation lines are on `pase`; persistence and restore lines are on `session`.)
 
-Levels follow one rule: info is lifecycle, debug is per interaction, trace is per message.
+As a rule, info is lifecycle, debug is per interaction and trace is per message. Per-datagram drops that signal a fault rather than normal protocol behaviour (`undecodable`, `decrypt_failed`) are logged at debug.
 
 | Level | What |
 |---|---|
 | info | CASE / PASE session established or failed (latency, outcome); commissioning started, complete, failed; device attestation verified; session invalidated (why); session peer address changed; controller restored from persisted state; subscription established, lost or closed (reason); re-subscribing (attempt, backoff); operational address changed (old, new); CASE retry at a re-resolved address; peer unreachable (transmissions) |
-| notice, warning, error | Unusual but survivable: a commissionable instance skipped, attestation failed and awaiting the caller's approval, an operational re-resolve failed (notice); a failed state save, a transport send failure that MRP will retransmit, a full inbound queue, a subscription report that could not be decoded, recorded or answered (warning); the transport receive stream ending under a running messenger (error) |
+| notice, warning, error | Unusual conditions, for example: a commissionable instance skipped, attestation failed and continuing on the caller's approval, an operational re-resolve failed (notice); a failed state save, commissioning failed and the fail-safe could not be disarmed, a transport send failure, a full inbound queue, "Cannot encode standalone ack", a subscription report that could not be decoded, recorded or answered, a chunk carrying a wrong subscription ID, a broken chunk chain (warning); the transport receive stream ending under a running messenger, and an encrypted frame larger than the UDP payload limit, reported by `SecureMessageCodec` through the messenger's `transport` logger (error) |
 | debug | IM invoke / read / write request and response (status, latency, and the decoded command fields or written value); timed-request steps; subscribe request, response and refusal; each ReportData chunk; mDNS resolve start / result / failure; exchange response timeout; undecodable and undecryptable datagrams; establishments and IM calls that were cancelled or stopped |
 | trace | Every frame sent and received (session, exchange, protocol, opcode, counter, ack); MRP retransmit, ack received, standalone ack; dropped duplicate, out-of-window, stale-exchange and unknown-session frames; attribute values in reports and reads; liveness deadline recomputation |
 
@@ -332,11 +332,12 @@ Ids are `0x` plus upper-case hex with no padding (session `0xA`, cluster `0x102`
 
 `matter.reason` is bounded where it matters for filtering:
 
-- Messenger drops and failures: `duplicate`, `out_of_window`, `unknown_session`, `stale_exchange`, `undecodable`, `decrypt_failed`, `queue_full`, `send_failed`.
+- Messenger drops and failures: `duplicate`, `out_of_window`, `unknown_session`, `stale_exchange`, `undecodable`, `decrypt_failed`, `queue_full`, `send_failed` (a failed send of a message MRP tracks is retransmitted; a failed send of a standalone ack is not).
 - Subscription end: `liveness` (no report within the negotiated maximum interval plus the liveness margin), `resubscribe_failed`, `session` (the session it ran on is gone, or its record was removed), `closed` (cancelled by its owner, including `stop()` and `removeDevice`).
 - CASE / PASE: the outcome of a failed establishment (`refused`, `timeout`, `unreachable`, `error`), or `cancelled` / `stopped` on the debug line of an aborted one.
+- mDNS resolve: `aborted` on the debug line of a cancelled or stopped resolve.
 
-Two reasons are not a closed vocabulary, so do not use them as a label: a session invalidation reports why in words (`requested by the caller`, `device removed`, `peer unreachable`, `subscription establishment failed on a dead session`), and a failed mDNS resolve carries the error's description. The `SubscriptionEvent.lost` text is unchanged and is separate from `matter.reason`.
+Two kinds of reason are not a closed vocabulary, so do not use them as a label. A session invalidation reports why in fixed phrases (`requested by the caller`, `device removed`, `peer unreachable`, `subscription establishment failed on a dead session`). A failed mDNS resolve's reason may carry the error's text. The `SubscriptionEvent.lost` text is unchanged and is separate from `matter.reason`.
 
 ### Metrics
 
@@ -358,9 +359,11 @@ Metrics use swift-metrics. Every label is `<prefix>_<name>`; the prefix is `metr
 
 What the durations cover:
 
+- A timed invoke is counted and timed under `kind="timed"`.
+- `matter_controller_messages_total` counts accepted inbound frames, outbound frames at their first send, and standalone acks. It does not count retransmits or dropped duplicates.
 - `matter_im_request_duration` runs from the start of the call to its result. On a cold node that includes establishing the session (CASE), and any address-refresh retry.
 - `matter_case_duration` records successful CASE establishments only, handshake through registration. After an address-refresh retry it includes the failed attempt, the re-resolve and the second handshake.
-- `matter_report_interval` is the time between the first chunks of consecutive reports on a subscription.
+- `matter_report_interval` is the time between the first chunks of consecutive reports on a subscription; it restarts at each (re-)establishment.
 
 A call or establishment that is cancelled, or ended by `stop()`, is not counted and not timed. It gets a debug line, and its span ends without error status.
 
@@ -380,11 +383,11 @@ try await withSpan("apply cover target") { span in
 | Span | Notes |
 |---|---|
 | `matter.im.invoke`, `matter.im.read`, `matter.im.write` | One per public IM call. A timed invoke is a `matter.im.invoke` span with `matter.timed` set |
-| `matter.exchange` | Child of the call. Events: `send`, `retransmit` (with `matter.attempt`), `ack`. Error status on give-up, response timeout or session closed |
+| `matter.exchange` | Child of the span that opened it: `matter.case` or `matter.pase` for handshake exchanges, `matter.subscribe` for subscribe exchanges, the IM span for IM calls. Events: `send`, `retransmit` (with `matter.attempt`), `ack` (with `matter.ack`); both are integers. Error status on give-up, response timeout or session closed |
 | `matter.case`, `matter.pase` | Session establishment; `matter.case` parents the address-refresh `matter.resolve` |
-| `matter.resolve` | An mDNS resolve |
+| `matter.resolve` | An mDNS resolve, with `matter.instance`. Only `findCommissionable`, `discoverDevice(nodeID:)` and the CASE address-refresh are instrumented (span and `mDNS resolve` debug lines). The public `resolve(_:)` on a browse record has neither. `findCommissionable` and `discoverDevice` parent it on the task's current context |
 | `matter.subscribe` | One establishment round (initial or re-subscribe), child of the caller's context |
-| `matter.report` | One per ReportData chunk, a root span linked to the round's `matter.subscribe` span |
+| `matter.report` | One per ReportData chunk, a root span linked to the round's `matter.subscribe` span; `matter.attribute` is an array of `endpoint/cluster/attribute` path strings |
 | `matter.subscription.lost` | One per loss or close, a root span linked to the round's `matter.subscribe` span, with `matter.reason`. Error status for a loss, none for a close |
 
 There is no long-lived subscription span. A subscription can live for days, and a trace that long cannot be exported, sampled or viewed, so each report and loss is its own short root trace that links back to the `matter.subscribe` span that established the subscription.
@@ -399,7 +402,11 @@ Bootstrap `MetricsSystem` and `InstrumentationSystem` before creating the contro
 
 These never appear in a log message, metadata value, span attribute or span event: the root key; NOC and DAC private keys; IPK and epoch keys; session encrypt, decrypt and attestation keys; CASE ephemeral keys and the shared secret; the PASE passcode; SPAKE2+ contexts; setup codes; the PBKDF salt; and the raw payload bytes of secure-channel and decrypted IM messages.
 
-- The types that hold secrets describe themselves redacted in `description`, `debugDescription` and reflection: `SecureSession`, `FabricManager`, `PASESession`, the CASE and PASE handshake contexts, `CommissioningController.CommissioningContext`, `ControllerSession.HandshakeContext`, and `MatterController.Configuration` (which omits its root key).
+- The types that hold secrets describe themselves redacted in `description`, `debugDescription` and reflection:
+  - MatterController: `FabricManager`, `PASESession` and its `PBKDFParamRequestContext` and `Pake1Context`, `CommissioningController.CommissioningContext`, `ControllerSession.HandshakeContext`, and `MatterController.Configuration` (it renders `rootKey: <redacted>`).
+  - MatterProtocol: `SecureSession`, `CASEProtocolHandler` and its initiator and responder handshake contexts.
+  - MatterCrypto: `SessionKeys`, `FabricInfo`, `ResumptionTicket`, `ResumptionTicketStore`, `DeviceAttestationCredentials`, `CASESession.InitiatorContext` and `.ResponderContext`, `Spake2pProverContext`, `Spake2pVerifierContext`, `Spake2pVerifier`.
+  - MatterTypes: `SetupCode`, `StoredFabric`, `StoredControllerIdentity`.
 - The internal IM request path never logs payloads. Only the public IM API logs decoded command fields and values.
 - Fields and values of clusters 0x003C (Administrator Commissioning), 0x003E (Operational Credentials) and 0x003F (Group Key Management) are always `<redacted>`. The redaction fails closed: a path whose cluster is unknown, such as a wildcard, is redacted too.
 - TLV values elsewhere are rendered with `String(describing:)`, which is module-qualified, so debug lines that carry values are noisy.
@@ -407,7 +414,8 @@ These never appear in a log message, metadata value, span attribute or span even
 ### Limits
 
 - Controller CASE session resumption is not implemented, so every `matter_sessions_established_total{type="case"}` is a full handshake.
-- Device-side logging (the bridge and its handlers) is unchanged and does not use these keys, metrics or spans.
+- Device-side logging (the bridge and its handlers) is unchanged and does not use these keys, metrics or spans. The device path through `SecureMessageCodec` uses its default `matter.protocol.codec` logger.
+- The UDP transports (`matter.apple.udp`, `matter.linux.udp`) and mDNS keep their own loggers, with no `matter.subsystem`.
 
 ## Device Discovery
 
