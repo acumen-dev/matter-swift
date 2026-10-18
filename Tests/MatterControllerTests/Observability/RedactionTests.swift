@@ -21,10 +21,12 @@ struct RedactionTests {
         return ["\(value)", String(describing: value), String(reflecting: value), dumped]
     }
 
-    static func expectAbsent(_ secrets: [String], in value: Any, sourceLocation: SourceLocation = #_sourceLocation) {
+    /// No rendering of `value` contains any needle. Build needles with `needles(...)`, which
+    /// requires each secret to be non-empty.
+    static func expectAbsent(_ secrets: [Needle], in value: Any, sourceLocation: SourceLocation = #_sourceLocation) {
         for text in renderings(value) {
             for secret in secrets {
-                #expect(!text.contains(secret), "\(type(of: value)) rendered \(secret.prefix(8))…", sourceLocation: sourceLocation)
+                #expect(!text.contains(secret.form), "\(type(of: value)) rendered the \(secret.name) (\(secret.form.prefix(8))…)", sourceLocation: sourceLocation)
             }
         }
     }
@@ -55,17 +57,15 @@ struct RedactionTests {
         }
     }
 
-    static func bytes(_ key: SymmetricKey) -> Data { key.withUnsafeBytes { Data($0) } }
-
     @Test("SecureSession renders ids and never its keys")
-    func secureSession() {
+    func secureSession() throws {
         let encrypt = SymmetricKey(size: .bits128), decrypt = SymmetricKey(size: .bits128), attestation = SymmetricKey(size: .bits128)
         let session = SecureSession(
             localSessionID: 0x0A, peerSessionID: 0x14, establishment: .case, peerNodeID: NodeID(rawValue: 0x42),
             encryptKey: encrypt, decryptKey: decrypt, attestationKey: attestation
         )
         #expect(String(describing: session) == "SecureSession(local: 0xA, peer: 0x14, case, peerNode: 0x42, keys: <redacted>)")
-        Self.expectAbsent([encrypt, decrypt, attestation].flatMap { SecretForms.of(Self.bytes($0)) }, in: session)
+        Self.expectAbsent(try needles("encrypt key", encrypt) + needles("decrypt key", decrypt) + needles("attestation key", attestation), in: session)
         Self.expectMirror(session, labels: ["localSessionID", "peerSessionID", "establishment", "peerNodeID", "keys"])
     }
 
@@ -73,18 +73,18 @@ struct RedactionTests {
     func paseContexts() throws {
         let pase = PASESession(passcode: 20202021)
         #expect(String(describing: pase) == "PASESession(passcode: <redacted>)")
-        Self.expectAbsent(["20202021"], in: pase)
+        Self.expectAbsent(try needles(passcode: 20202021), in: pase)
         Self.expectMirror(pase, labels: ["passcode"])
 
         let (request, requestContext) = pase.createPBKDFParamRequest(initiatorSessionID: 0x10)
         #expect(String(describing: requestContext) == "PBKDFParamRequestContext(initiatorSession: 0x10, payload: <redacted>)")
-        Self.expectAbsent(SecretForms.of(request) + SecretForms.of(requestContext.initiatorRandom), in: requestContext)
+        Self.expectAbsent(try needles("request", request) + needles("requestContext.initiatorRandom", requestContext.initiatorRandom), in: requestContext)
         Self.expectMirror(requestContext, labels: ["initiatorSessionID", "payload"])
 
         let (w0, w1) = Spake2p.deriveW0W1(passcode: 20202021, salt: Data(repeating: 0x5A, count: 16), iterations: 1000)
         let (prover, _) = try Spake2p.proverStep1(w0: w0)
         #expect(String(describing: prover) == "Spake2pProverContext(<redacted>)")
-        Self.expectAbsent(SecretForms.of(w0), in: prover)
+        Self.expectAbsent(try needles("w0", w0), in: prover)
         Self.expectMirror(prover, labels: [])
 
         let verifier = try Spake2p.computeVerifier(passcode: 20202021, salt: Data(repeating: 0x5A, count: 16), iterations: 1000)
@@ -92,7 +92,7 @@ struct RedactionTests {
         let (verifierContext, _, _) = try Spake2p.verifierStep1(pA: pA, verifier: verifier, hashContext: Data(repeating: 1, count: 32))
         #expect(String(describing: verifierContext) == "Spake2pVerifierContext(<redacted>)")
         Self.expectAbsent(
-            SecretForms.of(verifierContext.ke) + SecretForms.of(Self.bytes(verifierContext.kcA)) + SecretForms.of(verifierContext.y.rawRepresentation),
+            try needles("verifierContext.ke", verifierContext.ke) + needles("verifierContext.kcA", verifierContext.kcA) + needles("verifierContext.y", verifierContext.y.rawRepresentation),
             in: verifierContext
         )
         Self.expectMirror(verifierContext, labels: [])
@@ -102,7 +102,7 @@ struct RedactionTests {
             responderSessionID: 0x20, initiatorSessionID: 0x10
         )
         #expect(String(describing: pake1) == "Pake1Context(initiatorSession: 0x10, responderSession: 0x20, secrets: <redacted>)")
-        Self.expectAbsent(SecretForms.of(w0) + SecretForms.of(w1), in: pake1)
+        Self.expectAbsent(try needles("w0", w0) + needles("w1", w1), in: pake1)
         Self.expectMirror(pake1, labels: ["initiatorSessionID", "responderSessionID", "secrets"])
 
         var context = CommissioningController.CommissioningContext()
@@ -111,7 +111,7 @@ struct RedactionTests {
         context.initiatorSessionID = 0x10
         context.attestationChallenge = Data(repeating: 0xC3, count: 16)
         #expect(String(describing: context).hasPrefix("CommissioningContext(initiatorSession: 0x10"))
-        Self.expectAbsent(["20202021"] + SecretForms.of(w0) + SecretForms.of(w1) + SecretForms.of(Data(repeating: 0xC3, count: 16)), in: context)
+        Self.expectAbsent(try needles(passcode: 20202021) + needles("w0", w0) + needles("w1", w1) + needles("attestation challenge", Data(repeating: 0xC3, count: 16)), in: context)
         Self.expectMirror(context, labels: ["summary"])
     }
 
@@ -123,7 +123,7 @@ struct RedactionTests {
         )
         let (_, handshake) = ControllerSession(fabricManager: fabric).createSigma1(peerNodeID: NodeID(rawValue: 0x42), initiatorSessionID: 7)
         #expect(String(describing: handshake) == "HandshakeContext(peerNode: 0x42, keys: <redacted>)")
-        Self.expectAbsent(SecretForms.of(fabric.ipkEpochKey), in: handshake)
+        Self.expectAbsent(try needles("fabric.ipkEpochKey", fabric.ipkEpochKey), in: handshake)
         Self.expectMirror(handshake, labels: ["peerNodeID", "keys"])
         for text in Self.renderings(handshake) {
             #expect(!text.contains("caseContext"))
@@ -132,7 +132,7 @@ struct RedactionTests {
 
         let inner = handshake.caseContext
         #expect(String(describing: inner) == "InitiatorHandshakeContext(peerNode: 0x42, peerFabric: 0x1, keys: <redacted>)")
-        Self.expectAbsent(SecretForms.of(fabric.ipkEpochKey), in: inner)
+        Self.expectAbsent(try needles("fabric.ipkEpochKey", fabric.ipkEpochKey), in: inner)
         Self.expectMirror(inner, labels: ["peerNodeID", "keys"])
         for text in Self.renderings(inner) {
             #expect(!text.contains("caseContext"))
@@ -144,12 +144,12 @@ struct RedactionTests {
     func setupCodeAndConfiguration() throws {
         let code = try SetupCode(parsing: "34970112332")
         #expect(String(describing: code) == "SetupCode(passcode: <redacted>, discriminator: short(15), flow: 0)")
-        Self.expectAbsent(["20202021", "34970112332"], in: code)
+        Self.expectAbsent(try needles(setupCode: "34970112332"), in: code)
         Self.expectMirror(code, labels: ["passcode", "discriminator"])
 
         let configuration = MatterController.Configuration(fabricID: FabricID(rawValue: 1))
         #expect(String(describing: configuration).contains("rootKey: <redacted>"))
-        Self.expectAbsent(SecretForms.of(configuration.rootKey.rawRepresentation), in: configuration)
+        Self.expectAbsent(try needles("configuration.rootKey", configuration.rootKey.rawRepresentation), in: configuration)
         Self.expectMirror(configuration, labels: ["summary"])
     }
 
@@ -178,12 +178,12 @@ struct RedactionTests {
     func verifierAndSessionKeys() throws {
         let verifier = try Spake2p.computeVerifier(passcode: 20202021, salt: Data(repeating: 0x5A, count: 16), iterations: 1000)
         #expect(String(describing: verifier) == "Spake2pVerifier(<redacted>)")
-        Self.expectAbsent(SecretForms.of(verifier.w0) + SecretForms.of(verifier.L) + SecretForms.of(verifier.serialized), in: verifier)
+        Self.expectAbsent(try needles("verifier.w0", verifier.w0) + needles("verifier.L", verifier.L) + needles("verifier.serialized", verifier.serialized), in: verifier)
         Self.expectMirror(verifier, labels: ["summary"])
 
         let keys = KeyDerivation.deriveSessionKeys(sharedSecret: Data(repeating: 0x33, count: 32))
         #expect(String(describing: keys) == "SessionKeys(<redacted>)")
-        Self.expectAbsent([keys.i2rKey, keys.r2iKey, keys.attestationKey].flatMap { SecretForms.of(Self.bytes($0)) }, in: keys)
+        Self.expectAbsent(try needles("i2r key", keys.i2rKey) + needles("r2i key", keys.r2iKey) + needles("attestation key", keys.attestationKey), in: keys)
         Self.expectMirror(keys, labels: ["summary"])
     }
 
@@ -192,7 +192,7 @@ struct RedactionTests {
         let fabric = try makeTestFabric().deviceFabric
         #expect(String(describing: fabric) == "FabricInfo(fabricIndex: 1, fabricID: 0x1, nodeID: 0x42, keys: <redacted>)")
         Self.expectAbsent(
-            SecretForms.of(fabric.operationalKey.rawRepresentation) + SecretForms.of(fabric.ipkEpochKey) + SecretForms.of(fabric.deriveIPK()),
+            try needles("fabric.operationalKey", fabric.operationalKey.rawRepresentation) + needles("fabric.ipkEpochKey", fabric.ipkEpochKey) + needles("IPK", fabric.deriveIPK()),
             in: fabric
         )
         Self.expectMirror(fabric, labels: ["summary"])
@@ -206,12 +206,12 @@ struct RedactionTests {
         )
         #expect(String(describing: ticket)
                 == "ResumptionTicket(peerNode: 0x42, peerFabric: 0x1, fabricIndex: 1, expires: 2001-01-01 00:00:00 +0000, secrets: <redacted>)")
-        Self.expectAbsent(SecretForms.of(resumptionID) + SecretForms.of(sharedSecret), in: ticket)
+        Self.expectAbsent(try needles("resumptionID", resumptionID) + needles("sharedSecret", sharedSecret), in: ticket)
         Self.expectMirror(ticket, labels: ["summary"])
 
         let credentials = try DeviceAttestationCredentials.testCredentials()
         #expect(String(describing: credentials) == "DeviceAttestationCredentials(dacPrivateKey: <redacted>)")
-        Self.expectAbsent(SecretForms.of(credentials.dacPrivateKey.rawRepresentation), in: credentials)
+        Self.expectAbsent(try needles("credentials.dacPrivateKey", credentials.dacPrivateKey.rawRepresentation), in: credentials)
         Self.expectMirror(credentials, labels: ["summary"])
     }
 
@@ -225,17 +225,17 @@ struct RedactionTests {
         )
         #expect(String(describing: initiator) == "InitiatorContext(initiatorSession: 0x7, keys: <redacted>)")
         Self.expectAbsent(
-            SecretForms.of(initiator.initiatorEphKey.rawRepresentation) + SecretForms.of(initiator.ipk) + SecretForms.of(sigma1)
-                + SecretForms.of(controllerFabric.operationalKey.rawRepresentation) + SecretForms.of(controllerFabric.ipkEpochKey),
+            try needles("initiator.initiatorEphKey", initiator.initiatorEphKey.rawRepresentation) + needles("initiator.ipk", initiator.ipk) + needles("sigma1", sigma1)
+                + needles("controllerFabric.operationalKey", controllerFabric.operationalKey.rawRepresentation) + needles("controllerFabric.ipkEpochKey", controllerFabric.ipkEpochKey),
             in: initiator
         )
         Self.expectMirror(initiator, labels: ["summary"])
 
         let (_, handshake) = try CASEProtocolHandler(fabricInfo: deviceFabric).handleSigma1(payload: sigma1, responderSessionID: 300)
         let responder = handshake.caseContext
-        let responderSecrets = SecretForms.of(responder.responderEphKey.rawRepresentation) + SecretForms.of(responder.ipk)
-            + SecretForms.of(responder.sharedSecret.withUnsafeBytes { Data($0) }) + SecretForms.of(responder.sigma1Bytes)
-            + SecretForms.of(responder.sigma2Bytes) + SecretForms.of(deviceFabric.operationalKey.rawRepresentation)
+        let responderSecrets = try needles("responder.responderEphKey", responder.responderEphKey.rawRepresentation) + needles("responder.ipk", responder.ipk)
+            + needles("responder.sharedSecret", responder.sharedSecret.withUnsafeBytes { Data($0) }) + needles("responder.sigma1Bytes", responder.sigma1Bytes)
+            + needles("responder.sigma2Bytes", responder.sigma2Bytes) + needles("deviceFabric.operationalKey", deviceFabric.operationalKey.rawRepresentation)
         #expect(String(describing: responder) == "ResponderContext(responderSession: 0x12C, keys: <redacted>)")
         Self.expectAbsent(responderSecrets, in: responder)
         Self.expectMirror(responder, labels: ["summary"])
@@ -247,5 +247,63 @@ struct RedactionTests {
             #expect(!text.contains("caseContext"))
             #expect(!text.contains("PrivateKey"))
         }
+    }
+
+    @Test("Keys at rest and their holders never render a root key, an operational key, the IPK or a ticket's secrets")
+    func keysAtRestAndHolders() async throws {
+        let testFabric = try makeTestFabric()
+        let manager = testFabric.manager, controllerFabric = manager.controllerFabricInfo
+        let managerSecrets = try needles("root key", testFabric.rootKey.rawRepresentation)
+            + needles("controller operational key", controllerFabric.operationalKey.rawRepresentation)
+            + needles("IPK epoch key", manager.ipkEpochKey)
+        #expect(String(describing: manager) == "FabricManager(fabricIndex: 1, fabricID: 0x1, controllerNodeID: 0x1, vendorID: 0xFFF1, keys: <redacted>)")
+        Self.expectAbsent(managerSecrets, in: manager)
+        Self.expectMirror(manager, labels: ["summary"])
+
+        let identity = manager.toStoredIdentity()
+        #expect(String(describing: identity) == "StoredControllerIdentity(fabricIndex: 1, fabricID: 0x1, controllerNodeID: 0x1, vendorID: 0xFFF1, keys: <redacted>)")
+        Self.expectAbsent(managerSecrets, in: identity)
+        Self.expectMirror(identity, labels: ["summary"])
+        // The container is not redacted itself: every rendering shows its identity through the
+        // identity's redaction (raw key bytes would render only as `32 bytes`, which no needle matches).
+        let state = StoredControllerState(identity: identity, nextNodeID: 2)
+        Self.expectAbsent(managerSecrets, in: state)
+        for text in Self.renderings(state) {
+            #expect(text.contains("StoredControllerIdentity(fabricIndex: 1, fabricID: 0x1, controllerNodeID: 0x1, vendorID: 0xFFF1, keys: <redacted>)"))
+            #expect(!text.contains("rootKeyRaw") && !text.contains("operationalKeyRaw") && !text.contains("ipkEpochKey"))
+        }
+
+        let handlerEpochKey = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        let handler = CASEProtocolHandler(fabricInfo: testFabric.deviceFabric, ipkEpochKey: handlerEpochKey)
+        #expect(String(describing: handler) == "CASEProtocolHandler(fabricIndex: 1, fabricID: 0x1, nodeID: 0x42, keys: <redacted>)")
+        Self.expectAbsent(
+            try needles("handler IPK epoch key", handlerEpochKey)
+                + needles("device operational key", testFabric.deviceFabric.operationalKey.rawRepresentation)
+                + needles("fabric IPK epoch key", testFabric.deviceFabric.ipkEpochKey),
+            in: handler
+        )
+        Self.expectMirror(handler, labels: ["summary"])
+
+        let operationalKeyRaw = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        let fabricEpochKey = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        let stored = StoredFabric(
+            fabricIndex: 1, nocTLV: Data([1]), icacTLV: nil, rcacTLV: Data([2]), operationalKeyRaw: operationalKeyRaw,
+            ipkEpochKey: fabricEpochKey, caseAdminSubject: 1, adminVendorId: 0xFFF1
+        )
+        #expect(String(describing: stored) == "StoredFabric(fabricIndex: 1, caseAdminSubject: 0x1, adminVendorId: 0xFFF1, keys: <redacted>)")
+        Self.expectAbsent(try needles("stored operational key", operationalKeyRaw) + needles("stored IPK epoch key", fabricEpochKey), in: stored)
+        Self.expectMirror(stored, labels: ["summary"])
+
+        let resumptionID = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        let sharedSecret = Data((0..<32).map { _ in UInt8.random(in: 0...255) })
+        let store = ResumptionTicketStore()
+        await store.store(ticket: ResumptionTicket(
+            resumptionID: resumptionID, sharedSecret: sharedSecret, peerNodeID: NodeID(rawValue: 0x42),
+            peerFabricID: FabricID(rawValue: 1), fabricIndex: FabricIndex(rawValue: 1), expiryDate: Date().addingTimeInterval(60)
+        ))
+        #expect(await store.count == 1)
+        #expect(String(describing: store) == "ResumptionTicketStore(maxTickets: 64, tickets: <redacted>)")
+        Self.expectAbsent(try needles("resumption ID", resumptionID) + needles("shared secret", sharedSecret), in: store)
+        Self.expectMirror(store, labels: ["summary"])
     }
 }

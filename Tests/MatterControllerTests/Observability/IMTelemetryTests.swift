@@ -304,6 +304,12 @@ struct IMTelemetryTests {
                 == "0x1/0x102/0x1A status 0x86")
     }
 
+    @Test("IMFormat fails closed: a value with no cluster (a wildcard path) is redacted")
+    func formattingFailsClosed() {
+        #expect(IMFormat.value(.unsignedInt(7), clusterID: nil) == "<redacted>")
+        #expect(IMFormat.value(nil, clusterID: nil) == "<redacted>")
+    }
+
     // MARK: - Outcomes
 
     @Test("Errors map to bounded outcomes; cancellation and stop are not counted")

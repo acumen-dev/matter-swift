@@ -13,27 +13,9 @@ import MatterTestSupport
 @Suite("No secret is recorded", .timeLimit(.minutes(1)))
 struct SecretLeakTests {
 
-    /// One form of a named secret.
-    private struct Needle {
-        let name: String
-        let form: String
-    }
-
-    /// Every form of `secret`, required non-empty: an empty secret has no forms and would pass unchecked.
-    private static func needles(_ name: String, _ secret: Data, sourceLocation: SourceLocation = #_sourceLocation) throws -> [Needle] {
-        let forms = SecretForms.of(secret)
-        try #require(!forms.isEmpty, "\(name) is empty", sourceLocation: sourceLocation)
-        return forms.map { Needle(name: name, form: $0) }
-    }
-
-    private static func needles(_ name: String, _ key: SymmetricKey?, sourceLocation: SourceLocation = #_sourceLocation) throws -> [Needle] {
-        let key = try #require(key, "\(name) is missing", sourceLocation: sourceLocation)
-        return try needles(name, key.withUnsafeBytes { Data($0) }, sourceLocation: sourceLocation)
-    }
-
     /// The session's keys; `attestation` is false for a test session built without an attestation key.
-    private static func needles(
-        session name: String, _ session: SecureSession, attestation: Bool = true, sourceLocation: SourceLocation = #_sourceLocation
+    private static func sessionNeedles(
+        _ name: String, _ session: SecureSession, attestation: Bool = true, sourceLocation: SourceLocation = #_sourceLocation
     ) throws -> [Needle] {
         try needles("\(name) encrypt key", session.encryptKey, sourceLocation: sourceLocation)
             + needles("\(name) decrypt key", session.decryptKey, sourceLocation: sourceLocation)
@@ -73,7 +55,7 @@ struct SecretLeakTests {
         let (rig, fabric) = try await makeCASEControllerRig()
         var peer = TestPeer(link: rig.link)
         var seen = Set<String>()
-        var needles: [Needle] = []
+        var secrets: [Needle] = []
         let address = rig.link.b.address
         let node = rig.node
 
@@ -85,7 +67,7 @@ struct SecretLeakTests {
             payload: StatusReportMessage(generalStatus: .failure, protocolID: 0, protocolStatus: 0).encode(), counter: 700
         ))
         await #expect(throws: (any Error).self) { _ = try await refused.value }
-        needles += try Self.needles("PBKDFParamRequest payload", pbkdf.payload)
+        secrets += try needles("PBKDFParamRequest payload", pbkdf.payload)
 
         // 2. A PASE that succeeds, then ArmFailSafe over the PASE session, refused by the device.
         let salt = Self.random(32)
@@ -128,18 +110,18 @@ struct SecretLeakTests {
             opcode: InteractionModelOpcode.statusResponse.rawValue, payload: IMStatusResponse(status: 0x01).tlvEncode()
         ))
         await #expect(throws: (any Error).self) { _ = try await commissioning.value }
-        needles += [Needle(name: "passcode", form: "20202021")]
-        needles += try Self.needles("PBKDF salt", salt)
-        needles += try Self.needles("SPAKE2+ w0", verifier.w0)
-        needles += try Self.needles("SPAKE2+ L", verifier.L)
-        needles += try Self.needles("SPAKE2+ Ke", ke)
-        needles += try Self.needles(session: "PASE", pasePeer)
-        needles += try Self.needles("PBKDFParamRequest payload", pbkdfRequest.payload)
-        needles += try Self.needles("PBKDFParamResponse payload", pbkdfResponse)
-        needles += try Self.needles("Pake1 payload", pake1.payload)
-        needles += try Self.needles("Pake2 payload", pake2)
-        needles += try Self.needles("Pake3 payload", pake3.payload)
-        needles += try Self.needles("ArmFailSafe payload", armFailSafe.payload)
+        secrets += try needles(passcode: 20202021)
+        secrets += try needles("PBKDF salt", salt)
+        secrets += try needles("SPAKE2+ w0", verifier.w0)
+        secrets += try needles("SPAKE2+ L", verifier.L)
+        secrets += try needles("SPAKE2+ Ke", ke)
+        secrets += try Self.sessionNeedles("PASE", pasePeer)
+        secrets += try needles("PBKDFParamRequest payload", pbkdfRequest.payload)
+        secrets += try needles("PBKDFParamResponse payload", pbkdfResponse)
+        secrets += try needles("Pake1 payload", pake1.payload)
+        secrets += try needles("Pake2 payload", pake2)
+        secrets += try needles("Pake3 payload", pake3.payload)
+        secrets += try needles("ArmFailSafe payload", armFailSafe.payload)
 
         // 3. A successful CASE: Sigma1 → Sigma2 → Sigma3 → StatusReport against the device's real handler.
         let device = CASEProtocolHandler(fabricInfo: fabric.deviceFabric)
@@ -160,18 +142,18 @@ struct SecretLeakTests {
         ))
         let caseSession = try await establishing.value
         let ipkEpochKey = await rig.controller.ipkEpochKey
-        needles += try Self.needles(session: "CASE controller", caseSession)
-        needles += try Self.needles(session: "CASE device", casePeer)
-        needles += try Self.needles("CASE shared secret", responder.caseContext.sharedSecret.withUnsafeBytes { Data($0) })
-        needles += try Self.needles("CASE responder ephemeral key", responder.caseContext.responderEphKey.rawRepresentation)
-        needles += try Self.needles("IPK", responder.caseContext.ipk)
-        needles += try Self.needles("IPK epoch key", ipkEpochKey)
-        needles += try Self.needles("root key", fabric.rootKey.rawRepresentation)
-        needles += try Self.needles("controller NOC private key", fabric.manager.controllerFabricInfo.operationalKey.rawRepresentation)
-        needles += try Self.needles("device NOC private key", fabric.deviceFabric.operationalKey.rawRepresentation)
-        needles += try Self.needles("Sigma1 payload", sigma1.payload)
-        needles += try Self.needles("Sigma2 payload", sigma2)
-        needles += try Self.needles("Sigma3 payload", sigma3.payload)
+        secrets += try Self.sessionNeedles("CASE controller", caseSession)
+        secrets += try Self.sessionNeedles("CASE device", casePeer)
+        secrets += try needles("CASE shared secret", responder.caseContext.sharedSecret.withUnsafeBytes { Data($0) })
+        secrets += try needles("CASE responder ephemeral key", responder.caseContext.responderEphKey.rawRepresentation)
+        secrets += try needles("IPK", responder.caseContext.ipk)
+        secrets += try needles("IPK epoch key", ipkEpochKey)
+        secrets += try needles("root key", fabric.rootKey.rawRepresentation)
+        secrets += try needles("controller NOC private key", fabric.manager.controllerFabricInfo.operationalKey.rawRepresentation)
+        secrets += try needles("device NOC private key", fabric.deviceFabric.operationalKey.rawRepresentation)
+        secrets += try needles("Sigma1 payload", sigma1.payload)
+        secrets += try needles("Sigma2 payload", sigma2)
+        secrets += try needles("Sigma3 payload", sigma3.payload)
 
         // 4. IM over the CASE session, everything at trace: a plain invoke, then the three
         // sensitive clusters with secrets in their fields and values.
@@ -187,7 +169,7 @@ struct SecretLeakTests {
             opcode: InteractionModelOpcode.invokeResponse.rawValue, payload: invokeSuccess(endpoint, cluster, command)
         ))
         _ = try await call.value
-        needles += try Self.needles("decrypted invoke payload", invoke.payload)
+        secrets += try needles("decrypted invoke payload", invoke.payload)
 
         // An octet string renders as `octetString(16 bytes)` even unredacted; a number renders in
         // full, so it is what catches a sensitive cluster that stops being redacted.
@@ -213,7 +195,7 @@ struct SecretLeakTests {
             opcode: InteractionModelOpcode.invokeResponse.rawValue, payload: invokeSuccess(root, operationalCredentials, addNOC)
         ))
         _ = try await addNOCCall.value
-        needles += try Self.needles("AddNOC payload", addNOCRequest.payload)
+        secrets += try needles("AddNOC payload", addNOCRequest.payload)
 
         let adminCommissioning = ClusterID(rawValue: 0x003C), openWindow = CommandID(rawValue: 0x00)
         let openWindowFields: TLVElement = .structure([
@@ -234,7 +216,7 @@ struct SecretLeakTests {
             opcode: InteractionModelOpcode.invokeResponse.rawValue, payload: invokeSuccess(root, adminCommissioning, openWindow)
         ))
         _ = try await openWindowCall.value
-        needles += try Self.needles("OpenCommissioningWindow payload", openWindowRequest.payload)
+        secrets += try needles("OpenCommissioningWindow payload", openWindowRequest.payload)
 
         let groupKeyManagement = ClusterID(rawValue: 0x003F), attribute = AttributeID(rawValue: 0)
         let groupKey = Self.random(16)
@@ -249,8 +231,8 @@ struct SecretLeakTests {
             opcode: InteractionModelOpcode.reportData.rawValue, payload: readResponse
         ))
         #expect(try await read.value == withNumber(groupKey))
-        needles += try Self.needles("group key", groupKey)
-        needles += try Self.needles("decrypted ReportData payload", readResponse)
+        secrets += try needles("group key", groupKey)
+        secrets += try needles("decrypted ReportData payload", readResponse)
 
         let written = Self.random(16)
         let write = Task {
@@ -267,8 +249,8 @@ struct SecretLeakTests {
             )]).tlvEncode()
         ))
         #expect(try await write.value == true)
-        needles += try Self.needles("written value", written)
-        needles += try Self.needles("WriteRequest payload", writeRequest.payload)
+        secrets += try needles("written value", written)
+        secrets += try needles("WriteRequest payload", writeRequest.payload)
 
         // 5. A subscription to a group-key attribute: a priming report, then one data report.
         let subscriptionID = SubscriptionID(rawValue: 7)
@@ -291,8 +273,10 @@ struct SecretLeakTests {
         ))
         let subscription = try await subscribing.value
         var events = subscription.events.makeAsyncIterator()
-        _ = await events.next()  // established
-        _ = await events.next()  // the priming report
+        let established = await events.next()
+        try #require(established?.isEstablished == true, "expected .established, got \(String(describing: established))")
+        let priming = await events.next()
+        try #require(priming?.isReport == true, "expected the priming report, got \(String(describing: priming))")
         try await peer.send(ScriptedPeer.secured(
             session: casePeer, exchangeID: 0x5000, initiator: true, protocolID: .interactionModel,
             opcode: InteractionModelOpcode.reportData.rawValue,
@@ -300,11 +284,12 @@ struct SecretLeakTests {
                 AttributeReportIB(attributeData: AttributeDataIB(path: groupPath, data: withNumber(reported))),
             ]).tlvEncode()
         ))
-        guard case .report? = await events.next() else { Issue.record("expected the data report"); return }
+        let report = await events.next()
+        try #require(report?.isReport == true, "expected the data report, got \(String(describing: report))")
         await subscription.cancel()
-        needles += try Self.needles("primed group key", primed)
-        needles += numberNeedles
-        needles += try Self.needles("reported group key", reported)
+        secrets += try needles("primed group key", primed)
+        secrets += numberNeedles
+        secrets += try needles("reported group key", reported)
 
         // 6. Accidental interpolation of every redacted type the controller side holds.
         let setupCode = try SetupCode(parsing: "34970112332")
@@ -314,8 +299,8 @@ struct SecretLeakTests {
             \(verifier) \(paseKeys) \(fabric.deviceFabric) \(fabric.manager.controllerFabricInfo) \(responder) \
             \(responder.caseContext) \(credentials)
             """)
-        needles += [Needle(name: "setup code", form: "34970112332")]
-        needles += try Self.needles("DAC private key", credentials.dacPrivateKey.rawRepresentation)
+        secrets += try needles(setupCode: "34970112332")
+        secrets += try needles("DAC private key", credentials.dacPrivateKey.rawRepresentation)
         await rig.controller.stop()
 
         // 7. An unreachable node: MRP gives up and the session is invalidated.
@@ -327,9 +312,9 @@ struct SecretLeakTests {
                 nodeID: silentNode, endpointID: endpoint, clusterID: cluster, commandID: command, commandFields: fields
             )
         }
-        needles += try Self.needles(session: "unreachable", silent.controllerSession, attestation: false)
-        needles += try Self.needles("unreachable IPK epoch key", await silent.controller.ipkEpochKey)
-        needles += try Self.needles("unreachable root key", silent.configuration.rootKey.rawRepresentation)
+        secrets += try Self.sessionNeedles("unreachable", silent.controllerSession, attestation: false)
+        secrets += try needles("unreachable IPK epoch key", await silent.controller.ipkEpochKey)
+        secrets += try needles("unreachable root key", silent.configuration.rootKey.rawRepresentation)
         await silent.controller.stop()
 
         // Every path was traced.
@@ -344,10 +329,15 @@ struct SecretLeakTests {
             #expect(!rig.telemetry.finishedSpans(named: span).isEmpty, "no \(span) span")
         }
 
-        for needle in needles {
+        for needle in secrets {
             for text in recorded where text.contains(needle.form) {
                 Issue.record("recorded the \(needle.name) (\(needle.form.prefix(8))…) in \(text.prefix(80))")
             }
         }
     }
+}
+
+private extension SubscriptionEvent {
+    var isEstablished: Bool { if case .established = self { true } else { false } }
+    var isReport: Bool { if case .report = self { true } else { false } }
 }

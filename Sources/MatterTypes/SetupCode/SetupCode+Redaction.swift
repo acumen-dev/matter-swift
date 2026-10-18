@@ -5,8 +5,8 @@ extension SetupCode: CustomStringConvertible, CustomDebugStringConvertible, Cust
     /// Everything but the passcode (which, with the discriminator, is the whole secret code).
     public var description: String {
         var parts = ["passcode: <redacted>", "discriminator: \(discriminatorText)"]
-        if let vendorID { parts.append("vendorID: 0x\(String(vendorID, radix: 16, uppercase: true))") }
-        if let productID { parts.append("productID: 0x\(String(productID, radix: 16, uppercase: true))") }
+        if let vendorID { parts.append("vendorID: \(MatterHex.string(vendorID))") }
+        if let productID { parts.append("productID: \(MatterHex.string(productID))") }
         if let commissioningFlow { parts.append("flow: \(commissioningFlow)") }
         return "SetupCode(\(parts.joined(separator: ", ")))"
     }

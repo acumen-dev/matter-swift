@@ -62,9 +62,10 @@ enum IMFormat {
     /// Management (epoch keys). Their values are never rendered.
     static let sensitiveClusters: Set<UInt32> = [0x003C, 0x003E, 0x003F]
 
-    /// A decoded TLV value as text; `<redacted>` for a sensitive cluster, `none` for no value.
+    /// A decoded TLV value as text; `none` for no value. Fails closed: `<redacted>` for a
+    /// sensitive cluster, and for an unknown one (a wildcard path) that could be one.
     static func value(_ value: TLVElement?, clusterID: ClusterID?) -> String {
-        if let clusterID, sensitiveClusters.contains(clusterID.rawValue) { return "<redacted>" }
+        guard let clusterID, !sensitiveClusters.contains(clusterID.rawValue) else { return "<redacted>" }
         guard let value else { return "none" }
         return String(describing: value)
     }

@@ -201,3 +201,19 @@ public struct CASEProtocolHandler: Sendable {
         )
     }
 }
+
+// MARK: - Redaction
+
+extension CASEProtocolHandler: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    /// The local fabric's identity only (here, not in `ProtocolRedaction.swift`, because the
+    /// fabric info is private): its operational key and the IPK epoch key are never rendered.
+    public var description: String {
+        "CASEProtocolHandler(fabricIndex: \(fabricInfo.fabricIndex.rawValue), fabricID: \(MatterLogValue.hexString(fabricInfo.fabricID.rawValue)), nodeID: \(MatterLogValue.hexString(fabricInfo.nodeID.rawValue)), keys: <redacted>)"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["summary": description], displayStyle: .struct)
+    }
+}

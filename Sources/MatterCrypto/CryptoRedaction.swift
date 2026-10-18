@@ -2,11 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
-
-/// `0x` plus upper-case hex, no padding: the id format of the controller's log metadata.
-private func hex<T: BinaryInteger>(_ value: T) -> String {
-    "0x\(String(value, radix: 16, uppercase: true))"
-}
+import MatterTypes
 
 extension SessionKeys: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     /// Holds the I2R, R2I and attestation keys: never rendered.
@@ -18,7 +14,7 @@ extension SessionKeys: CustomStringConvertible, CustomDebugStringConvertible, Cu
 extension FabricInfo: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     /// The fabric's identity only: the operational key and the IPK epoch key are never rendered.
     public var description: String {
-        "FabricInfo(fabricIndex: \(fabricIndex.rawValue), fabricID: \(hex(fabricID.rawValue)), nodeID: \(hex(nodeID.rawValue)), keys: <redacted>)"
+        "FabricInfo(fabricIndex: \(fabricIndex.rawValue), fabricID: \(MatterHex.string(fabricID.rawValue)), nodeID: \(MatterHex.string(nodeID.rawValue)), keys: <redacted>)"
     }
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .struct) }
@@ -27,7 +23,7 @@ extension FabricInfo: CustomStringConvertible, CustomDebugStringConvertible, Cus
 extension ResumptionTicket: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     /// The peer and expiry only: the resumption ID and the shared secret are never rendered.
     public var description: String {
-        "ResumptionTicket(peerNode: \(hex(peerNodeID.rawValue)), peerFabric: \(hex(peerFabricID.rawValue)), fabricIndex: \(fabricIndex.rawValue), expires: \(expiryDate), secrets: <redacted>)"
+        "ResumptionTicket(peerNode: \(MatterHex.string(peerNodeID.rawValue)), peerFabric: \(MatterHex.string(peerFabricID.rawValue)), fabricIndex: \(fabricIndex.rawValue), expires: \(expiryDate), secrets: <redacted>)"
     }
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .struct) }
@@ -44,7 +40,7 @@ extension CASESession.InitiatorContext: CustomStringConvertible, CustomDebugStri
     /// The session id only: the ephemeral key, the IPK, the fabric's keys and the Sigma1 bytes
     /// are never rendered.
     public var description: String {
-        "InitiatorContext(initiatorSession: \(hex(initiatorSessionID)), keys: <redacted>)"
+        "InitiatorContext(initiatorSession: \(MatterHex.string(initiatorSessionID)), keys: <redacted>)"
     }
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .struct) }
@@ -54,8 +50,15 @@ extension CASESession.ResponderContext: CustomStringConvertible, CustomDebugStri
     /// The session id only: the ephemeral key, the shared secret, the IPK, the fabric's keys and
     /// the Sigma bytes are never rendered.
     public var description: String {
-        "ResponderContext(responderSession: \(hex(responderSessionID)), keys: <redacted>)"
+        "ResponderContext(responderSession: \(MatterHex.string(responderSessionID)), keys: <redacted>)"
     }
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .struct) }
+}
+
+extension ResumptionTicketStore: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    /// The capacity only: the tickets (resumption IDs and shared secrets) are never rendered.
+    public nonisolated var description: String { "ResumptionTicketStore(maxTickets: \(maxTickets), tickets: <redacted>)" }
+    public nonisolated var debugDescription: String { description }
+    public nonisolated var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .class) }
 }

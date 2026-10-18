@@ -86,3 +86,13 @@ extension MatterController.Configuration: CustomStringConvertible, CustomDebugSt
     public var debugDescription: String { description }
     public var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .struct) }
 }
+
+extension FabricManager: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    /// The fabric's identity only: the root key, the operational key and the IPK epoch key are never rendered.
+    public nonisolated var description: String {
+        let fabric = controllerFabricInfo
+        return "FabricManager(fabricIndex: \(fabric.fabricIndex.rawValue), fabricID: \(MatterLogValue.hexString(fabric.fabricID.rawValue)), controllerNodeID: \(MatterLogValue.hexString(fabric.nodeID.rawValue)), vendorID: \(MatterLogValue.hexString(vendorID.rawValue)), keys: <redacted>)"
+    }
+    public nonisolated var debugDescription: String { description }
+    public nonisolated var customMirror: Mirror { Mirror(self, children: ["summary": description], displayStyle: .class) }
+}

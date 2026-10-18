@@ -1,6 +1,7 @@
 // ObservabilityTestSupport.swift
 // Copyright 2026 Monagle Pty Ltd
 
+import Testing
 import Foundation
 import Crypto
 import MatterCrypto
@@ -135,4 +136,45 @@ func makeCASEControllerRig() async throws -> (rig: ControllerRig, fabric: TestFa
     let fabric = try makeTestFabric()
     let rig = try await makeControllerRig(installSession: false, fabricManager: fabric.manager)
     return (rig, fabric)
+}
+
+// MARK: - Needles
+
+/// One form of a named secret, as a leak check searches for it.
+struct Needle {
+    let name: String
+    let form: String
+}
+
+/// Every ``SecretForms`` form of `secret`, required non-empty: an empty secret has no forms
+/// and would pass every absence check unexamined.
+func needles(_ name: String, _ secret: Data, sourceLocation: SourceLocation = #_sourceLocation) throws -> [Needle] {
+    let forms = SecretForms.of(secret)
+    try #require(!forms.isEmpty, "\(name) is empty", sourceLocation: sourceLocation)
+    return forms.map { Needle(name: name, form: $0) }
+}
+
+/// As ``needles(_:_:sourceLocation:)`` for a key's bytes; a missing key fails.
+func needles(_ name: String, _ key: SymmetricKey?, sourceLocation: SourceLocation = #_sourceLocation) throws -> [Needle] {
+    let key = try #require(key, "\(name) is missing", sourceLocation: sourceLocation)
+    return try needles(name, key.withUnsafeBytes { Data($0) }, sourceLocation: sourceLocation)
+}
+
+/// A passcode as decimal, as `MatterLogValue.hexString` would print it (upper and lower
+/// case, without the `0x`), and its four little-endian bytes (the PBKDF input) in every form.
+func needles(passcode: UInt32, sourceLocation: SourceLocation = #_sourceLocation) throws -> [Needle] {
+    let hex = String(MatterLogValue.hexString(passcode).dropFirst(2))
+    let bytes = Data((0..<4).map { UInt8(truncatingIfNeeded: passcode >> ($0 * 8)) })
+    return [String(passcode), hex, hex.lowercased()].map { Needle(name: "passcode", form: $0) }
+        + (try needles("passcode bytes", bytes, sourceLocation: sourceLocation))
+}
+
+/// A manual setup code as typed and as its number in hex (upper and lower case), plus every
+/// form of the passcode it carries.
+func needles(setupCode: String, sourceLocation: SourceLocation = #_sourceLocation) throws -> [Needle] {
+    let number = try #require(UInt64(setupCode), "setup code is not numeric", sourceLocation: sourceLocation)
+    let hex = String(MatterLogValue.hexString(number).dropFirst(2))
+    let code = try SetupCode(parsing: setupCode)
+    return [setupCode, hex, hex.lowercased()].map { Needle(name: "setup code", form: $0) }
+        + (try needles(passcode: code.passcode, sourceLocation: sourceLocation))
 }

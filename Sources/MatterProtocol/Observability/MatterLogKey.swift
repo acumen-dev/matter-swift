@@ -3,6 +3,7 @@
 
 import Logging
 import MatterTransport
+import MatterTypes
 
 /// Stable, namespaced metadata keys on swift-matter's controller log lines; spans use the same
 /// names for their attributes. Ids are hex (`0x…`), counters decimal.
@@ -50,8 +51,9 @@ extension Logger {
 
 /// Formatting for `matter.*` metadata values and span attributes.
 public enum MatterLogValue {
+    /// ``MatterHex/string(_:)``: `0x` plus upper-case hex, no padding.
     public static func hexString<T: BinaryInteger>(_ value: T) -> String {
-        "0x" + String(value, radix: 16, uppercase: true)
+        MatterHex.string(value)
     }
 
     public static func hex<T: BinaryInteger>(_ value: T) -> Logger.MetadataValue {
