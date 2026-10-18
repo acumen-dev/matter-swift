@@ -33,7 +33,9 @@ struct TestTelemetryTests {
         let waiter = Task { try await telemetry.logs.first { $0.message == "later" } }
         logger.info("earlier")
         logger.info("later")
-        #expect(try await waiter.value.level == .info)
+        let line = try await waiter.value
+        #expect(line.level == .info)
+        #expect(line.message == "later")
     }
 
     @Test("allRecordedText covers log text, metadata, span attributes and span events")

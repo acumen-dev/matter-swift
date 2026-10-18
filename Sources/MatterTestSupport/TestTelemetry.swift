@@ -23,16 +23,16 @@ public struct TestTelemetry: Sendable {
     /// Total of counter `label` with exactly `dimensions` (any order); 0 if it was never created.
     public func counter(_ label: String, _ dimensions: [(String, String)] = []) -> Int64 {
         let wanted = Self.normalised(dimensions)
-        return metrics.counters(label: label)
-            .filter { Self.normalised($0.dimensions) == wanted }
+        return metrics.counters
+            .filter { $0.label == label && Self.normalised($0.dimensions) == wanted }
             .reduce(0) { $0 + $1.totalValue }
     }
 
     /// Values (nanoseconds) recorded by timer `label` with `dimensions` (any order); empty if never created.
     public func timerValues(_ label: String, _ dimensions: [(String, String)] = []) -> [Int64] {
         let wanted = Self.normalised(dimensions)
-        return metrics.timers(label: label)
-            .filter { Self.normalised($0.dimensions) == wanted }
+        return metrics.timers
+            .filter { $0.label == label && Self.normalised($0.dimensions) == wanted }
             .flatMap { $0.values }
     }
 
@@ -60,19 +60,24 @@ public struct TestTelemetry: Sendable {
         func add(_ attributes: SpanAttributes) {
             attributes.forEach { _, value in text.append(Self.render(value)) }
         }
+        func addSpan(
+            _ name: String,
+            _ attributes: SpanAttributes,
+            _ events: [SpanEvent],
+            _ status: SpanStatus?,
+            _ errors: [InMemorySpan.RecordedError]
+        ) {
+            text.append(name)
+            add(attributes)
+            for event in events { text.append(event.name); add(event.attributes) }
+            if let message = status?.message { text.append(message) }
+            for error in errors { text.append(String(describing: error.error)) }
+        }
         for span in tracer.finishedSpans {
-            text.append(span.operationName)
-            add(span.attributes)
-            for event in span.events { text.append(event.name); add(event.attributes) }
-            if let message = span.status?.message { text.append(message) }
-            for error in span.errors { text.append(String(describing: error.error)) }
+            addSpan(span.operationName, span.attributes, span.events, span.status, span.errors)
         }
         for span in tracer.activeSpans {
-            text.append(span.operationName)
-            add(span.attributes)
-            for event in span.events { text.append(event.name); add(event.attributes) }
-            if let message = span.status?.message { text.append(message) }
-            for error in span.errors { text.append(String(describing: error.error)) }
+            addSpan(span.operationName, span.attributes, span.events, span.status, span.errors)
         }
         return text
     }
