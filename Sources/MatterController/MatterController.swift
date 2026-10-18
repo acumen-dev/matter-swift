@@ -232,7 +232,7 @@ public actor MatterController {
     var compressedFabricIDForTesting: UInt64 { fabricManager.compressedFabricID() }
 
     /// CASE establishments in flight, one per node: concurrent callers of
-    /// ``session(for:)`` await the same handshake.
+    /// ``session(for:context:)`` await the same handshake.
     private var establishing: [NodeID: Task<SecureSession, any Error>] = [:]
 
     // MARK: - Init
@@ -881,7 +881,7 @@ public actor MatterController {
         // Persist controller state
         await saveState()
 
-        loggers.paseHandshake.info("Commissioning complete", metadata: [MatterLogKey.node: MatterLogValue.hex(device.nodeID.rawValue)])
+        loggers.paseHandshake.info("Commissioning complete", metadata: .node(device.nodeID))
 
         return device
     }
@@ -1147,7 +1147,10 @@ public actor MatterController {
     /// `CancellationError` at once; the handshake carries on for the others.
     /// A cached session stays until it is invalidated (the device stopped
     /// acknowledging, or ``invalidateSession(for:)``).
-    public func session(for nodeID: NodeID) async throws -> SecureSession {
+    ///
+    /// - Parameter context: parents the spans of an establishment this call
+    ///   starts (default: the task's current context).
+    public func session(for nodeID: NodeID, context: ServiceContext = .current ?? .topLevel) async throws -> SecureSession {
         if let cached = sessionCache.session(for: nodeID) {
             return cached
         }
@@ -1157,7 +1160,7 @@ public actor MatterController {
         // Isolated to this actor: it cannot start before the entry is stored.
         let task = Task {
             defer { self.establishing[nodeID] = nil }
-            return try await self.establishCASESession(nodeID: nodeID)
+            return try await self.establishCASESession(nodeID: nodeID, context: context)
         }
         establishing[nodeID] = task
         return try await Self.value(of: task)
@@ -1228,50 +1231,69 @@ public actor MatterController {
     /// `isFabricFiltered: false` to see every fabric's entries; the device
     /// omits other fabrics' fields only where the cluster marks them
     /// fabric-sensitive.
+    ///
+    /// - Parameter context: parents the call's span (default: the task's current context).
     public func readAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         attributeID: AttributeID,
-        isFabricFiltered: Bool = true
+        isFabricFiltered: Bool = true,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> TLVElement {
-        try await withSession(nodeID: nodeID) { session in
-            let response = try await self.imRequest(
-                sessionID: session.localSessionID,
-                opcode: .readRequest,
-                payload: IMClient.readAttributeRequest(
-                    endpointID: endpointID,
-                    clusterID: clusterID,
-                    attributeID: attributeID,
-                    isFabricFiltered: isFabricFiltered
+        let operation = IMOperation(kind: .read, nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, attributeID: attributeID)
+        return try await instrumented(operation, context: context, request: "fabricFiltered=\(isFabricFiltered)") { spanContext in
+            try await self.withSession(nodeID: nodeID, context: spanContext) { session in
+                let response = try await self.imRequest(
+                    sessionID: session.localSessionID,
+                    opcode: .readRequest,
+                    payload: IMClient.readAttributeRequest(
+                        endpointID: endpointID,
+                        clusterID: clusterID,
+                        attributeID: attributeID,
+                        isFabricFiltered: isFabricFiltered
+                    ),
+                    context: spanContext
                 )
-            )
-            return try IMClient.parseReadResponse(response.payload)
+                let value = try IMClient.parseReadResponse(response.payload)
+                self.loggers.im.trace("IM read value: \(IMFormat.value(value, clusterID: clusterID))", metadata: operation.metadata)
+                return value
+            }
         }
     }
 
     /// Write a single attribute on a commissioned device.
     ///
-    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:isFabricFiltered:)``).
+    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:isFabricFiltered:context:)``).
+    ///
+    /// - Parameter context: parents the call's span (default: the task's current context).
     public func writeAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         attributeID: AttributeID,
-        value: TLVElement
+        value: TLVElement,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> Bool {
-        try await withSession(nodeID: nodeID) { session in
-            let response = try await self.imRequest(
-                sessionID: session.localSessionID,
-                opcode: .writeRequest,
-                payload: IMClient.writeAttributeRequest(
-                    endpointID: endpointID,
-                    clusterID: clusterID,
-                    attributeID: attributeID,
-                    value: value
+        let operation = IMOperation(kind: .write, nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, attributeID: attributeID)
+        // `false` is the device refusing the write: counted as im_status.
+        return try await instrumented(
+            operation, context: context, request: "value \(IMFormat.value(value, clusterID: clusterID))", succeeded: { $0 }
+        ) { spanContext in
+            try await self.withSession(nodeID: nodeID, context: spanContext) { session in
+                let response = try await self.imRequest(
+                    sessionID: session.localSessionID,
+                    opcode: .writeRequest,
+                    payload: IMClient.writeAttributeRequest(
+                        endpointID: endpointID,
+                        clusterID: clusterID,
+                        attributeID: attributeID,
+                        value: value
+                    ),
+                    context: spanContext
                 )
-            )
-            return try IMClient.parseWriteResponse(response.payload)
+                return try IMClient.parseWriteResponse(response.payload)
+            }
         }
     }
 
@@ -1285,29 +1307,38 @@ public actor MatterController {
     /// Pass `timedTimeout` for commands that require a timed interaction
     /// (DoorLock Lock/Unlock, AdministratorCommissioning window commands); the
     /// controller then sends `TimedRequest` first, on the same exchange.
+    ///
+    /// - Parameter context: parents the call's span (default: the task's current context).
     public func invokeCommand(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         commandID: CommandID,
         commandFields: TLVElement? = nil,
-        timedTimeout: Duration? = nil
+        timedTimeout: Duration? = nil,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> TLVElement? {
-        try await withSession(nodeID: nodeID) { session in
-            let payload = IMClient.invokeCommandRequest(
-                endpointID: endpointID,
-                clusterID: clusterID,
-                commandID: commandID,
-                commandFields: commandFields,
-                timedRequest: timedTimeout != nil
-            )
-            let response: InboundMessage
-            if let timedTimeout {
-                response = try await self.timedInvoke(sessionID: session.localSessionID, timeout: timedTimeout, payload: payload)
-            } else {
-                response = try await self.imRequest(sessionID: session.localSessionID, opcode: .invokeRequest, payload: payload)
+        let operation = IMOperation(
+            kind: timedTimeout == nil ? .invoke : .timed,
+            nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, commandID: commandID
+        )
+        return try await instrumented(operation, context: context, request: "fields \(IMFormat.value(commandFields, clusterID: clusterID))") { spanContext in
+            try await self.withSession(nodeID: nodeID, context: spanContext) { session in
+                let payload = IMClient.invokeCommandRequest(
+                    endpointID: endpointID,
+                    clusterID: clusterID,
+                    commandID: commandID,
+                    commandFields: commandFields,
+                    timedRequest: timedTimeout != nil
+                )
+                let response: InboundMessage
+                if let timedTimeout {
+                    response = try await self.timedInvoke(sessionID: session.localSessionID, timeout: timedTimeout, payload: payload, context: spanContext)
+                } else {
+                    response = try await self.imRequest(sessionID: session.localSessionID, opcode: .invokeRequest, payload: payload, context: spanContext)
+                }
+                return try IMClient.parseInvokeResponse(response.payload)
             }
-            return try IMClient.parseInvokeResponse(response.payload)
         }
     }
 
@@ -1439,13 +1470,15 @@ public actor MatterController {
 
     /// Send one Interaction Model request on a fresh exchange of `sessionID`
     /// and return the reply. The exchange is closed (owed ack flushed) on
-    /// every path.
+    /// every path. Payloads are never logged here. `context`, when given,
+    /// parents the exchange's `matter.exchange` span.
     func imRequest(
         sessionID: UInt16,
         opcode: InteractionModelOpcode,
-        payload: Data
+        payload: Data,
+        context: ServiceContext? = nil
     ) async throws -> InboundMessage {
-        let exchange = try await messenger.openExchange(sessionID: sessionID)
+        let exchange = try await messenger.openExchange(sessionID: sessionID, context: context)
         do {
             let response = try await exchange.request(
                 protocolID: .interactionModel,
@@ -1473,9 +1506,20 @@ public actor MatterController {
     /// Run a timed invoke: `TimedRequest`, then the `InvokeRequest`, on **one**
     /// exchange (the device keys its timed-interaction window by exchange).
     /// A refused `TimedRequest` fails the call and the invoke is never sent.
-    func timedInvoke(sessionID: UInt16, timeout: Duration, payload: Data) async throws -> InboundMessage {
-        let exchange = try await messenger.openExchange(sessionID: sessionID)
+    func timedInvoke(sessionID: UInt16, timeout: Duration, payload: Data, context: ServiceContext? = nil) async throws -> InboundMessage {
+        let exchange = try await messenger.openExchange(sessionID: sessionID, context: context)
+        // Built only when a line is logged.
+        let exchangeID = exchange.key.exchangeID
+        func metadata(imStatus: UInt8? = nil) -> Logger.Metadata {
+            var metadata: Logger.Metadata = [
+                MatterLogKey.session: MatterLogValue.hex(sessionID),
+                MatterLogKey.exchange: MatterLogValue.hex(exchangeID),
+            ]
+            if let imStatus { metadata[MatterLogKey.imStatus] = MatterLogValue.hex(imStatus) }
+            return metadata
+        }
         do {
+            loggers.im.debug("Timed request: window \(MatterLogValue.milliseconds(timeout)) ms", metadata: metadata())
             let timedStatus = try await exchange.request(
                 protocolID: .interactionModel,
                 opcode: InteractionModelOpcode.timedRequest.rawValue,
@@ -1488,8 +1532,10 @@ public actor MatterController {
             }
             let status = try IMStatusResponse.fromTLV(timedStatus.payload)
             guard status.status == IMStatusResponse.success.status else {
+                loggers.im.debug("Timed request refused; the invoke is not sent", metadata: metadata(imStatus: status.status))
                 throw ControllerError.imStatus(status.status)
             }
+            loggers.im.debug("Timed request accepted", metadata: metadata())
             let response = try await exchange.request(
                 protocolID: .interactionModel,
                 opcode: InteractionModelOpcode.invokeRequest.rawValue,
@@ -1520,7 +1566,7 @@ public actor MatterController {
     /// original error is thrown unchanged: retrying an unchanged address
     /// would only double a dead peer's failure latency. Any other failure,
     /// such as a refusal (`caseSessionFailed`), never triggers a re-resolve.
-    private func establishCASESession(nodeID: NodeID) async throws -> SecureSession {
+    private func establishCASESession(nodeID: NodeID, context: ServiceContext) async throws -> SecureSession {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
         }
@@ -1536,13 +1582,13 @@ public actor MatterController {
         }
         defer { sessionCache.releaseSessionID(sessionID) }
 
-        loggers.caseHandshake.debug("Establishing CASE session", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
+        loggers.caseHandshake.debug("Establishing CASE session", metadata: .node(nodeID))
 
         var usedAddress = address
         let session: SecureSession
         do {
             session = try await caseHandshake(
-                nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID
+                nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: context
             )
         } catch {
             let original = Self.operationalError(error, nodeID: nodeID)
@@ -1550,11 +1596,11 @@ public actor MatterController {
                   let refreshed = try await refreshedAddress(nodeID: nodeID, tried: address) else {
                 throw original
             }
-            loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
+            loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
             usedAddress = refreshed.address
             do {
                 session = try await caseHandshake(
-                    nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID
+                    nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: context
                 )
             } catch {
                 throw Self.operationalError(error, nodeID: nodeID)
@@ -1575,7 +1621,7 @@ public actor MatterController {
         }
         sessionCache.store(session, for: nodeID)
 
-        loggers.caseHandshake.debug("CASE session established", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
+        loggers.caseHandshake.debug("CASE session established", metadata: .node(nodeID))
 
         return session
     }
@@ -1634,7 +1680,8 @@ public actor MatterController {
         nodeID: NodeID,
         address: MatterAddress,
         mrp: MRPParameters?,
-        localSessionID sessionID: UInt16
+        localSessionID sessionID: UInt16,
+        context: ServiceContext? = nil
     ) async throws -> SecureSession {
         let timeout = configuration.operationTimeout
         let (sigma1Data, handshakeCtx) = controllerSession.createSigma1(
@@ -1642,7 +1689,7 @@ public actor MatterController {
             initiatorSessionID: sessionID
         )
 
-        let handshake = await messenger.openExchange(peer: address, mrp: mrp)
+        let handshake = await messenger.openExchange(peer: address, mrp: mrp, context: context)
         let session: SecureSession
         do {
             let sigma2 = try await handshake.request(
@@ -1702,6 +1749,7 @@ public actor MatterController {
     /// establishes a fresh session.
     private func withSession<T: Sendable>(
         nodeID: NodeID,
+        context: ServiceContext,
         operation: (SecureSession) async throws -> T
     ) async throws -> T {
         guard let device = await registry.device(for: nodeID) else {
@@ -1712,7 +1760,7 @@ public actor MatterController {
             throw ControllerError.noOperationalAddress
         }
 
-        let activeSession = try await session(for: nodeID)
+        let activeSession = try await session(for: nodeID, context: context)
         // The wait may have been on a handshake shared with other callers; a
         // caller cancelled meanwhile must not send its request late.
         try Task.checkCancellation()
@@ -1722,7 +1770,7 @@ public actor MatterController {
         } catch {
             let mapped = Self.operationalError(error, nodeID: nodeID)
             if let controllerError = mapped as? ControllerError, controllerError == .peerUnreachable(nodeID) {
-                loggers.session.info("Node unreachable; invalidating its session (the request is not re-sent)", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
+                loggers.session.info("Node unreachable; invalidating its session (the request is not re-sent)", metadata: .node(nodeID))
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
                 if sessionCache.session(for: nodeID) === activeSession {
@@ -1730,6 +1778,82 @@ public actor MatterController {
                 }
             }
             throw mapped
+        }
+    }
+
+    /// Run one public IM call inside its `matter.im.<kind>` span (child of
+    /// `context`), with its debug request and response lines,
+    /// `<prefix>_im_requests_total{kind,outcome}` and
+    /// `<prefix>_im_request_duration{kind}`. `succeeded` judges a result that
+    /// did not throw (a write the device refused returns `false`). A call
+    /// cancelled or ended by ``stop()`` gets its response line but is neither
+    /// counted nor timed, and its span ends without error status.
+    private func instrumented<T: Sendable>(
+        _ operation: IMOperation,
+        context: ServiceContext,
+        request detail: @autoclosure () -> String,
+        succeeded: (T) -> Bool = { _ in true },
+        _ body: (ServiceContext) async throws -> T
+    ) async throws -> T {
+        let span = telemetry.tracer.startSpan(operation.spanName, context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording { operation.annotate(span) }
+        let started = messenger.clock.now
+        loggers.im.debug("IM \(operation.kind.rawValue) request: \(detail())", metadata: operation.metadata)
+        do {
+            let result = try await body(span.context)
+            let elapsed = messenger.clock.now - started
+            if succeeded(result) {
+                finishIM(operation, span: span, outcome: .success, status: IMStatusResponse.success.status, elapsed: elapsed)
+            } else {
+                finishIM(operation, span: span, outcome: .imStatus, status: nil, elapsed: elapsed)
+            }
+            return result
+        } catch {
+            let elapsed = messenger.clock.now - started
+            if let outcome = IMRequestOutcome(recording: error, controllerStopped: stopped) {
+                finishIM(operation, span: span, outcome: outcome, status: Self.imStatus(of: error), elapsed: elapsed, error: error)
+            } else {
+                let aborted = stopped ? "stopped" : "cancelled"
+                loggers.im.debug(
+                    "IM \(operation.kind.rawValue) response: \(aborted) in \(MatterLogValue.milliseconds(elapsed)) ms",
+                    metadata: operation.responseMetadata(elapsed: elapsed, imStatus: nil)
+                )
+            }
+            throw error
+        }
+    }
+
+    /// The response line, metric and span status of a call that completed
+    /// or failed (not one that was aborted).
+    private func finishIM(
+        _ operation: IMOperation,
+        span: any Span,
+        outcome: IMRequestOutcome,
+        status: UInt8?,
+        elapsed: Duration,
+        error: (any Error)? = nil
+    ) {
+        if let status, span.isRecording {
+            span.attributes[MatterLogKey.imStatus] = MatterLogValue.hexString(status)
+        }
+        loggers.im.debug(
+            "IM \(operation.kind.rawValue) response: \(outcome.rawValue) in \(MatterLogValue.milliseconds(elapsed)) ms\(error.map { ": \($0)" } ?? "")",
+            metadata: operation.responseMetadata(elapsed: elapsed, imStatus: status)
+        )
+        telemetry.metrics.imRequest(operation.kind, outcome, duration: elapsed)
+        if outcome != .success {
+            if let error { span.recordError(error) }
+            span.setStatus(SpanStatus(code: .error, message: outcome.rawValue))
+        }
+    }
+
+    /// The IM status an error carries: a StatusResponse, or an attribute/command status.
+    static func imStatus(of error: any Error) -> UInt8? {
+        switch error {
+        case ControllerError.imStatus(let status): return status
+        case IMError.attributeStatus(_, let status, _), IMError.commandStatus(_, let status, _): return status
+        default: return nil
         }
     }
 
@@ -1784,7 +1908,7 @@ public actor MatterController {
               mapped == .peerUnreachable(nodeID),
               let cached = sessionCache.session(for: nodeID),
               cached.localSessionID == sessionID else { return }
-        loggers.session.info("Node subscription failed on a dead session; invalidating it", metadata: [MatterLogKey.node: MatterLogValue.hex(nodeID.rawValue)])
+        loggers.session.info("Node subscription failed on a dead session; invalidating it", metadata: .node(nodeID))
         await invalidateSession(for: nodeID)
     }
 

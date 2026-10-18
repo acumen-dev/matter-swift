@@ -60,6 +60,16 @@ enum IMRequestOutcome: String, CaseIterable, Sendable {
             self = .error
         }
     }
+
+    /// The outcome to record for a failed request, or nil for an aborted one: cancellation and
+    /// `stop()` are not failures and are not counted. After `stop()` the messenger's
+    /// `MessagingError.stopped` reaches the caller already mapped, hence `controllerStopped`.
+    init?(recording error: any Error, controllerStopped: Bool) {
+        if controllerStopped || error is CancellationError || error as? MessagingError == .stopped {
+            return nil
+        }
+        self.init(error)
+    }
 }
 
 /// `type` of `<prefix>_sessions_established_total`.
