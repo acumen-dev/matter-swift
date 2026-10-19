@@ -4,6 +4,8 @@
 import Foundation
 import Crypto
 import Logging
+import Metrics
+import Tracing
 import Synchronization
 import MatterTypes
 import MatterModel
@@ -122,6 +124,18 @@ public actor MatterController {
         /// bundle must pass a store.
         public var attestationTrustStore: AttestationTrustStore?
 
+        /// Prefix of every metric label (default `matter`): `<prefix>_controller_messages_total`,
+        /// `<prefix>_im_requests_total`, …
+        public var metricsLabelPrefix: String
+
+        /// Metrics backend. `nil` (the default) uses `MetricsSystem.factory` as it is when the
+        /// controller is created: bootstrap `MetricsSystem` first.
+        public var metricsFactory: (any MetricsFactory)?
+
+        /// Tracer for the controller's spans. `nil` (the default) uses
+        /// `InstrumentationSystem.tracer` as it is when the controller is created.
+        public var tracer: (any Tracer)?
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -134,7 +148,10 @@ public actor MatterController {
             addressRefreshTimeout: Duration = .seconds(5),
             commissionableResolveTimeout: Duration = .seconds(5),
             discoveryClock: any MRPClock = ContinuousClock(),
-            attestationTrustStore: AttestationTrustStore? = nil
+            attestationTrustStore: AttestationTrustStore? = nil,
+            metricsLabelPrefix: String = "matter",
+            metricsFactory: (any MetricsFactory)? = nil,
+            tracer: (any Tracer)? = nil
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -148,6 +165,9 @@ public actor MatterController {
             self.commissionableResolveTimeout = commissionableResolveTimeout
             self.discoveryClock = discoveryClock
             self.attestationTrustStore = attestationTrustStore
+            self.metricsLabelPrefix = metricsLabelPrefix
+            self.metricsFactory = metricsFactory
+            self.tracer = tracer
         }
     }
 
@@ -160,7 +180,11 @@ public actor MatterController {
     private let subscriptionClient: SubscriptionClient
     private let discovery: any MatterDiscovery
     private let configuration: Configuration
-    private let logger: Logger
+    /// The injected logger, per subsystem.
+    private let loggers: ControllerLoggers
+
+    /// Metrics and tracer (owned by the messenger, shared with subscriptions).
+    private var telemetry: ControllerTelemetry { messenger.telemetry }
     private let store: (any MatterControllerStore)?
     private let attestationVerifier: DeviceAttestationVerifier
 
@@ -171,7 +195,7 @@ public actor MatterController {
 
     private var sessionCache = SessionCache()
 
-    /// Subscriptions created by ``subscribe(nodeID:_:)``. A subscription keeps
+    /// Subscriptions created by ``subscribe(nodeID:_:context:)``. A subscription keeps
     /// itself alive until cancelled, so ``stop()`` cancels each one.
     private var subscriptions: [ControllerSubscription] = []
     private var stopped = false
@@ -192,8 +216,23 @@ public actor MatterController {
         commissioningFailureInjection = injection
     }
 
+    /// Test seam: make `device` known at `address` and, when given, `session` its registered,
+    /// cached operational session — as a completed commissioning leaves them. Never used in production.
+    func installForTesting(device: CommissionedDevice, session: SecureSession?, address: MatterAddress) async throws {
+        var device = device
+        device.setOperationalAddress(address)
+        await registry.register(device)
+        if let session {
+            try await messenger.registerSession(session, peerAddress: address, mrp: device.mrpParameters)
+            sessionCache.store(session, for: device.nodeID)
+        }
+    }
+
+    /// The fabric's compressed fabric ID (for tests that advertise an operational instance).
+    var compressedFabricIDForTesting: UInt64 { fabricManager.compressedFabricID() }
+
     /// CASE establishments in flight, one per node: concurrent callers of
-    /// ``session(for:)`` await the same handshake.
+    /// ``session(for:context:)`` await the same handshake.
     private var establishing: [NodeID: Task<SecureSession, any Error>] = [:]
 
     // MARK: - Init
@@ -233,12 +272,13 @@ public actor MatterController {
         self.messenger = Self.makeMessenger(
             transport: transport,
             localNodeID: fabricManager.controllerFabricInfo.nodeID,
-            configuration: configuration
+            configuration: configuration,
+            logger: logger
         )
         self.discovery = discovery
         self.configuration = configuration
         self.store = store
-        self.logger = logger
+        self.loggers = ControllerLoggers(logger)
     }
 
     /// Restore a controller from persisted state.
@@ -280,14 +320,15 @@ public actor MatterController {
         self.messenger = Self.makeMessenger(
             transport: transport,
             localNodeID: fabricManager.controllerFabricInfo.nodeID,
-            configuration: configuration
+            configuration: configuration,
+            logger: logger
         )
         self.discovery = discovery
         self.configuration = configuration
         self.store = store
-        self.logger = logger
+        self.loggers = ControllerLoggers(logger)
 
-        logger.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
+        loggers.session.info("Restored controller from persisted state: \(stored.devices.count) device(s)")
     }
 
     /// The configured trust store, or the bundled production store when none is configured.
@@ -400,7 +441,8 @@ public actor MatterController {
     public func findCommissionable(_ code: SetupCode, timeout: Duration? = nil) async throws -> CommissionableDevice {
         let limit = timeout ?? configuration.discoveryTimeout
         let discovery = self.discovery
-        let logger = self.logger
+        let logger = loggers.discovery
+        let tracer = telemetry.tracer
         let resolveLimit = configuration.commissionableResolveTimeout
         let clock = configuration.discoveryClock
         let deadline = clock.now + limit
@@ -413,7 +455,7 @@ public actor MatterController {
                     try Task.checkCancellation()
                     if let device = try await Self.commissionable(
                         record, matching: code, discovery: discovery,
-                        resolveLimit: resolveLimit, clock: clock, logger: logger
+                        resolveLimit: resolveLimit, clock: clock, logger: logger, tracer: tracer
                     ) {
                         return device
                     }
@@ -439,19 +481,20 @@ public actor MatterController {
         discovery: any MatterDiscovery,
         resolveLimit: Duration,
         clock: any MRPClock,
-        logger: Logger
+        logger: Logger,
+        tracer: any Tracer
     ) async throws -> CommissionableDevice? {
         var resolved: ResolvedService?
         var txt = record.txtRecords
         if txt.isEmpty {
-            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger, tracer: tracer) else { return nil }
             resolved = service
             txt = service.txtRecords
         }
         guard CommissionableDevice.Advertisement(txt: txt, matching: code) != nil else { return nil }
 
         if resolved == nil {
-            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger) else { return nil }
+            guard let service = try await resolve(record, discovery: discovery, limit: resolveLimit, clock: clock, logger: logger, tracer: tracer) else { return nil }
             resolved = service
         }
         guard let resolved else { return nil }
@@ -479,18 +522,24 @@ public actor MatterController {
         discovery: any MatterDiscovery,
         limit: Duration,
         clock: any MRPClock,
-        logger: Logger
+        logger: Logger,
+        tracer: any Tracer
     ) async throws -> ResolvedService? {
         let deadline = clock.now + limit
         do {
-            return try await withThrowingTaskGroup(of: ResolvedService.self) { group in
-                group.addTask { try await discovery.resolveService(record) }
-                group.addTask {
-                    try await clock.sleep(until: deadline)
-                    throw ResolveDeadline()
+            return try await instrumentedResolve(
+                tracer: tracer, logger: logger, context: ServiceContext.current ?? .topLevel,
+                instance: record.name, node: nil, limit: limit, stopped: { false }
+            ) {
+                try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                    group.addTask { try await discovery.resolveService(record) }
+                    group.addTask {
+                        try await clock.sleep(until: deadline)
+                        throw ResolveDeadline()
+                    }
+                    defer { group.cancelAll() }
+                    return try await group.next()!
                 }
-                defer { group.cancelAll() }
-                return try await group.next()!
             }
         } catch let cancellation as CancellationError {
             throw cancellation
@@ -505,8 +554,57 @@ public actor MatterController {
         }
     }
 
-    /// A commissionable record's resolve outlived its bound.
-    private struct ResolveDeadline: Error {}
+    /// Run one mDNS resolve inside a `matter.resolve` span (child of `context`), with its debug
+    /// start, result and failure lines. A failure's `matter.reason` is `timeout` when `body`
+    /// threw ``ResolveDeadline``, else `failed`. A resolve cancelled or ended by ``stop()`` gets
+    /// a debug line, and its span ends without error status. `node` is nil for a commissionable
+    /// record.
+    private static func instrumentedResolve(
+        tracer: any Tracer,
+        logger: Logger,
+        context: ServiceContext,
+        instance: String,
+        node: NodeID?,
+        limit: Duration,
+        stopped: @Sendable () async -> Bool,
+        _ body: () async throws -> ResolvedService
+    ) async throws -> ResolvedService {
+        let span = tracer.startSpan("matter.resolve", context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording {
+            if let node { span.attributes[MatterLogKey.node] = MatterLogValue.hexString(node.rawValue) }
+            span.attributes[MatterLogKey.instance] = instance
+        }
+        func metadata(reason: String? = nil) -> Logger.Metadata {
+            var metadata = node.map { Logger.Metadata.node($0) } ?? [:]
+            if let reason { metadata[MatterLogKey.reason] = .string(reason) }
+            return metadata
+        }
+        logger.debug("mDNS resolve start: \(instance) (within \(limit))", metadata: metadata())
+        do {
+            let resolved = try await body()
+            // Keys only: a TXT value can carry anything the device advertises.
+            logger.debug(
+                "mDNS resolve result: \(MatterLogValue.address(resolved.address)), TXT keys [\(resolved.txtRecords.keys.sorted().joined(separator: ","))]",
+                metadata: metadata()
+            )
+            return resolved
+        } catch {
+            if isAborted(error, controllerStopped: await stopped()) || Task.isCancelled {
+                logger.debug("mDNS resolve aborted: \(instance)", metadata: metadata(reason: "aborted"))
+                throw error
+            }
+            logger.debug("mDNS resolve failed: \(error)", metadata: metadata(reason: error is ResolveDeadline ? "timeout" : "failed"))
+            span.recordError(error)
+            span.setStatus(SpanStatus(code: .error, message: String(describing: error)))
+            throw error
+        }
+    }
+
+    /// A resolve outlived its bound.
+    private struct ResolveDeadline: Error, CustomStringConvertible {
+        var description: String { "resolve deadline" }
+    }
 
     /// Names the discriminator sought, for `commissionableNotFound`.
     private static func describe(_ discriminator: SetupCode.Discriminator) -> String {
@@ -559,7 +657,11 @@ public actor MatterController {
     /// to a bare IP literal; a host name or a zoned IPv6 literal throws
     /// `discoveryFailed` (naming the node, not the host). The TXT is returned as resolved, so a
     /// caller can tell an empty one from one with defaults.
-    private func resolveOperational(nodeID: NodeID, timeout: Duration? = nil) async throws -> ResolvedService {
+    private func resolveOperational(
+        nodeID: NodeID,
+        timeout: Duration? = nil,
+        context: ServiceContext = .current ?? .topLevel
+    ) async throws -> ResolvedService {
         let limit = timeout ?? configuration.discoveryTimeout
         let name = OperationalInstanceName(
             compressedFabricID: fabricManager.compressedFabricID(),
@@ -571,20 +673,29 @@ public actor MatterController {
         let deadline = clock.now + limit
         let expired = ControllerError.discoveryFailed("node \(nodeID.rawValue) did not resolve within \(limit)")
 
-        let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
-            group.addTask { try await discovery.resolveService(record) }
-            group.addTask {
-                try await clock.sleep(until: deadline)
-                throw expired
+        do {
+            return try await Self.instrumentedResolve(
+                tracer: telemetry.tracer, logger: loggers.discovery, context: context,
+                instance: name, node: nodeID, limit: limit, stopped: { await self.stopped }
+            ) {
+                let resolved = try await withThrowingTaskGroup(of: ResolvedService.self) { group in
+                    group.addTask { try await discovery.resolveService(record) }
+                    group.addTask {
+                        try await clock.sleep(until: deadline)
+                        throw ResolveDeadline()
+                    }
+                    defer { group.cancelAll() }
+                    guard let first = try await group.next() else { throw ResolveDeadline() }
+                    return first
+                }
+                guard let address = resolved.address.withIPLiteralHost else {
+                    throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
+                }
+                return ResolvedService(address: address, txtRecords: resolved.txtRecords)
             }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw expired }
-            return first
+        } catch is ResolveDeadline {
+            throw expired
         }
-        guard let address = resolved.address.withIPLiteralHost else {
-            throw ControllerError.discoveryFailed("node \(nodeID.rawValue) resolved to a host name or a zoned IPv6 address, not a bare IP literal")
-        }
-        return ResolvedService(address: address, txtRecords: resolved.txtRecords)
     }
 
     /// Record a node's new operational address and persist it. `mrp`
@@ -737,10 +848,9 @@ public actor MatterController {
         mrp: MRPParameters? = nil,
         approvingUnverifiedDevice: Data? = nil
     ) async throws -> CommissionedDevice {
-        let timeout = configuration.operationTimeout
         let address = address.canonicalised
 
-        logger.info("Beginning commissioning to \(address.host):\(address.port)")
+        loggers.paseHandshake.info("Beginning commissioning to \(MatterLogValue.address(address))")
 
         // Step 1: PASE on one unsecured exchange. The local session ID stays
         // reserved until commissioning ends (the PASE session is unregistered
@@ -749,61 +859,14 @@ public actor MatterController {
             throw ControllerError.paseHandshakeFailed("No free local session ID")
         }
         defer { sessionCache.releaseSessionID(sessionID) }
-        let (pbkdfReq, ctx1) = commissioning.beginPASE(
-            passcode: setupCode,
-            initiatorSessionID: sessionID
+        let paseContext = try await establishPASE(
+            address: address, mrp: mrp, setupCode: setupCode, sessionID: sessionID,
+            context: ServiceContext.current ?? .topLevel
         )
-
-        let handshake = await messenger.openExchange(peer: address, mrp: mrp)
-        let paseContext: CommissioningController.CommissioningContext
-        do {
-            let pbkdfResp = try await handshake.request(
-                protocolID: .secureChannel,
-                opcode: SecureChannelOpcode.pbkdfParamRequest.rawValue,
-                payload: pbkdfReq,
-                timeout: timeout
-            )
-            try Self.expect(pbkdfResp, .pbkdfParamResponse, failure: ControllerError.paseHandshakeFailed)
-            let (pake1, ctx2) = try commissioning.handlePBKDFParamResponse(
-                response: pbkdfResp.payload, context: ctx1
-            )
-
-            let pake2 = try await handshake.request(
-                protocolID: .secureChannel,
-                opcode: SecureChannelOpcode.pasePake1.rawValue,
-                payload: pake1,
-                timeout: timeout
-            )
-            try Self.expect(pake2, .pasePake2, failure: ControllerError.paseHandshakeFailed)
-            let (pake3, ctx3) = try commissioning.handlePake2(
-                response: pake2.payload, context: ctx2
-            )
-
-            let status = try await handshake.request(
-                protocolID: .secureChannel,
-                opcode: SecureChannelOpcode.pasePake3.rawValue,
-                payload: pake3,
-                timeout: timeout
-            )
-            try Self.expect(status, .statusReport, failure: ControllerError.paseHandshakeFailed)
-            let statusReport = try StatusReportMessage.decode(from: status.payload)
-            guard statusReport.generalStatus == .success else {
-                throw ControllerError.paseHandshakeFailed(
-                    "PASE StatusReport: \(statusReport.generalStatus)"
-                )
-            }
-            paseContext = ctx3
-        } catch {
-            await handshake.close()
-            throw Self.commissioningError(error)
-        }
-        await handshake.close()
 
         guard let paseSession = paseContext.paseSession else {
             throw ControllerError.paseHandshakeFailed("No PASE session after Pake3")
         }
-
-        logger.info("PASE session established (localSession=\(paseSession.localSessionID))")
 
         // Steps 2-6 over the encrypted PASE session, then CASE and
         // CommissioningComplete. Register the PASE session before the first
@@ -840,9 +903,64 @@ public actor MatterController {
         // Persist controller state
         await saveState()
 
-        logger.info("Commissioning complete: nodeID=\(device.nodeID.rawValue)")
+        loggers.paseHandshake.info("Commissioning complete", metadata: .node(device.nodeID))
 
         return device
+    }
+
+    /// Commissioning step 1: PBKDFParamRequest → Pake3 on one unsecured exchange, inside a
+    /// `matter.pase` span, with its info line (duration) and
+    /// `<prefix>_sessions_established_total{type="pase"}`. Errors are mapped as commissioning errors.
+    private func establishPASE(
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        setupCode: UInt32,
+        sessionID: UInt16,
+        context: ServiceContext
+    ) async throws -> CommissioningController.CommissioningContext {
+        let timeout = configuration.operationTimeout
+        let (pbkdfReq, ctx1) = commissioning.beginPASE(passcode: setupCode, initiatorSessionID: sessionID)
+        return try await instrumentedEstablishment(
+            .paseSession, context: context, sessionID: sessionID, mapError: Self.commissioningError
+        ) { paseContext in
+            let handshake = await self.messenger.openExchange(peer: address, mrp: mrp, context: paseContext)
+            do {
+                let pbkdfResp = try await handshake.request(
+                    protocolID: .secureChannel,
+                    opcode: SecureChannelOpcode.pbkdfParamRequest.rawValue,
+                    payload: pbkdfReq,
+                    timeout: timeout
+                )
+                try Self.expect(pbkdfResp, .pbkdfParamResponse, failure: ControllerError.paseHandshakeFailed)
+                let (pake1, ctx2) = try self.commissioning.handlePBKDFParamResponse(response: pbkdfResp.payload, context: ctx1)
+
+                let pake2 = try await handshake.request(
+                    protocolID: .secureChannel,
+                    opcode: SecureChannelOpcode.pasePake1.rawValue,
+                    payload: pake1,
+                    timeout: timeout
+                )
+                try Self.expect(pake2, .pasePake2, failure: ControllerError.paseHandshakeFailed)
+                let (pake3, ctx3) = try self.commissioning.handlePake2(response: pake2.payload, context: ctx2)
+
+                let status = try await handshake.request(
+                    protocolID: .secureChannel,
+                    opcode: SecureChannelOpcode.pasePake3.rawValue,
+                    payload: pake3,
+                    timeout: timeout
+                )
+                try Self.expect(status, .statusReport, failure: ControllerError.paseHandshakeFailed)
+                let statusReport = try StatusReportMessage.decode(from: status.payload)
+                guard statusReport.generalStatus == .success else {
+                    throw ControllerError.paseHandshakeFailed("PASE StatusReport: \(statusReport.generalStatus)")
+                }
+                await handshake.close()
+                return ctx3
+            } catch {
+                await handshake.close()
+                throw error
+            }
+        }
     }
 
     /// Commissioning steps 2-7 over the established PASE session, then
@@ -913,9 +1031,9 @@ public actor MatterController {
             _ = try await imRequest(
                 sessionID: sessionID, opcode: .invokeRequest, payload: commissioning.buildDisarmFailSafe()
             )
-            logger.info("Commissioning failed; fail-safe disarmed on the device")
+            loggers.paseHandshake.info("Commissioning failed; fail-safe disarmed on the device")
         } catch {
-            logger.warning("Commissioning failed and the fail-safe could not be disarmed: \(error)")
+            loggers.paseHandshake.warning("Commissioning failed and the fail-safe could not be disarmed: \(error)")
         }
     }
 
@@ -975,7 +1093,7 @@ public actor MatterController {
         let (addRootMsg, addNOCMsg, ctx6) = try await commissioning.handleCSRResponse(
             response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctxAttested
         )
-        logger.debug("Device will be node \(deviceNodeID.rawValue)")
+        loggers.paseHandshake.debug("Device will be node \(MatterLogValue.hexString(deviceNodeID.rawValue))")
         try commissioningFailureInjection?(.afterCSR)
 
         // Step 6: AddTrustedRootCert
@@ -1004,10 +1122,15 @@ public actor MatterController {
             throw ControllerError.caseSessionFailed("No free local session ID")
         }
         caseReservation = caseSessionID
-        let established = try await caseHandshake(
-            nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID
-        )
-        try await messenger.registerSession(established, peerAddress: address, mrp: mrp)
+        let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
+            let session = try await self.caseHandshake(
+                nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
+            )
+            // Inside the CASE outcome, as on the operational path: established
+            // means handshake and registration.
+            try await self.messenger.registerSession(session, peerAddress: address, mrp: mrp)
+            return session
+        }
         caseSession = established
         try commissioningFailureInjection?(.afterCASE)
 
@@ -1087,9 +1210,9 @@ public actor MatterController {
         )
         switch attested.attestation {
         case .verified(let paaSubject, _, _)?:
-            logger.info("Device attestation verified (PAA \(paaSubject))")
+            loggers.paseHandshake.info("Device attestation verified (PAA \(paaSubject))")
         case .overridden(_, let reason, _)?:
-            logger.notice("Device attestation failed (\(reason.rawValue)); commissioning continues on the caller's approval of this DAC")
+            loggers.paseHandshake.notice("Device attestation failed (\(reason.rawValue)); commissioning continues on the caller's approval of this DAC")
         case nil:
             break
         }
@@ -1106,7 +1229,10 @@ public actor MatterController {
     /// `CancellationError` at once; the handshake carries on for the others.
     /// A cached session stays until it is invalidated (the device stopped
     /// acknowledging, or ``invalidateSession(for:)``).
-    public func session(for nodeID: NodeID) async throws -> SecureSession {
+    ///
+    /// - Parameter context: parents the spans of an establishment this call
+    ///   starts (default: the task's current context).
+    public func session(for nodeID: NodeID, context: ServiceContext = .current ?? .topLevel) async throws -> SecureSession {
         if let cached = sessionCache.session(for: nodeID) {
             return cached
         }
@@ -1116,7 +1242,7 @@ public actor MatterController {
         // Isolated to this actor: it cannot start before the entry is stored.
         let task = Task {
             defer { self.establishing[nodeID] = nil }
-            return try await self.establishCASESession(nodeID: nodeID)
+            return try await self.establishCASESession(nodeID: nodeID, context: context)
         }
         establishing[nodeID] = task
         return try await Self.value(of: task)
@@ -1125,10 +1251,21 @@ public actor MatterController {
     /// Invalidate the cached session for a node (e.g., after a communication
     /// error) and unregister it from the message layer.
     public func invalidateSession(for nodeID: NodeID) async {
+        await invalidateSession(for: nodeID, reason: .callerRequest)
+    }
+
+    /// As ``invalidateSession(for:)``, logging why at info.
+    func invalidateSession(for nodeID: NodeID, reason: SessionInvalidationReason) async {
         guard let session = sessionCache.session(for: nodeID) else { return }
         // Out of the cache before suspending, so a session established
         // meanwhile is never the one removed.
         sessionCache.remove(for: nodeID)
+        loggers.session.info("Session invalidated: \(reason.phrase)", metadata: {
+            var metadata = Logger.Metadata.node(nodeID)
+            metadata[MatterLogKey.session] = MatterLogValue.hex(session.localSessionID)
+            metadata[MatterLogKey.reason] = .string(reason.rawValue)
+            return metadata
+        }())
         await messenger.unregisterSession(localSessionID: session.localSessionID)
     }
 
@@ -1164,8 +1301,11 @@ public actor MatterController {
     }
 
     /// Stop the message layer: pending requests fail with
-    /// `MessagingError.stopped`. Cancels every live subscription (finishing
-    /// its event stream) first. Terminal for this controller instance.
+    /// `MessagingError.stopped`, or with the error it maps to: a transport
+    /// error from an operational request, a commissioning failure from
+    /// commissioning. ``ControllerError/isStopped(_:)`` recognises all three.
+    /// Cancels every live subscription (finishing its event stream) first.
+    /// Terminal for this controller instance.
     public func stop() async {
         stopped = true
         let tracked = subscriptions
@@ -1187,51 +1327,71 @@ public actor MatterController {
     /// `isFabricFiltered: false` to see every fabric's entries; the device
     /// omits other fabrics' fields only where the cluster marks them
     /// fabric-sensitive.
+    ///
+    /// - Parameter context: parents the call's span (default: the task's current context).
     public func readAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         attributeID: AttributeID,
-        isFabricFiltered: Bool = true
+        isFabricFiltered: Bool = true,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> TLVElement {
-        try await withSession(nodeID: nodeID) { session in
-            let response = try await self.imRequest(
-                sessionID: session.localSessionID,
-                opcode: .readRequest,
-                payload: IMClient.readAttributeRequest(
-                    endpointID: endpointID,
-                    clusterID: clusterID,
-                    attributeID: attributeID,
-                    isFabricFiltered: isFabricFiltered
+        let operation = IMOperation(kind: .read, nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, attributeID: attributeID)
+        return try await instrumented(operation, context: context, request: "fabricFiltered=\(isFabricFiltered)") { spanContext in
+            try await self.withSession(nodeID: nodeID, context: spanContext) { session in
+                let response = try await self.imRequest(
+                    sessionID: session.localSessionID,
+                    opcode: .readRequest,
+                    payload: IMClient.readAttributeRequest(
+                        endpointID: endpointID,
+                        clusterID: clusterID,
+                        attributeID: attributeID,
+                        isFabricFiltered: isFabricFiltered
+                    ),
+                    context: spanContext
                 )
-            )
-            return try IMClient.parseReadResponse(response.payload)
+                let value = try IMClient.parseReadResponse(response.payload)
+                self.loggers.im.trace("IM read value: \(MatterLogValue.value(value, clusterID: clusterID))", metadata: operation.metadata)
+                return value
+            }
         }
     }
 
     /// Write a single attribute on a commissioned device.
     ///
-    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:isFabricFiltered:)``).
+    /// Sent once on the node's CASE session (see ``readAttribute(nodeID:endpointID:clusterID:attributeID:isFabricFiltered:context:)``).
+    ///
+    /// - Parameter context: parents the call's span (default: the task's current context).
     public func writeAttribute(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         attributeID: AttributeID,
-        value: TLVElement
+        value: TLVElement,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> Bool {
-        try await withSession(nodeID: nodeID) { session in
-            let response = try await self.imRequest(
-                sessionID: session.localSessionID,
-                opcode: .writeRequest,
-                payload: IMClient.writeAttributeRequest(
-                    endpointID: endpointID,
-                    clusterID: clusterID,
-                    attributeID: attributeID,
-                    value: value
+        let operation = IMOperation(kind: .write, nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, attributeID: attributeID)
+        // The first non-success status the device returned, nil when every write succeeded.
+        let failure: UInt8? = try await instrumented(
+            operation, context: context, request: "value \(MatterLogValue.value(value, clusterID: clusterID))", responseStatus: { $0 }
+        ) { spanContext in
+            try await self.withSession(nodeID: nodeID, context: spanContext) { session in
+                let response = try await self.imRequest(
+                    sessionID: session.localSessionID,
+                    opcode: .writeRequest,
+                    payload: IMClient.writeAttributeRequest(
+                        endpointID: endpointID,
+                        clusterID: clusterID,
+                        attributeID: attributeID,
+                        value: value
+                    ),
+                    context: spanContext
                 )
-            )
-            return try IMClient.parseWriteResponse(response.payload)
+                return try IMClient.firstWriteFailure(response.payload)
+            }
         }
+        return failure == nil
     }
 
     /// Invoke a command on a commissioned device.
@@ -1244,29 +1404,38 @@ public actor MatterController {
     /// Pass `timedTimeout` for commands that require a timed interaction
     /// (DoorLock Lock/Unlock, AdministratorCommissioning window commands); the
     /// controller then sends `TimedRequest` first, on the same exchange.
+    ///
+    /// - Parameter context: parents the call's span (default: the task's current context).
     public func invokeCommand(
         nodeID: NodeID,
         endpointID: EndpointID,
         clusterID: ClusterID,
         commandID: CommandID,
         commandFields: TLVElement? = nil,
-        timedTimeout: Duration? = nil
+        timedTimeout: Duration? = nil,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> TLVElement? {
-        try await withSession(nodeID: nodeID) { session in
-            let payload = IMClient.invokeCommandRequest(
-                endpointID: endpointID,
-                clusterID: clusterID,
-                commandID: commandID,
-                commandFields: commandFields,
-                timedRequest: timedTimeout != nil
-            )
-            let response: InboundMessage
-            if let timedTimeout {
-                response = try await self.timedInvoke(sessionID: session.localSessionID, timeout: timedTimeout, payload: payload)
-            } else {
-                response = try await self.imRequest(sessionID: session.localSessionID, opcode: .invokeRequest, payload: payload)
+        let operation = IMOperation(
+            kind: timedTimeout == nil ? .invoke : .timed,
+            nodeID: nodeID, endpointID: endpointID, clusterID: clusterID, commandID: commandID
+        )
+        return try await instrumented(operation, context: context, request: "fields \(MatterLogValue.value(commandFields, clusterID: clusterID))") { spanContext in
+            try await self.withSession(nodeID: nodeID, context: spanContext) { session in
+                let payload = IMClient.invokeCommandRequest(
+                    endpointID: endpointID,
+                    clusterID: clusterID,
+                    commandID: commandID,
+                    commandFields: commandFields,
+                    timedRequest: timedTimeout != nil
+                )
+                let response: InboundMessage
+                if let timedTimeout {
+                    response = try await self.timedInvoke(sessionID: session.localSessionID, timeout: timedTimeout, payload: payload, context: spanContext)
+                } else {
+                    response = try await self.imRequest(sessionID: session.localSessionID, opcode: .invokeRequest, payload: payload, context: spanContext)
+                }
+                return try IMClient.parseInvokeResponse(response.payload)
             }
-            return try IMClient.parseInvokeResponse(response.payload)
         }
     }
 
@@ -1278,7 +1447,13 @@ public actor MatterController {
     /// the peer; a dead subscription is re-established with backoff, asking only
     /// for events not yet delivered. Cancel it with ``ControllerSubscription/cancel()``;
     /// ``stop()`` cancels any still running.
-    public func subscribe(nodeID: NodeID, _ request: SubscriptionRequest) async throws -> ControllerSubscription {
+    ///
+    /// - Parameter context: parents each `matter.subscribe` span; report and loss spans link to them.
+    public func subscribe(
+        nodeID: NodeID,
+        _ request: SubscriptionRequest,
+        context: ServiceContext = .current ?? .topLevel
+    ) async throws -> ControllerSubscription {
         guard !stopped else { throw MessagingError.stopped }
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
@@ -1295,10 +1470,12 @@ public actor MatterController {
             client: subscriptionClient,
             sessionProvider: { [weak self] in
                 guard let self else { throw MessagingError.stopped }
-                return try await self.session(for: nodeID).localSessionID
+                return try await self.session(for: nodeID, context: context).localSessionID
             },
             livenessMargin: margin,
             operationTimeout: configuration.operationTimeout,
+            logger: loggers.subscription,
+            context: context,
             onEstablishFailure: { [weak self] sessionID, error in
                 await self?.invalidateStaleSession(for: nodeID, sessionID: sessionID, error: error)
             }
@@ -1353,7 +1530,7 @@ public actor MatterController {
         subscriptions.removeAll { $0.nodeID == nodeID }
         for subscription in doomed { await subscription.cancel() }
         await registry.remove(nodeID: nodeID)
-        await invalidateSession(for: nodeID)
+        await invalidateSession(for: nodeID, reason: .deviceRemoved)
         await saveState()
     }
 
@@ -1367,7 +1544,7 @@ public actor MatterController {
         do {
             try await store.save(await currentState())
         } catch {
-            logger.warning("Failed to persist controller state: \(error)")
+            loggers.session.warning("Failed to persist controller state: \(error)")
         }
     }
 
@@ -1384,22 +1561,28 @@ public actor MatterController {
     private static func makeMessenger(
         transport: any MatterUDPTransport,
         localNodeID: NodeID,
-        configuration: Configuration
+        configuration: Configuration,
+        logger: Logger
     ) -> ControllerMessenger {
         var messaging = ControllerMessenger.Configuration()
         messaging.mrp = configuration.mrp
-        return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging)
+        messaging.metricsLabelPrefix = configuration.metricsLabelPrefix
+        messaging.metricsFactory = configuration.metricsFactory
+        messaging.tracer = configuration.tracer
+        return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging, logger: logger)
     }
 
     /// Send one Interaction Model request on a fresh exchange of `sessionID`
     /// and return the reply. The exchange is closed (owed ack flushed) on
-    /// every path.
+    /// every path. Payloads are never logged here. `context`, when given,
+    /// parents the exchange's `matter.exchange` span.
     func imRequest(
         sessionID: UInt16,
         opcode: InteractionModelOpcode,
-        payload: Data
+        payload: Data,
+        context: ServiceContext? = nil
     ) async throws -> InboundMessage {
-        let exchange = try await messenger.openExchange(sessionID: sessionID)
+        let exchange = try await messenger.openExchange(sessionID: sessionID, context: context)
         do {
             let response = try await exchange.request(
                 protocolID: .interactionModel,
@@ -1427,9 +1610,20 @@ public actor MatterController {
     /// Run a timed invoke: `TimedRequest`, then the `InvokeRequest`, on **one**
     /// exchange (the device keys its timed-interaction window by exchange).
     /// A refused `TimedRequest` fails the call and the invoke is never sent.
-    func timedInvoke(sessionID: UInt16, timeout: Duration, payload: Data) async throws -> InboundMessage {
-        let exchange = try await messenger.openExchange(sessionID: sessionID)
+    func timedInvoke(sessionID: UInt16, timeout: Duration, payload: Data, context: ServiceContext? = nil) async throws -> InboundMessage {
+        let exchange = try await messenger.openExchange(sessionID: sessionID, context: context)
+        // Built only when a line is logged.
+        let exchangeID = exchange.key.exchangeID
+        func metadata(imStatus: UInt8? = nil) -> Logger.Metadata {
+            var metadata: Logger.Metadata = [
+                MatterLogKey.session: MatterLogValue.hex(sessionID),
+                MatterLogKey.exchange: MatterLogValue.hex(exchangeID),
+            ]
+            if let imStatus { metadata[MatterLogKey.imStatus] = MatterLogValue.hex(imStatus) }
+            return metadata
+        }
         do {
+            loggers.im.debug("Timed request: window \(MatterLogValue.milliseconds(timeout)) ms", metadata: metadata())
             let timedStatus = try await exchange.request(
                 protocolID: .interactionModel,
                 opcode: InteractionModelOpcode.timedRequest.rawValue,
@@ -1442,8 +1636,10 @@ public actor MatterController {
             }
             let status = try IMStatusResponse.fromTLV(timedStatus.payload)
             guard status.status == IMStatusResponse.success.status else {
+                loggers.im.debug("Timed request refused; the invoke is not sent", metadata: metadata(imStatus: status.status))
                 throw ControllerError.imStatus(status.status)
             }
+            loggers.im.debug("Timed request accepted", metadata: metadata())
             let response = try await exchange.request(
                 protocolID: .interactionModel,
                 opcode: InteractionModelOpcode.invokeRequest.rawValue,
@@ -1468,13 +1664,13 @@ public actor MatterController {
     /// mean nothing answered; a `timeout` can also follow a Sigma2), the
     /// node's operational address is re-resolved once, within
     /// `configuration.addressRefreshTimeout` (see
-    /// ``refreshedAddress(nodeID:tried:)``). At a different address the
+    /// ``refreshedAddress(nodeID:tried:context:)``). At a different address the
     /// handshake is retried once there, under the same reserved session ID,
     /// and the session is registered with that address. Otherwise the
     /// original error is thrown unchanged: retrying an unchanged address
     /// would only double a dead peer's failure latency. Any other failure,
     /// such as a refusal (`caseSessionFailed`), never triggers a re-resolve.
-    private func establishCASESession(nodeID: NodeID) async throws -> SecureSession {
+    private func establishCASESession(nodeID: NodeID, context: ServiceContext) async throws -> SecureSession {
         guard let device = await registry.device(for: nodeID) else {
             throw ControllerError.deviceNotFound
         }
@@ -1490,48 +1686,128 @@ public actor MatterController {
         }
         defer { sessionCache.releaseSessionID(sessionID) }
 
-        logger.debug("Establishing CASE session to node \(nodeID.rawValue)")
-
-        var usedAddress = address
-        let session: SecureSession
-        do {
-            session = try await caseHandshake(
-                nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID
-            )
-        } catch {
-            let original = Self.operationalError(error, nodeID: nodeID)
-            guard Self.nothingAnswered(original, nodeID: nodeID),
-                  let refreshed = try await refreshedAddress(nodeID: nodeID, tried: address) else {
-                throw original
-            }
-            logger.info("Node \(nodeID.rawValue) did not answer CASE; retrying at its re-resolved address")
-            usedAddress = refreshed.address
+        return try await instrumentedCASE(nodeID: nodeID, context: context) { caseContext in
+            var usedAddress = address
+            let session: SecureSession
             do {
-                session = try await caseHandshake(
-                    nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID
+                session = try await self.caseHandshake(
+                    nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
                 )
+            } catch {
+                let original = Self.operationalError(error, nodeID: nodeID)
+                guard Self.nothingAnswered(original, nodeID: nodeID),
+                      let refreshed = try await self.refreshedAddress(nodeID: nodeID, tried: address, context: caseContext) else {
+                    throw original
+                }
+                self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
+                usedAddress = refreshed.address
+                do {
+                    session = try await self.caseHandshake(
+                        nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
+                    )
+                } catch {
+                    throw Self.operationalError(error, nodeID: nodeID)
+                }
+            }
+
+            // Register before caching so the first request's reply is routable.
+            // Parameters re-read now: setMRPParameters may have run during the
+            // handshake (it then waits for this establishment to finish).
+            // A device removed during the handshake gets no session.
+            guard let current = await self.registry.device(for: nodeID) else {
+                throw ControllerError.deviceNotFound
+            }
+            do {
+                try await self.messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
             } catch {
                 throw Self.operationalError(error, nodeID: nodeID)
             }
+            self.sessionCache.store(session, for: nodeID)
+            return session
         }
+    }
 
-        // Register before caching so the first request's reply is routable.
-        // Parameters re-read now: setMRPParameters may have run during the
-        // handshake (it then waits for this establishment to finish).
-        // A device removed during the handshake gets no session.
-        guard let current = await registry.device(for: nodeID) else {
-            throw ControllerError.deviceNotFound
+    /// Run one CASE establishment inside a `matter.case` span (child of `context`): see
+    /// ``instrumentedEstablishment(_:context:nodeID:sessionID:establishedSessionID:mapError:_:)``;
+    /// on success it also records `<prefix>_case_duration`. `body` covers the handshake and
+    /// the session's registration; the duration and the CASE line's `matter.latency_ms`
+    /// include any address-refresh retry (the failed attempt, the re-resolve and the second
+    /// handshake).
+    private func instrumentedCASE(
+        nodeID: NodeID,
+        context: ServiceContext,
+        _ body: (ServiceContext) async throws -> SecureSession
+    ) async throws -> SecureSession {
+        loggers.caseHandshake.debug("Establishing CASE session", metadata: .node(nodeID))
+        return try await instrumentedEstablishment(
+            .caseSession, context: context, nodeID: nodeID,
+            establishedSessionID: { $0.localSessionID }, body
+        )
+    }
+
+    /// Run one session establishment inside its `matter.case` / `matter.pase` span (child of
+    /// `context`), with its info line on `case` / `pase` (duration, and the outcome on failure)
+    /// and `<prefix>_sessions_established_total{type,outcome}`. The outcome is classified from
+    /// the error `body` threw; `mapError` gives the error logged, recorded on the span and
+    /// thrown. An establishment cancelled or ended by ``stop()`` gets a debug line but is
+    /// neither counted nor timed, and its span ends without error status.
+    private func instrumentedEstablishment<T: Sendable>(
+        _ type: SessionType,
+        context: ServiceContext,
+        nodeID: NodeID? = nil,
+        sessionID: UInt16? = nil,
+        establishedSessionID: (T) -> UInt16? = { _ in nil },
+        mapError: (any Error) -> any Error = { $0 },
+        _ body: (ServiceContext) async throws -> T
+    ) async throws -> T {
+        let span = telemetry.tracer.startSpan(type.spanName, context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording {
+            if let nodeID { span.attributes[MatterLogKey.node] = MatterLogValue.hexString(nodeID.rawValue) }
+            if let sessionID { span.attributes[MatterLogKey.session] = MatterLogValue.hexString(sessionID) }
         }
+        let logger = type == .caseSession ? loggers.caseHandshake : loggers.paseHandshake
+        func metadata(session: UInt16?, elapsed: Duration, reason: String? = nil) -> Logger.Metadata {
+            var metadata = nodeID.map { Logger.Metadata.node($0) } ?? [:]
+            if let session { metadata[MatterLogKey.session] = MatterLogValue.hex(session) }
+            metadata[MatterLogKey.latencyMs] = MatterLogValue.latency(elapsed)
+            if let reason { metadata[MatterLogKey.reason] = .string(reason) }
+            return metadata
+        }
+        let started = messenger.clock.now
         do {
-            try await messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
+            let result = try await body(span.context)
+            let elapsed = messenger.clock.now - started
+            let session = establishedSessionID(result) ?? sessionID
+            if let session, span.isRecording {
+                span.attributes[MatterLogKey.session] = MatterLogValue.hexString(session)
+            }
+            logger.info(
+                "\(type.name) session established in \(MatterLogValue.milliseconds(elapsed)) ms",
+                metadata: metadata(session: session, elapsed: elapsed)
+            )
+            telemetry.metrics.sessionEstablishment(type, .success, duration: elapsed)
+            return result
         } catch {
-            throw Self.operationalError(error, nodeID: nodeID)
+            let elapsed = messenger.clock.now - started
+            let mapped = mapError(error)
+            guard let outcome = SessionOutcome(recording: error, controllerStopped: stopped) else {
+                let aborted = stopped ? "stopped" : "cancelled"
+                logger.debug(
+                    "\(type.name) session \(aborted) after \(MatterLogValue.milliseconds(elapsed)) ms: \(mapped)",
+                    metadata: metadata(session: sessionID, elapsed: elapsed, reason: aborted)
+                )
+                throw mapped
+            }
+            logger.info(
+                "\(type.failed) after \(MatterLogValue.milliseconds(elapsed)) ms: \(mapped)",
+                metadata: metadata(session: sessionID, elapsed: elapsed, reason: outcome.rawValue)
+            )
+            telemetry.metrics.sessionEstablishment(type, outcome, duration: elapsed)
+            span.recordError(mapped)
+            span.setStatus(SpanStatus(code: .error, message: outcome.rawValue))
+            throw mapped
         }
-        sessionCache.store(session, for: nodeID)
-
-        logger.debug("CASE session established to node \(nodeID.rawValue)")
-
-        return session
     }
 
     /// Re-resolve `nodeID`'s operational address after a handshake at
@@ -1547,21 +1823,26 @@ public actor MatterController {
     /// propagates.
     private func refreshedAddress(
         nodeID: NodeID,
-        tried: MatterAddress
+        tried: MatterAddress,
+        context: ServiceContext = .current ?? .topLevel
     ) async throws -> (address: MatterAddress, mrp: MRPParameters?)? {
         let resolved: ResolvedService
         do {
-            resolved = try await resolveOperational(nodeID: nodeID, timeout: configuration.addressRefreshTimeout)
+            resolved = try await resolveOperational(nodeID: nodeID, timeout: configuration.addressRefreshTimeout, context: context)
         } catch let cancellation as CancellationError {
             throw cancellation
         } catch {
             try Task.checkCancellation()
-            logger.notice("Node \(nodeID.rawValue): operational re-resolve failed: \(error)")
+            loggers.discovery.notice("Node \(MatterLogValue.hexString(nodeID.rawValue)): operational re-resolve failed: \(error)")
             return nil
         }
         guard !stopped, await registry.device(for: nodeID) != nil else { return nil }
         // `resolved` is canonical; `tried` is as stored, which may predate that.
         guard resolved.address != tried.canonicalised else { return nil }
+        loggers.discovery.info(
+            "Operational address changed: \(MatterLogValue.address(tried.canonicalised)) → \(MatterLogValue.address(resolved.address))",
+            metadata: .node(nodeID)
+        )
         // A device removed from here on is a no-op in the registry; a stop
         // from here on skips the save (see updateOperationalAddress).
         await updateOperationalAddress(
@@ -1588,7 +1869,8 @@ public actor MatterController {
         nodeID: NodeID,
         address: MatterAddress,
         mrp: MRPParameters?,
-        localSessionID sessionID: UInt16
+        localSessionID sessionID: UInt16,
+        context: ServiceContext? = nil
     ) async throws -> SecureSession {
         let timeout = configuration.operationTimeout
         let (sigma1Data, handshakeCtx) = controllerSession.createSigma1(
@@ -1596,7 +1878,7 @@ public actor MatterController {
             initiatorSessionID: sessionID
         )
 
-        let handshake = await messenger.openExchange(peer: address, mrp: mrp)
+        let handshake = await messenger.openExchange(peer: address, mrp: mrp, context: context)
         let session: SecureSession
         do {
             let sigma2 = try await handshake.request(
@@ -1656,6 +1938,7 @@ public actor MatterController {
     /// establishes a fresh session.
     private func withSession<T: Sendable>(
         nodeID: NodeID,
+        context: ServiceContext,
         operation: (SecureSession) async throws -> T
     ) async throws -> T {
         guard let device = await registry.device(for: nodeID) else {
@@ -1666,7 +1949,7 @@ public actor MatterController {
             throw ControllerError.noOperationalAddress
         }
 
-        let activeSession = try await session(for: nodeID)
+        let activeSession = try await session(for: nodeID, context: context)
         // The wait may have been on a handshake shared with other callers; a
         // caller cancelled meanwhile must not send its request late.
         try Task.checkCancellation()
@@ -1676,14 +1959,88 @@ public actor MatterController {
         } catch {
             let mapped = Self.operationalError(error, nodeID: nodeID)
             if let controllerError = mapped as? ControllerError, controllerError == .peerUnreachable(nodeID) {
-                logger.info("Node \(nodeID.rawValue) unreachable; invalidating its session (the request is not re-sent)")
                 // Only the session this operation used: a concurrent failure
                 // must not invalidate a session established since.
                 if sessionCache.session(for: nodeID) === activeSession {
-                    await invalidateSession(for: nodeID)
+                    await invalidateSession(for: nodeID, reason: .peerUnreachable)
                 }
             }
             throw mapped
+        }
+    }
+
+    /// Run one public IM call inside its `matter.im.<kind>` span (child of
+    /// `context`), with its debug request and response lines,
+    /// `<prefix>_im_requests_total{kind,outcome}` and
+    /// `<prefix>_im_request_duration{kind}`. `responseStatus` reads a
+    /// non-success status from a result that does not throw (a write's
+    /// per-attribute status). A call cancelled or ended by ``stop()`` gets its
+    /// response line but is neither counted nor timed, and its span ends
+    /// without error status.
+    private func instrumented<T: Sendable>(
+        _ operation: IMOperation,
+        context: ServiceContext,
+        request detail: @autoclosure () -> String,
+        responseStatus: (T) -> UInt8? = { _ in nil },
+        _ body: (ServiceContext) async throws -> T
+    ) async throws -> T {
+        let span = telemetry.tracer.startSpan(operation.spanName, context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording { operation.annotate(span) }
+        let started = messenger.clock.now
+        loggers.im.debug("IM \(operation.kind.rawValue) request: \(detail())", metadata: operation.metadata)
+        do {
+            let result = try await body(span.context)
+            let status = responseStatus(result) ?? IMStatusResponse.success.status
+            finishIM(
+                operation, span: span,
+                outcome: status == IMStatusResponse.success.status ? .success : .imStatus,
+                status: status, elapsed: messenger.clock.now - started
+            )
+            return result
+        } catch {
+            finishIM(
+                operation, span: span,
+                outcome: IMRequestOutcome(recording: error, controllerStopped: stopped),
+                status: Self.imStatus(of: error), elapsed: messenger.clock.now - started, error: error
+            )
+            throw error
+        }
+    }
+
+    /// The response line, metric and span status of a call. A nil `outcome`
+    /// is an aborted call (cancelled, or ended by ``stop()``): its line reads
+    /// `cancelled` or `stopped`, and it records no metric and no span error.
+    private func finishIM(
+        _ operation: IMOperation,
+        span: any Span,
+        outcome: IMRequestOutcome?,
+        status: UInt8?,
+        elapsed: Duration,
+        error: (any Error)? = nil
+    ) {
+        if let status, span.isRecording {
+            span.attributes[MatterLogKey.imStatus] = MatterLogValue.hexString(status)
+        }
+        let stopped = self.stopped
+        loggers.im.debug(
+            "IM \(operation.kind.rawValue) response: \(outcome?.rawValue ?? (stopped ? "stopped" : "cancelled")) in \(MatterLogValue.milliseconds(elapsed)) ms\(error.map { ": \($0)" } ?? "")",
+            metadata: operation.responseMetadata(elapsed: elapsed, imStatus: status)
+        )
+        guard let outcome else { return }
+        telemetry.metrics.imRequest(operation.kind, outcome, duration: elapsed)
+        if outcome != .success {
+            if let error { span.recordError(error) }
+            span.setStatus(SpanStatus(code: .error, message: outcome.rawValue))
+        }
+    }
+
+    /// The IM status an error carries: a StatusResponse, or an attribute/command status.
+    static func imStatus(of error: any Error) -> UInt8? {
+        switch error {
+        case ControllerError.imStatus(let status): return status
+        case IMError.attributeStatus(_, let status, _), IMError.commandStatus(_, let status, _): return status
+        default: return nil
         }
     }
 
@@ -1728,7 +2085,7 @@ public actor MatterController {
     /// anything else passes through.
     private static func commissioningError(_ error: any Error) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
-        return ControllerError.commissioningFailed("Messaging failure: \(messaging)")
+        return ControllerError.commissioning(messaging)
     }
 
     /// Drop the cached session if `error` says it is gone and it is still the
@@ -1738,8 +2095,7 @@ public actor MatterController {
               mapped == .peerUnreachable(nodeID),
               let cached = sessionCache.session(for: nodeID),
               cached.localSessionID == sessionID else { return }
-        logger.info("Node \(nodeID.rawValue) subscription failed on a dead session; invalidating it")
-        await invalidateSession(for: nodeID)
+        await invalidateSession(for: nodeID, reason: .deadSession)
     }
 
     /// Messaging failures on an operational exchange, as `ControllerError`.
@@ -1755,7 +2111,7 @@ public actor MatterController {
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
         case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
-            return ControllerError.transportError("\(messaging)")
+            return ControllerError.operational(messaging)
         }
     }
 }
@@ -1812,4 +2168,16 @@ private final class CancellableWaiter<T: Sendable>: Sendable {
         }
         continuation?.resume(with: result)
     }
+}
+
+// MARK: - Session establishment wording
+
+private extension SessionType {
+    var spanName: String { "matter.\(rawValue)" }
+
+    /// `CASE` or `PASE`.
+    var name: String { rawValue.uppercased() }
+
+    /// The start of the info line for a failed establishment.
+    var failed: String { self == .caseSession ? "CASE session failed" : "PASE failed" }
 }

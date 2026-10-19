@@ -3,7 +3,10 @@
 
 import Foundation
 import Logging
+import Metrics
+import Tracing
 import MatterTypes
+import MatterCrypto
 import MatterProtocol
 import MatterTransport
 
@@ -43,6 +46,12 @@ public actor ControllerMessenger {
         /// Messages held per exchange while no `receive()` waits; beyond this
         /// a message is dropped (it has already been acknowledged).
         public var inboundQueueLimit: Int = 8
+        /// Prefix of every metric label: `<prefix>_controller_messages_total`, … (default `matter`).
+        public var metricsLabelPrefix: String = "matter"
+        /// Metrics backend; nil uses `MetricsSystem.factory` as it is when the messenger is created.
+        public var metricsFactory: (any MetricsFactory)? = nil
+        /// Tracer for exchange spans; nil uses `InstrumentationSystem.tracer` at creation.
+        public var tracer: (any Tracer)? = nil
 
         public init() {}
     }
@@ -85,7 +94,14 @@ public actor ControllerMessenger {
     let localNodeID: NodeID
     let configuration: Configuration
     let clock: any MRPClock
-    let logger: Logger
+    /// The injected logger per subsystem (label unchanged).
+    nonisolated let logger: Logger
+    nonisolated let mrpLogger: Logger
+    nonisolated let exchangeLogger: Logger
+    nonisolated let sessionLogger: Logger
+    nonisolated let transportLogger: Logger
+    /// Metrics and tracer, shared with the controller and its subscriptions.
+    nonisolated let telemetry: ControllerTelemetry
 
     // MARK: - State
 
@@ -126,6 +142,8 @@ public actor ControllerMessenger {
     var timerIsIdleFallback = false
     var isStarted = false
     var isStopped = false
+    /// `matter.exchange` spans of exchanges opened with a context, until the owner closes them.
+    var exchangeSpans: [ExchangeKey: any Span] = [:]
 
     // MARK: - Init
 
@@ -146,7 +164,12 @@ public actor ControllerMessenger {
         self.localNodeID = localNodeID
         self.configuration = configuration
         self.clock = clock
-        self.logger = logger
+        self.logger = logger.withSubsystem(.messenger)
+        self.mrpLogger = logger.withSubsystem(.mrp)
+        self.exchangeLogger = logger.withSubsystem(.exchange)
+        self.sessionLogger = logger.withSubsystem(.session)
+        self.transportLogger = logger.withSubsystem(.transport)
+        self.telemetry = ControllerTelemetry(configuration: configuration)
         self.manager = ExchangeManager(defaultConfig: configuration.mrp, jitterSource: jitterSource)
     }
 
@@ -199,6 +222,8 @@ public actor ControllerMessenger {
         closing.removeAll()
         ephemeralNodeIDs.removeAll()
         peerEphemeralNodeIDs.removeAll()
+        for span in exchangeSpans.values { span.end() }
+        exchangeSpans.removeAll()
     }
 
     /// The transport's receive stream finished. Expected only after `stop()`;
@@ -218,12 +243,18 @@ public actor ControllerMessenger {
     /// text for the same IP address (`"0:0:0:0:0:0:0:1"`, `"[::1]"`) gets
     /// the reply from `"::1"`. A host name is used as given; the transport
     /// rejects it when the exchange sends.
-    public func openExchange(peer: MatterAddress, mrp: MRPParameters? = nil) -> ControllerExchange {
+    ///
+    /// `context`, when given, parents a `matter.exchange` span that records each
+    /// transmission and retransmission and ends when the exchange is closed. Unlike the
+    /// controller's public API it does not default to `ServiceContext.current`: `nil` means
+    /// no exchange span.
+    public func openExchange(peer: MatterAddress, mrp: MRPParameters? = nil, context: ServiceContext? = nil) -> ControllerExchange {
         let peer = peer.canonicalised
         start()
         let key = ExchangeKey(scope: .unsecured(peer: peer), exchangeID: manager.allocateExchangeID(), initiatedLocally: true)
         manager.open(key, peerAddress: peer, config: mrpConfig(for: mrp), now: clock.now)
         ephemeralNodeIDs[key] = Self.randomEphemeralNodeID()
+        startExchangeSpan(key, context: context)
         return ControllerExchange(key: key, peerAddress: peer, messenger: self)
     }
 
@@ -270,16 +301,21 @@ public actor ControllerMessenger {
             protocolID: protocolID.rawValue,
             acknowledgedMessageCounter: manager.takePendingAck(key)
         )
-        let bytes = try encode(header, payload: payload, key: key)
+        let (bytes, counter) = try encode(header, payload: payload, key: key)
         if reliable {
             try manager.trackTransmission(key, message: bytes, now: clock.now)
         }
+        recordFrame(.outbound, key: key, header: header, counter: counter)
+        recordExchangeEvent(key, "send", attributes: Self.counterAttributes(counter))
         // State is final: arm the timer before suspending in the send.
         rearmTimer()
         do {
             try await transport.send(bytes, to: address)
         } catch where reliable {
-            logger.warning("Send on exchange \(key.exchangeID) to \(address) failed; MRP will retransmit: \(error)")
+            transportLogger.warning(
+                "Send on exchange \(key.exchangeID) to \(MatterLogValue.address(address)) failed; MRP will retransmit: \(error)",
+                metadata: Self.exchangeMetadata(key).merging([MatterLogKey.reason: "send_failed"]) { $1 }
+            )
         }
     }
 
@@ -346,6 +382,8 @@ public actor ControllerMessenger {
         if let counter = manager.takePendingAck(key), let ack = standaloneAck(key: key, ackCounter: counter) {
             outgoing.append(ack)
         }
+        // The owner's view of the exchange ends here, even if MRP keeps retransmitting in `closing`.
+        endExchangeSpan(key, failing: error == .exchangeClosed ? nil : error)
         if manager.exchange(for: key)?.pendingMessage != nil {
             closing.insert(key)
         } else {
@@ -359,6 +397,7 @@ public actor ControllerMessenger {
         closing.remove(key)
         ephemeralNodeIDs[key] = nil
         peerEphemeralNodeIDs[key] = nil
+        endExchangeSpan(key, failing: nil)
     }
 
     /// The single place a waiter leaves `waiters`; only the caller that gets
@@ -378,7 +417,9 @@ public actor ControllerMessenger {
         do {
             try process(data, from: sender, now: clock.now, into: &outgoing)
         } catch {
-            logger.debug("Dropping datagram from \(sender): \(error)")
+            logger.debug("Dropping datagram from \(MatterLogValue.address(sender)): \(error)", metadata: [
+                MatterLogKey.reason: "undecodable",
+            ])
         }
         rearmTimer()
         await transmit(outgoing)
@@ -404,18 +445,34 @@ public actor ControllerMessenger {
             unsecuredDedup[sender] = dedup
         } else if messageHeader.securityFlags.sessionType == .unicast, var entry = sessions[messageHeader.sessionID] {
             // Decrypt first: a forged header must not move the counter window.
-            let decoded = try SecureMessageCodec.decode(data: data, session: entry.session)
+            let decoded: (messageHeader: MessageHeader, exchangeHeader: ExchangeHeader, payload: Data)
+            do {
+                decoded = try SecureMessageCodec.decode(data: data, session: entry.session)
+            } catch CryptoError.authenticationFailed, CryptoError.invalidCiphertext {
+                logger.debug("Dropping message on session \(messageHeader.sessionID) from \(MatterLogValue.address(sender)): decryption failed", metadata: [
+                    MatterLogKey.session: MatterLogValue.hex(messageHeader.sessionID),
+                    MatterLogKey.counter: MatterLogValue.decimal(messageHeader.messageCounter),
+                    MatterLogKey.reason: "decrypt_failed",
+                ])
+                return
+            }
             exchangeHeader = decoded.exchangeHeader
             payload = decoded.payload
             scope = .secured(localSessionID: messageHeader.sessionID)
             verdict = entry.dedup.check(messageHeader.messageCounter)
             if verdict == .accepted, entry.peerAddress != sender {
-                logger.debug("Session \(messageHeader.sessionID) peer moved from \(entry.peerAddress) to \(sender)")
+                sessionLogger.info("Session peer address changed: \(MatterLogValue.address(entry.peerAddress)) → \(MatterLogValue.address(sender))", metadata: [
+                    MatterLogKey.session: MatterLogValue.hex(messageHeader.sessionID),
+                ])
                 entry.peerAddress = sender
             }
             sessions[messageHeader.sessionID] = entry
         } else {
-            logger.trace("Dropping message for unknown session \(messageHeader.sessionID) from \(sender)")
+            logger.trace("Dropping message for unknown session \(messageHeader.sessionID) from \(MatterLogValue.address(sender))", metadata: [
+                MatterLogKey.session: MatterLogValue.hex(messageHeader.sessionID),
+                MatterLogKey.counter: MatterLogValue.decimal(messageHeader.messageCounter),
+                MatterLogKey.reason: "unknown_session",
+            ])
             return
         }
 
@@ -430,7 +487,11 @@ public actor ControllerMessenger {
         switch verdict {
         case .outOfWindow, .duplicate:
             // Matter Core §4.6.5: acknowledge again if asked, never process twice.
-            logger.debug("Dropping \(verdict == .duplicate ? "duplicate" : "out-of-window") counter \(counter) on exchange \(key.exchangeID)")
+            let duplicate = verdict == .duplicate
+            logger.trace(
+                "Dropping \(duplicate ? "duplicate" : "out-of-window") counter \(counter) on exchange \(key.exchangeID)",
+                metadata: frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: duplicate ? "duplicate" : "out_of_window")
+            )
             if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                 outgoing.append(ack)
             }
@@ -440,10 +501,15 @@ public actor ControllerMessenger {
         }
 
         manager.recordReceived(scope: scope, now: now)
+        recordFrame(.inbound, key: key, header: exchangeHeader, counter: counter)
         let wasClosing = closing.contains(key)
         var acknowledgedOurs = false
         if let acked = exchangeHeader.acknowledgedMessageCounter {
             acknowledgedOurs = manager.recordAcknowledgment(key, ackedCounter: acked)
+            if acknowledgedOurs {
+                mrpLogger.trace("Ack received", metadata: Self.exchangeMetadata(key).merging([MatterLogKey.ack: MatterLogValue.decimal(acked)]) { $1 })
+                recordExchangeEvent(key, "ack", attributes: [MatterLogKey.ack: .int64(Int64(acked))])
+            }
         }
         if wasClosing {
             // Closed by its owner: acknowledge if asked, deliver nothing, and
@@ -477,7 +543,10 @@ public actor ControllerMessenger {
         if key.initiatedLocally {
             // I=0: only ever a message on an exchange we opened and still hold.
             guard manager.exchange(for: key) != nil else {
-                logger.debug("Stale message on closed exchange \(key.exchangeID) (counter \(counter)); acknowledging and dropping")
+                logger.trace(
+                    "Stale message on closed exchange \(key.exchangeID) (counter \(counter)); acknowledging and dropping",
+                    metadata: frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: "stale_exchange")
+                )
                 if requiresAck, let ack = standaloneAck(key: key, ackCounter: counter, inbound: messageHeader) {
                     outgoing.append(ack)
                 }
@@ -503,7 +572,10 @@ public actor ControllerMessenger {
         if requiresAck { recordOwedAck(key, counter: counter, now: now, into: &outgoing) }
 
         guard let handler = routeHandler(for: message) else {
-            logger.debug("No handler for unsolicited protocol \(message.protocolID) opcode \(message.opcode); acknowledging and closing")
+            logger.debug(
+                "No handler for unsolicited protocol \(message.protocolID) opcode \(message.opcode); acknowledging and closing",
+                metadata: frameMetadata(key: key, header: exchangeHeader, counter: counter, reason: "no_handler")
+            )
             finishExchange(key, failing: .exchangeClosed, into: &outgoing)
             return
         }
@@ -541,7 +613,13 @@ public actor ControllerMessenger {
         }
         var queue = inbound[message.key, default: []]
         guard queue.count < configuration.inboundQueueLimit else {
-            logger.warning("Inbound queue full on exchange \(message.key.exchangeID); dropping counter \(message.messageCounter)")
+            logger.warning(
+                "Inbound queue full on exchange \(message.key.exchangeID); dropping counter \(message.messageCounter)",
+                metadata: Self.exchangeMetadata(message.key).merging([
+                    MatterLogKey.counter: MatterLogValue.decimal(message.messageCounter),
+                    MatterLogKey.reason: "queue_full",
+                ]) { $1 }
+            )
             return
         }
         queue.append(message)
@@ -623,20 +701,36 @@ public actor ControllerMessenger {
     func collectRetransmissions(now: ContinuousClock.Instant, into outgoing: inout [Outgoing]) {
         for (key, decision) in manager.processDueRetransmissions(now: now) {
             switch decision {
-            case .send(let message, let recordedAddress, _):
+            case .send(let message, let recordedAddress, let nextDeadline):
                 // A secure session follows its peer's current address.
                 let address = address(for: key.scope) ?? recordedAddress
+                // `transmissions` already counts this copy: retransmission n is transmission n + 1.
+                let attempt = (manager.exchange(for: key)?.transmissions ?? 1) - 1
+                telemetry.metrics.mrpRetransmits.increment()
+                mrpLogger.trace(
+                    "MRP retransmit \(attempt), next in \(MatterLogValue.milliseconds(nextDeadline - now)) ms",
+                    metadata: Self.exchangeMetadata(key).merging([
+                        MatterLogKey.counter: Self.messageCounter(of: message).map { MatterLogValue.decimal($0) } ?? "unknown",
+                        MatterLogKey.attempt: MatterLogValue.decimal(attempt),
+                    ]) { $1 }
+                )
+                recordExchangeEvent(key, "retransmit", attributes: [MatterLogKey.attempt: .int64(Int64(attempt))])
                 outgoing.append(Outgoing(bytes: message, address: address, note: "retransmission on exchange \(key.exchangeID)"))
             case .exhausted where closing.contains(key):
                 // The owner already closed the exchange; nobody to tell.
-                logger.debug("Final message on closed exchange \(key.exchangeID) went unacknowledged")
+                telemetry.metrics.mrpGiveUps.increment()
+                mrpLogger.info("Final message on closed exchange \(key.exchangeID) went unacknowledged", metadata: Self.exchangeMetadata(key))
                 removeExchange(key)
             case .exhausted:
                 // Exhaustion happens only once transmissions > maxRetransmissions,
                 // i.e. exactly maxRetransmissions + 1 copies went unacknowledged.
                 let transmissions = configuration.mrp.maxRetransmissions + 1
                 let error = MessagingError.peerUnreachable(key, transmissions: transmissions)
-                logger.info("Peer unreachable: \(transmissions) transmissions unacknowledged on exchange \(key.exchangeID)")
+                telemetry.metrics.mrpGiveUps.increment()
+                mrpLogger.info(
+                    "Peer unreachable: \(transmissions) transmissions unacknowledged on exchange \(key.exchangeID)",
+                    metadata: Self.exchangeMetadata(key).merging([MatterLogKey.attempt: MatterLogValue.decimal(transmissions)]) { $1 }
+                )
                 let hadWaiter = waiters[key] != nil
                 finishExchange(key, failing: error, into: &outgoing)
                 if !hadWaiter {
@@ -661,6 +755,8 @@ public actor ControllerMessenger {
     func expireWaiters(now: ContinuousClock.Instant, into outgoing: inout [Outgoing]) {
         let expired = waiters.filter { $0.value.deadline <= now }.map(\.key)
         for key in expired {
+            telemetry.metrics.exchangeTimeouts.increment()
+            exchangeLogger.debug("Exchange response timeout on exchange \(key.exchangeID)", metadata: Self.exchangeMetadata(key))
             finishExchange(key, failing: .responseTimeout(key), into: &outgoing)
         }
     }
@@ -688,7 +784,9 @@ public actor ControllerMessenger {
             do {
                 try await transport.send(item.bytes, to: item.address)
             } catch {
-                logger.warning("Send failed (\(item.note)) to \(item.address): \(error)")
+                transportLogger.warning("Send failed (\(item.note)) to \(MatterLogValue.address(item.address)): \(error)", metadata: [
+                    MatterLogKey.reason: "send_failed",
+                ])
             }
         }
     }
@@ -706,21 +804,24 @@ public actor ControllerMessenger {
             acknowledgedMessageCounter: ackCounter
         )
         do {
-            return Outgoing(bytes: try encode(header, payload: Data(), key: key, inbound: inbound), address: address, note: "standalone ack \(ackCounter)")
+            let (bytes, counter) = try encode(header, payload: Data(), key: key, inbound: inbound)
+            telemetry.metrics.message(.outbound, protocolID: header.protocolID)
+            mrpLogger.trace("standalone ack", metadata: frameMetadata(key: key, header: header, counter: counter))
+            return Outgoing(bytes: bytes, address: address, note: "standalone ack \(ackCounter)")
         } catch {
-            logger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)")
+            mrpLogger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)", metadata: Self.exchangeMetadata(key))
             return nil
         }
     }
 
-    /// Encode one frame of exchange `key`; `inbound` is the header of the
-    /// frame it answers, if any (see ``unsecuredNodeIDs(for:inbound:)``).
-    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey, inbound: MessageHeader? = nil) throws -> Data {
+    /// Encode one frame of exchange `key`, with the message counter it was given; `inbound`
+    /// is the header of the frame it answers, if any (see ``unsecuredNodeIDs(for:inbound:)``).
+    func encode(_ header: ExchangeHeader, payload: Data, key: ExchangeKey, inbound: MessageHeader? = nil) throws -> (bytes: Data, counter: UInt32) {
         switch key.scope {
         case .unsecured:
             unsecuredCounter &+= 1
             let nodeIDs = unsecuredNodeIDs(for: key, inbound: inbound)
-            return MatterMessage.encodeUnsecured(
+            let bytes = MatterMessage.encodeUnsecured(
                 messageHeader: MessageHeader(
                     sessionID: 0,
                     messageCounter: unsecuredCounter,
@@ -730,11 +831,13 @@ public actor ControllerMessenger {
                 exchangeHeader: header,
                 payload: payload
             )
+            return (bytes, unsecuredCounter)
         case .secured(let localSessionID):
             guard let entry = sessions[localSessionID] else {
                 throw MessagingError.unknownSession(localSessionID)
             }
-            return try SecureMessageCodec.encode(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID)
+            let encoded = try SecureMessageCodec.encodeCounted(exchangeHeader: header, payload: payload, session: entry.session, sourceNodeID: localNodeID, logger: transportLogger)
+            return (encoded.message, encoded.counter)
         }
     }
 
@@ -773,5 +876,109 @@ public actor ControllerMessenger {
             config.peer = parameters
         }
         return config
+    }
+
+    // MARK: - Telemetry
+
+    /// Start the exchange's `matter.exchange` span as a child of `context` (none without one).
+    func startExchangeSpan(_ key: ExchangeKey, context: ServiceContext?) {
+        guard let context else { return }
+        let span = telemetry.tracer.startSpan("matter.exchange", context: context, ofKind: .client)
+        // A span that records nothing is not kept: its events would be built for nobody.
+        guard span.isRecording else {
+            span.end()
+            return
+        }
+        span.attributes[MatterLogKey.session] = Self.sessionText(key.scope)
+        span.attributes[MatterLogKey.exchange] = MatterLogValue.hexString(key.exchangeID)
+        exchangeSpans[key] = span
+    }
+
+    /// End the exchange's span, recording `error` (give-up, timeout, session closed) as its status.
+    func endExchangeSpan(_ key: ExchangeKey, failing error: MessagingError?) {
+        guard let span = exchangeSpans.removeValue(forKey: key) else { return }
+        if let error {
+            span.recordError(error)
+            span.setStatus(SpanStatus(code: .error, message: String(describing: error)))
+        }
+        span.end()
+    }
+
+    /// An event on the exchange's span, if it has one and it is recording.
+    /// `attributes` are built only when the exchange is traced.
+    func recordExchangeEvent(_ key: ExchangeKey, _ name: String, attributes: @autoclosure () -> SpanAttributes = [:]) {
+        guard let span = exchangeSpans[key], span.isRecording else { return }
+        span.addEvent(SpanEvent(name: name, attributes: attributes()))
+    }
+
+    /// Count one frame sent or received, and trace it: `send|receive <secured|unsecured> I= R=`.
+    func recordFrame(_ direction: MessageDirection, key: ExchangeKey, header: ExchangeHeader, counter: UInt32?) {
+        telemetry.metrics.message(direction, protocolID: header.protocolID)
+        let verb = direction == .outbound ? "send" : "receive"
+        logger.trace(
+            "\(verb) \(Self.scopeName(key.scope)) I=\(header.flags.initiator ? 1 : 0) R=\(header.flags.reliableDelivery ? 1 : 0)",
+            metadata: frameMetadata(key: key, header: header, counter: counter)
+        )
+    }
+
+    /// The static frame metadata plus, on a secure session, its peer's `matter.node` (none
+    /// for a PASE session, whose peer has no operational node ID yet). Call it only inside a
+    /// log call's metadata autoclosure.
+    func frameMetadata(key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, reason: String? = nil) -> Logger.Metadata {
+        var metadata = Self.frameMetadata(key: key, header: header, counter: counter, reason: reason)
+        if case .secured(let localSessionID) = key.scope,
+           let peer = sessions[localSessionID]?.session.peerNodeID, peer != .unspecified {
+            metadata[MatterLogKey.node] = MatterLogValue.hex(peer.rawValue)
+        }
+        return metadata
+    }
+
+    /// `matter.session` and `matter.exchange` of `key`.
+    static func exchangeMetadata(_ key: ExchangeKey) -> Logger.Metadata {
+        [
+            MatterLogKey.session: sessionMetadata(key.scope),
+            MatterLogKey.exchange: MatterLogValue.hex(key.exchangeID),
+        ]
+    }
+
+    /// The exchange's metadata plus the frame's protocol, opcode, counter and ack, and the
+    /// drop `reason` if any.
+    static func frameMetadata(key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, reason: String? = nil) -> Logger.Metadata {
+        var metadata = exchangeMetadata(key)
+        metadata[MatterLogKey.protocolID] = MatterLogValue.hex(header.protocolID)
+        metadata[MatterLogKey.opcode] = MatterLogValue.hex(header.protocolOpcode)
+        if let counter { metadata[MatterLogKey.counter] = MatterLogValue.decimal(counter) }
+        if let ack = header.acknowledgedMessageCounter { metadata[MatterLogKey.ack] = MatterLogValue.decimal(ack) }
+        if let reason { metadata[MatterLogKey.reason] = .string(reason) }
+        return metadata
+    }
+
+    /// `unsecured`, or the local session ID in hex.
+    static func sessionText(_ scope: SessionScope) -> String {
+        switch scope {
+        case .unsecured: return "unsecured"
+        case .secured(let localSessionID): return MatterLogValue.hexString(localSessionID)
+        }
+    }
+
+    static func sessionMetadata(_ scope: SessionScope) -> Logger.MetadataValue {
+        .string(sessionText(scope))
+    }
+
+    static func scopeName(_ scope: SessionScope) -> String {
+        switch scope {
+        case .unsecured: return "unsecured"
+        case .secured: return "secured"
+        }
+    }
+
+    /// The message counter of an encoded frame (its plaintext header).
+    static func messageCounter(of bytes: Data) -> UInt32? {
+        try? MessageHeader.decode(from: bytes).0.messageCounter
+    }
+
+    static func counterAttributes(_ counter: UInt32?) -> SpanAttributes {
+        guard let counter else { return [:] }
+        return [MatterLogKey.counter: .int64(Int64(counter))]
     }
 }

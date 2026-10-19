@@ -85,8 +85,14 @@ public enum IMClient {
     ///
     /// Returns `true` if all writes succeeded, `false` otherwise.
     public static func parseWriteResponse(_ data: Data) throws -> Bool {
+        try firstWriteFailure(data) == nil
+    }
+
+    /// Parse a WriteResponse and return the first non-success per-attribute
+    /// status, or nil when every write succeeded.
+    public static func firstWriteFailure(_ data: Data) throws -> UInt8? {
         let resp = try WriteResponse.fromTLV(data)
-        return resp.writeResponses.allSatisfy { $0.status.status == StatusIB.success.status }
+        return resp.writeResponses.first { $0.status.status != StatusIB.success.status }?.status.status
     }
 
     // MARK: - Invoke

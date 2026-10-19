@@ -38,10 +38,14 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
         .package(url: "https://github.com/acumen-dev/mdns-swift.git", from: "1.2.0"),
+        // Floors are the API minimums (factory-taking metric inits; InMemoryTracing). Their
+        // 6.2-only releases (metrics 2.12, tracing 1.6+) resolve on Swift 6.2 toolchains.
+        .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
+        .package(url: "https://github.com/apple/swift-distributed-tracing.git", from: "1.3.0"),
     ],
     targets: [
         // MARK: - Core Types
@@ -124,6 +128,8 @@ let package = Package(
                 "MatterProtocol",
                 "MatterTransport",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Tracing", package: "swift-distributed-tracing"),
             ]
         ),
 
@@ -167,6 +173,10 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "MetricsTestKit", package: "swift-metrics"),
+                .product(name: "Tracing", package: "swift-distributed-tracing"),
+                .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
             ]
         ),
 
@@ -238,6 +248,11 @@ let package = Package(
                 "MatterController", "MatterModel", "MatterCrypto", "MatterTransport",
                 "MatterProtocol", "MatterTypes", "MatterTestSupport", "MatterStoreConformance",
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "MetricsTestKit", package: "swift-metrics"),
+                .product(name: "Tracing", package: "swift-distributed-tracing"),
+                .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
             ]
         ),
         .testTarget(

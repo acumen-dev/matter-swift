@@ -162,10 +162,12 @@ public enum ScriptedPeer {
 
     /// Two ends of one PASE-style session with fresh random keys: what one
     /// encrypts the other decrypts. Each side's header carries the other's
-    /// local session ID.
+    /// local session ID. `peerNodeID` is the node the controller's end names
+    /// as its peer (default: unspecified, as on a real PASE session).
     public static func mirroredSessions(
         controllerSessionID: UInt16,
-        peerSessionID: UInt16
+        peerSessionID: UInt16,
+        peerNodeID: NodeID = NodeID(rawValue: 0)
     ) -> (controller: SecureSession, peer: SecureSession) {
         let controllerToPeer = SymmetricKey(size: .bits128)
         let peerToController = SymmetricKey(size: .bits128)
@@ -173,7 +175,7 @@ public enum ScriptedPeer {
             localSessionID: controllerSessionID,
             peerSessionID: peerSessionID,
             establishment: .pase,
-            peerNodeID: NodeID(rawValue: 0),
+            peerNodeID: peerNodeID,
             encryptKey: controllerToPeer,
             decryptKey: peerToController
         )

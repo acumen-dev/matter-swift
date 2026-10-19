@@ -148,9 +148,12 @@ Then add the target dependency:
 ## Dependencies
 
 - [swift-crypto](https://github.com/apple/swift-crypto) 4.0+
-- [swift-certificates](https://github.com/apple/swift-certificates) 1.0+
+- [swift-certificates](https://github.com/apple/swift-certificates) 1.21+
 - [swift-asn1](https://github.com/apple/swift-asn1) 1.0+
-- [swift-log](https://github.com/apple/swift-log) 1.0+
+- [swift-log](https://github.com/apple/swift-log) 1.5+
+- [swift-metrics](https://github.com/apple/swift-metrics) 2.7+ (controller metrics; no-op until a backend is bootstrapped or passed in)
+- [swift-distributed-tracing](https://github.com/apple/swift-distributed-tracing) 1.3+ (controller spans; no-op until a tracer is bootstrapped or passed in)
+- [mdns-swift](https://github.com/acumen-dev/mdns-swift) 1.2+
 - [swift-collections](https://github.com/apple/swift-collections) 1.1+
 - [swift-nio](https://github.com/apple/swift-nio) 2.65+ (Linux only)
 

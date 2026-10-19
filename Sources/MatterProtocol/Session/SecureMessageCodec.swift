@@ -6,13 +6,14 @@ import Logging
 import MatterTypes
 import MatterCrypto
 
-private let logger = Logger(label: "matter.protocol.codec")
-
 /// Encodes and decodes encrypted Matter messages.
 ///
 /// Uses the session's encryption keys and the message header as AAD
 /// to encrypt/decrypt the exchange header + application payload.
 public enum SecureMessageCodec {
+
+    /// The codec's shared logger, for callers that pass none.
+    @usableFromInline static let defaultLogger = Logger(label: "matter.protocol.codec")
 
     // MARK: - Encode (Encrypt)
 
@@ -26,13 +27,31 @@ public enum SecureMessageCodec {
     ///   - payload: The application payload.
     ///   - session: The secure session (must have encryption keys).
     ///   - sourceNodeID: The source node ID for nonce construction.
+    ///   - logger: Where an oversized frame is reported. The default is the codec's shared
+    ///     logger, used by callers that pass none; the controller messenger passes its own.
     /// - Returns: The complete encoded message (header + ciphertext + MIC).
     public static func encode(
         exchangeHeader: ExchangeHeader,
         payload: Data,
         session: SecureSession,
-        sourceNodeID: NodeID
+        sourceNodeID: NodeID,
+        logger: Logger = defaultLogger
     ) throws -> Data {
+        try encodeCounted(
+            exchangeHeader: exchangeHeader, payload: payload, session: session,
+            sourceNodeID: sourceNodeID, logger: logger
+        ).message
+    }
+
+    /// As ``encode(exchangeHeader:payload:session:sourceNodeID:logger:)``, also returning the
+    /// message counter the frame was given, so a caller need not decode its header for it.
+    package static func encodeCounted(
+        exchangeHeader: ExchangeHeader,
+        payload: Data,
+        session: SecureSession,
+        sourceNodeID: NodeID,
+        logger: Logger = defaultLogger
+    ) throws -> (message: Data, counter: UInt32) {
         guard let encryptKey = session.encryptKey else {
             throw SecureCodecError.missingEncryptionKeys
         }
@@ -85,10 +104,12 @@ public enum SecureMessageCodec {
         // Messages exceeding this limit will be truncated or fragmented at the IP layer,
         // causing "End of TLV" parse errors on the receiver (especially Apple Home).
         if result.count > MatterMessage.maxUDPPayloadSize {
-            logger.error("Encrypted message (\(result.count)B) exceeds max UDP payload (\(MatterMessage.maxUDPPayloadSize)B) — receiver will likely fail to parse. IM payload was \(payload.count)B, max is \(MatterMessage.maxIMPayloadSize)B.")
+            logger.error("Encrypted message (\(result.count)B) exceeds max UDP payload (\(MatterMessage.maxUDPPayloadSize)B) — receiver will likely fail to parse. IM payload was \(payload.count)B, max is \(MatterMessage.maxIMPayloadSize)B.", metadata: [
+                MatterLogKey.session: MatterLogValue.hex(session.localSessionID),
+            ])
         }
 
-        return result
+        return (result, counter)
     }
 
     // MARK: - Decode (Decrypt)

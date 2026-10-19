@@ -1,0 +1,29 @@
+// ControllerErrorTests.swift
+// Copyright 2026 Monagle Pty Ltd
+
+import Testing
+import MatterController
+
+@Suite("ControllerError")
+struct ControllerErrorTests {
+
+    @Test("isStopped is true for the messenger's stopped error, raw or as an operational or commissioning request maps it")
+    func stoppedForms() {
+        #expect(ControllerError.isStopped(MessagingError.stopped))
+        #expect(ControllerError.isStopped(ControllerError.transportError("\(MessagingError.stopped)")))
+        #expect(ControllerError.isStopped(ControllerError.commissioningFailed("Messaging failure: \(MessagingError.stopped)")))
+    }
+
+    @Test("isStopped is false for any other error, another transport or commissioning error included")
+    func otherErrors() {
+        #expect(!ControllerError.isStopped(ControllerError.transportError("send failed")))
+        #expect(!ControllerError.isStopped(ControllerError.transportError("\(MessagingError.exchangeClosed)")))
+        #expect(!ControllerError.isStopped(MessagingError.sessionClosed))
+        #expect(!ControllerError.isStopped(ControllerError.timeout("stopped")))
+        // Not a shape a stop produces (commissioning steps only parse bytes already received): it pins the exact match.
+        #expect(!ControllerError.isStopped(ControllerError.commissioningFailed("AddNOC failed: \(MessagingError.stopped)")))
+        #expect(!ControllerError.isStopped(ControllerError.commissioningFailed("Messaging failure: \(MessagingError.sessionClosed)")))
+        #expect(!ControllerError.isStopped(ControllerError.commissioningFailed("\(MessagingError.stopped)")))
+        #expect(!ControllerError.isStopped(CancellationError()))
+    }
+}

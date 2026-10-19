@@ -108,3 +108,36 @@ public enum ControllerError: Error, Sendable, Equatable {
     /// No response received within the deadline.
     case timeout(String)
 }
+
+// MARK: - Stopped
+
+extension ControllerError {
+
+    /// Whether `error` means the request was abandoned because ``MatterController/stop()`` (or
+    /// the messenger's `stop()`) ran, rather than because it failed.
+    ///
+    /// Stopping reaches a caller as `MessagingError.stopped` as thrown, or mapped by the
+    /// controller: to ``transportError(_:)`` from an operational request, or to
+    /// ``commissioningFailed(_:)`` from commissioning. This is true for those three forms and
+    /// false for every other error, including one whose message only mentions `stopped`.
+    public static func isStopped(_ error: any Error) -> Bool {
+        switch error {
+        case MessagingError.stopped:
+            return true
+        case let error as ControllerError:
+            return error == .operational(.stopped) || error == .commissioning(.stopped)
+        default:
+            return false
+        }
+    }
+
+    /// A messaging failure on an operational exchange that has no more specific case.
+    static func operational(_ messaging: MessagingError) -> ControllerError {
+        .transportError("\(messaging)")
+    }
+
+    /// A messaging failure during commissioning.
+    static func commissioning(_ messaging: MessagingError) -> ControllerError {
+        .commissioningFailed("Messaging failure: \(messaging)")
+    }
+}

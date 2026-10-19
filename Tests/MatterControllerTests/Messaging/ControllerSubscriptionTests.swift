@@ -3,6 +3,7 @@
 
 import Testing
 import Foundation
+import Logging
 import MatterTypes
 import MatterProtocol
 import MatterTestSupport
@@ -24,7 +25,8 @@ struct ControllerSubscriptionTests {
             client: client,
             sessionProvider: { 10 },
             livenessMargin: margin,
-            operationTimeout: .seconds(30)
+            operationTimeout: .seconds(30),
+            logger: Logger(label: "test.subscription")
         )
     }
 
@@ -357,6 +359,7 @@ struct ControllerSubscriptionTests {
             sessionProvider: { next.withLock { ids in let id = ids.removeFirst(); used.withLock { $0.append(id) }; return id } },
             livenessMargin: margin,
             operationTimeout: .seconds(30),
+            logger: Logger(label: "test.subscription"),
             onEstablishFailure: { sessionID, _ in failed.withLock { $0.append(sessionID) } }
         )
         await #expect(throws: (any Error).self) { try await sub.start() }
@@ -379,6 +382,7 @@ struct ControllerSubscriptionTests {
             sessionProvider: { await box.value?.cancel(); return 10 },
             livenessMargin: margin,
             operationTimeout: .seconds(30),
+            logger: Logger(label: "test.subscription"),
             onEstablishFailure: { _, _ in failed.withLock { $0 += 1 } }
         )
         box.withLock { $0 = sub }

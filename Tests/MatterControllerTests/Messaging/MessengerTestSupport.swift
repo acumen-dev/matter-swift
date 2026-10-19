@@ -15,21 +15,28 @@ let testPeerParameters = MRPParameters(
     sessionActiveThreshold: .milliseconds(4000)
 )
 
-/// A messenger on endpoint `a` of `link`, zero jitter, on `clock`.
+/// A messenger on endpoint `a` of `link`, zero jitter, on `clock`; with `telemetry`, its
+/// metrics, tracer and a `test.messenger` logger.
 func makeMessenger(
     link: FaultInjectingLink,
     clock: ManualClock,
     peer: MRPParameters = testPeerParameters,
-    maxRetransmissions: Int = 4
+    maxRetransmissions: Int = 4,
+    telemetry: TestTelemetry? = nil
 ) -> ControllerMessenger {
     var configuration = ControllerMessenger.Configuration()
     configuration.mrp = MRPConfig(peer: peer, maxRetransmissions: maxRetransmissions)
+    guard let telemetry else {
+        return ControllerMessenger(
+            transport: link.a, localNodeID: NodeID(rawValue: 1), configuration: configuration,
+            clock: clock, jitterSource: { 0 }
+        )
+    }
+    configuration.metricsFactory = telemetry.metrics
+    configuration.tracer = telemetry.tracer
     return ControllerMessenger(
-        transport: link.a,
-        localNodeID: NodeID(rawValue: 1),
-        configuration: configuration,
-        clock: clock,
-        jitterSource: { 0 }
+        transport: link.a, localNodeID: NodeID(rawValue: 1), configuration: configuration,
+        clock: clock, jitterSource: { 0 }, logger: telemetry.logger(label: "test.messenger")
     )
 }
 
@@ -42,10 +49,10 @@ struct Rig {
 }
 
 /// Mirrored sessions 10 (controller) / 20 (peer) on a ManualClock.
-func makeRig() async throws -> Rig {
+func makeRig(telemetry: TestTelemetry? = nil) async throws -> Rig {
     let clock = ManualClock()
     let link = FaultInjectingLink(seed: 1)
-    let messenger = makeMessenger(link: link, clock: clock)
+    let messenger = makeMessenger(link: link, clock: clock, telemetry: telemetry)
     let (controllerSession, peerSession) = ScriptedPeer.mirroredSessions(controllerSessionID: 10, peerSessionID: 20)
     try await messenger.registerSession(controllerSession, peerAddress: link.b.address)
     return Rig(clock: clock, link: link, messenger: messenger, controllerSession: controllerSession, peerSession: peerSession)

@@ -3,6 +3,7 @@
 
 import Foundation
 import Logging
+import Tracing
 import MatterTypes
 import MatterProtocol
 
@@ -44,7 +45,16 @@ public actor ControllerSubscription {
     private let livenessMargin: Duration
     private let operationTimeout: Duration
     private let onEstablishFailure: EstablishFailureHook
-    private nonisolated let logger = Logger(label: "matter.controller.subscription")
+    /// Parents the `matter.subscribe` spans.
+    private let context: ServiceContext
+    /// The `matter.subscribe` span context that established the current (or last) subscription,
+    /// and that subscription's ID. Each `matter.report` and `matter.subscription.lost` span is a
+    /// root linked to it: a subscription can live for days, so it is not one long trace.
+    private var subscribeLink: (context: ServiceContext, id: SubscriptionID)?
+    /// When the last report (first chunk) arrived, for `<prefix>_report_interval`.
+    private var lastReportAt: ContinuousClock.Instant?
+    private var telemetry: ControllerTelemetry { messenger.telemetry }
+    nonisolated let logger: Logger
 
     public private(set) var currentSubscriptionID: SubscriptionID?
     /// The local session ID the current subscription was established on.
@@ -62,6 +72,8 @@ public actor ControllerSubscription {
         sessionProvider: @escaping SessionProvider,
         livenessMargin: Duration,
         operationTimeout: Duration,
+        logger: Logger,
+        context: ServiceContext = .topLevel,
         onEstablishFailure: @escaping EstablishFailureHook = { _, _ in }
     ) {
         (events, continuation) = AsyncStream.makeStream(of: SubscriptionEvent.self)
@@ -72,6 +84,8 @@ public actor ControllerSubscription {
         self.sessionProvider = sessionProvider
         self.livenessMargin = livenessMargin
         self.operationTimeout = operationTimeout
+        self.logger = logger.withSubsystem(.subscription)
+        self.context = context
         self.onEstablishFailure = onEstablishFailure
     }
 
@@ -95,6 +109,7 @@ public actor ControllerSubscription {
         currentSessionID = nil
         monitor?.cancel()
         monitor = nil
+        if id != nil { recordLoss(.closed, id: id) }
         continuation.finish()
         if let id, let sessionID {
             await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
@@ -121,20 +136,29 @@ public actor ControllerSubscription {
 
     private func monitorLoop() async {
         while !cancelled, !Task.isCancelled, let id = currentSubscriptionID, let sessionID = currentSessionID {
+            // Both reads before any decision, so nothing suspends between the deadline check and the loss.
+            let sessionAlive = await messenger.registeredSessionIDs.contains(sessionID)
             let record = await client.subscription(for: id, peerNodeID: nodeID)
             guard !cancelled, currentSubscriptionID == id else { return }
             var reason = "subscription record missing"
+            var loss = SubscriptionLossReason.session
             if let record {
                 let deadline = record.livenessDeadline(margin: livenessMargin)
-                if messenger.clock.now < deadline {
+                let now = messenger.clock.now
+                if now < deadline {
+                    logger.trace("Liveness deadline recomputed: \(MatterLogValue.milliseconds(deadline - now)) ms from now", metadata: metadata(id))
                     do { try await messenger.clock.sleep(until: deadline) } catch { return }
                     continue
                 }
                 reason = "no report within \(record.negotiatedMaxInterval) s + margin"
+                // The text stays as it is (callers match on it); the cause is in `matter.reason`.
+                loss = sessionAlive ? .liveness : .session
             }
             // Clear before any await so cancel() and the loop agree on what is held.
             currentSubscriptionID = nil
             currentSessionID = nil
+            // Recorded before it is yielded, so a consumer of `.lost` sees it logged and counted.
+            recordLoss(loss, id: id, reason: reason)
             continuation.yield(.lost(reason))
             await messenger.setSubscriptionHandler(nil, for: id, sessionID: sessionID)
             await client.remove(subscriptionID: id, peerNodeID: nodeID)
@@ -145,20 +169,74 @@ public actor ControllerSubscription {
     private func resubscribe() async {
         var attempt = 0
         while !cancelled {
+            let backoff = Self.backoff(attempt: attempt)
+            var attemptMetadata = metadata(nil)
+            attemptMetadata[MatterLogKey.attempt] = MatterLogValue.decimal(attempt + 1)
+            logger.info("Re-subscribing in \(backoff) (attempt \(attempt + 1))", metadata: attemptMetadata)
             do {
-                try await messenger.clock.sleep(until: messenger.clock.now + Self.backoff(attempt: attempt))
+                try await messenger.clock.sleep(until: messenger.clock.now + backoff)
             } catch { return }
             guard !cancelled else { return }
+            telemetry.metrics.resubscribes.increment()
             do {
                 try await establish()
                 return
             } catch {
                 if error is CancellationError, cancelled || Task.isCancelled { return }
                 guard !cancelled else { return }
-                continuation.yield(.lost("re-subscribe failed: \(error)"))
+                let reason = "re-subscribe failed: \(error)"
+                if isSubscriptionAborted(error, cancelled: cancelled) {
+                    // The messenger stopped under it: not a failure, so not counted.
+                    logger.debug("Re-subscribe aborted: \(error)", metadata: attemptMetadata)
+                } else {
+                    recordLoss(.resubscribeFailed, id: subscribeLink?.id, reason: reason)
+                }
+                continuation.yield(.lost(reason))
                 attempt += 1
             }
         }
+    }
+
+    // MARK: - Telemetry
+
+    /// The end of a subscription: its info line (`Subscription lost: <reason>`, or
+    /// `Subscription closed` for ``SubscriptionLossReason/closed``) with `matter.reason`,
+    /// `<prefix>_subscription_lost_total{reason}`, and a short `matter.subscription.lost` span
+    /// with `matter.reason`: error status for a loss, none for a close.
+    private func recordLoss(_ loss: SubscriptionLossReason, id: SubscriptionID?, reason: String? = nil) {
+        var lossMetadata = metadata(id)
+        lossMetadata[MatterLogKey.reason] = .string(loss.rawValue)
+        logger.info("\(reason.map { "Subscription lost: \($0)" } ?? "Subscription closed")", metadata: lossMetadata)
+        telemetry.metrics.subscriptionLoss(loss)
+        let span = startLinkedSpan("matter.subscription.lost", ofKind: .internal, id: id)
+        if span.isRecording { span.attributes[MatterLogKey.reason] = loss.rawValue }
+        if let reason { span.setStatus(SpanStatus(code: .error, message: reason)) }
+        span.end()
+    }
+
+    /// A new root span linked to ``subscribeLink``, with `matter.node` and `matter.subscription`
+    /// (`id`, else the linked subscription's).
+    private func startLinkedSpan(_ name: String, ofKind kind: SpanKind, id: SubscriptionID?) -> any Span {
+        let span = telemetry.tracer.startSpan(name, context: .topLevel, ofKind: kind)
+        if span.isRecording {
+            if let link = subscribeLink { span.addLink(SpanLink(context: link.context, attributes: [:])) }
+            annotate(span, id: id ?? subscribeLink?.id)
+        }
+        return span
+    }
+
+    /// `matter.node`, plus `matter.session` and `matter.subscription` when given.
+    private func annotate(_ span: any Span, sessionID: UInt16? = nil, id: SubscriptionID? = nil) {
+        span.attributes[MatterLogKey.node] = MatterLogValue.hexString(nodeID.rawValue)
+        if let sessionID { span.attributes[MatterLogKey.session] = MatterLogValue.hexString(sessionID) }
+        if let id { span.attributes[MatterLogKey.subscription] = MatterLogValue.hexString(id.rawValue) }
+    }
+
+    /// `matter.node`, and `matter.subscription` when known.
+    private nonisolated func metadata(_ id: SubscriptionID?) -> Logger.Metadata {
+        var metadata = Logger.Metadata.node(nodeID)
+        if let id { metadata[MatterLogKey.subscription] = MatterLogValue.hex(id.rawValue) }
+        return metadata
     }
 
     // MARK: - Establishment
@@ -181,13 +259,33 @@ public actor ControllerSubscription {
         }
     }
 
+    /// One establishment inside its `matter.subscribe` span (child of ``context``). An
+    /// establishment cancelled or ended by `stop()` ends its span without error status.
     private func establish(on sessionID: UInt16) async throws {
         guard !cancelled else { throw CancellationError() }
-        let exchange = try await messenger.openExchange(sessionID: sessionID)
+        let span = telemetry.tracer.startSpan("matter.subscribe", context: context, ofKind: .client)
+        defer { span.end() }
+        if span.isRecording { annotate(span, sessionID: sessionID) }
+        do {
+            try await performEstablish(on: sessionID, span: span)
+        } catch {
+            if !isSubscriptionAborted(error, cancelled: cancelled) {
+                span.recordError(error)
+                span.setStatus(SpanStatus(code: .error, message: String(describing: error)))
+            }
+            throw error
+        }
+    }
+
+    private func performEstablish(on sessionID: UInt16, span: any Span) async throws {
+        let exchange = try await messenger.openExchange(sessionID: sessionID, context: span.context)
         var outgoing = request
         outgoing.eventMin = nextEventMin
+        var requestMetadata = metadata(nil)
+        requestMetadata[MatterLogKey.session] = MatterLogValue.hex(sessionID)
         do {
             guard !cancelled else { throw CancellationError() }
+            logger.debug("Subscribe request: \(outgoing.attributePaths.count) attribute path(s), \(outgoing.eventPaths.count) event path(s), interval \(outgoing.minInterval)–\(outgoing.maxInterval) s, eventMin \(outgoing.eventMin.map { String($0.rawValue) } ?? "none")", metadata: requestMetadata)
             var message = try await exchange.request(
                 protocolID: .interactionModel,
                 opcode: InteractionModelOpcode.subscribeRequest.rawValue,
@@ -210,7 +308,11 @@ public actor ControllerSubscription {
             }
             guard !cancelled else { throw CancellationError() }
             if message.opcode == InteractionModelOpcode.statusResponse.rawValue {
-                throw ControllerError.imStatus(try IMStatusResponse.fromTLV(message.payload).status)
+                let status = try IMStatusResponse.fromTLV(message.payload).status
+                var refused = requestMetadata
+                refused[MatterLogKey.imStatus] = MatterLogValue.hex(status)
+                logger.debug("Subscribe refused", metadata: refused)
+                throw ControllerError.imStatus(status)
             }
             guard message.opcode == InteractionModelOpcode.subscribeResponse.rawValue else {
                 throw MessagingError.unexpectedProtocol(protocolID: message.protocolID, opcode: message.opcode)
@@ -228,7 +330,12 @@ public actor ControllerSubscription {
             currentSubscriptionID = id
             currentSessionID = sessionID
             continuation.yield(.established(id, negotiatedMaxInterval: subscription.negotiatedMaxInterval))
-            for report in priming { deliver(report) }
+            logger.debug("Subscribe response: max interval \(subscription.negotiatedMaxInterval) s, \(priming.count) priming chunk(s)", metadata: metadata(id))
+            logger.info("Subscription established, max interval \(subscription.negotiatedMaxInterval) s", metadata: metadata(id))
+            if span.isRecording { annotate(span, id: id) }
+            subscribeLink = (span.context, id)
+            lastReportAt = nil
+            for (index, report) in priming.enumerated() { deliver(report, id: id, chunk: index + 1) }
             // Register before closing: a report sent right after SubscribeResponse
             // must reach this subscription, not the messenger's fallback.
             await messenger.setSubscriptionHandler(handler(for: id), for: id, sessionID: sessionID)
@@ -258,30 +365,29 @@ public actor ControllerSubscription {
         { [weak self] message, exchange in
             guard let self else { return }
             var current = message
-            var isFirst = true
+            var chunk = 1
             while true {
                 let decoded: ReportData
                 do {
                     decoded = try ReportData.fromTLV(current.payload)
                 } catch {
-                    self.logger.warning("Subscription \(id.rawValue): undecodable ReportData: \(error)")
+                    self.logger.warning("Subscription \(id.rawValue): undecodable ReportData: \(error)", metadata: self.metadata(id))
                     return
                 }
-                if !isFirst, decoded.subscriptionID != id {
-                    self.logger.warning("Subscription \(id.rawValue): chunk carries subscription ID \(String(describing: decoded.subscriptionID?.rawValue)); stopping chain")
+                if chunk > 1, decoded.subscriptionID != id {
+                    self.logger.warning("Subscription \(id.rawValue): chunk carries subscription ID \(String(describing: decoded.subscriptionID?.rawValue)); stopping chain", metadata: self.metadata(id))
                     return
                 }
-                isFirst = false
                 let report: SubscriptionReport
                 do {
                     report = try await self.client.record(reportData: current.payload, from: self.nodeID, at: self.messenger.clock.now)
                 } catch {
-                    self.logger.warning("Subscription \(id.rawValue): could not record report: \(error)")
+                    self.logger.warning("Subscription \(id.rawValue): could not record report: \(error)", metadata: self.metadata(id))
                     return
                 }
                 // Deliver before acknowledging: the device sends report N+1 only
                 // once it has N's StatusResponse, so N is already surfaced.
-                await self.deliver(report)
+                await self.deliver(report, id: id, chunk: chunk)
                 if !report.suppressResponse {
                     do {
                         try await exchange.send(
@@ -290,26 +396,58 @@ public actor ControllerSubscription {
                             payload: IMStatusResponse.success.tlvEncode()
                         )
                     } catch {
-                        self.logger.warning("Subscription \(id.rawValue): StatusResponse send failed: \(error)")
+                        self.logger.warning("Subscription \(id.rawValue): StatusResponse send failed: \(error)", metadata: self.metadata(id))
                     }
                 }
                 guard report.moreChunkedMessages else { return }
                 do {
                     current = try await exchange.receive(timeout: self.operationTimeout)
                 } catch {
-                    self.logger.warning("Subscription \(id.rawValue): chunk chain broken: \(error)")
+                    self.logger.warning("Subscription \(id.rawValue): chunk chain broken: \(error)", metadata: self.metadata(id))
                     return
                 }
+                chunk += 1
             }
         }
     }
 
-    private func deliver(_ report: SubscriptionReport) {
+    private func deliver(_ report: SubscriptionReport, id: SubscriptionID, chunk: Int) {
         guard !cancelled else { return }
+        noteReport(report, id: id, chunk: chunk)
         let numbers = report.events.compactMap { $0.eventData?.eventNumber }
         if let highest = numbers.max() {
             highestEventNumber = max(highestEventNumber ?? highest, highest)
         }
         continuation.yield(.report(report))
+    }
+
+    /// One ReportData: the report interval (first chunk), its debug line, its attribute values
+    /// at trace (redacted for sensitive clusters) and a short `matter.report` span linked to the
+    /// subscribe span. The path list is built only when it is logged or traced: reports can be
+    /// frequent.
+    private func noteReport(_ report: SubscriptionReport, id: SubscriptionID, chunk: Int) {
+        let now = messenger.clock.now
+        if chunk == 1 {
+            if let last = lastReportAt { telemetry.metrics.reportInterval.record(duration: now - last) }
+            lastReportAt = now
+        }
+        let reportSpan = startLinkedSpan("matter.report", ofKind: .consumer, id: id)
+        defer { reportSpan.end() }
+        let logged = logger.logLevel <= .debug
+        guard logged || reportSpan.isRecording else { return }
+        let paths = report.attributes.map(MatterLogValue.reportEntry)
+        if logged {
+            let reportMetadata = metadata(id)
+            logger.debug("ReportData chunk \(chunk)\(report.moreChunkedMessages ? " (more follow)" : ""): \(report.attributes.count) attribute(s), \(report.events.count) event(s) [\(paths.joined(separator: ", "))]", metadata: reportMetadata)
+            if logger.logLevel <= .trace {
+                for attribute in report.attributes {
+                    guard let data = attribute.attributeData else { continue }
+                    logger.trace("Report \(MatterLogValue.path(data.path)) = \(MatterLogValue.value(data.data, clusterID: data.path.clusterID))", metadata: reportMetadata)
+                }
+            }
+        }
+        if reportSpan.isRecording {
+            reportSpan.attributes[MatterLogKey.paths] = SpanAttribute.stringArray(paths)
+        }
     }
 }

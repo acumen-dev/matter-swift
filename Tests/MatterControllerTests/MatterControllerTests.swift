@@ -4,6 +4,7 @@
 import Testing
 import Foundation
 import Crypto
+import Logging
 @testable import MatterController
 @testable import MatterProtocol
 import MatterTransport
@@ -124,7 +125,8 @@ struct MatterControllerTests {
                 client: SubscriptionClient(),
                 sessionProvider: { throw MessagingError.stopped },
                 livenessMargin: .seconds(5),
-                operationTimeout: .seconds(30)
+                operationTimeout: .seconds(30),
+                logger: Logger(label: "test.subscription")
             )
         }
         let doomed = make(42)

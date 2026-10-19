@@ -2,6 +2,7 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
+import Tracing
 import MatterTypes
 import MatterProtocol
 import MatterTransport
@@ -106,8 +107,10 @@ extension ControllerMessenger {
         sessions[localSessionID]?.peerAddress
     }
 
-    /// Open an exchange on a registered secure session.
-    public func openExchange(sessionID localSessionID: UInt16) throws -> ControllerExchange {
+    /// Open an exchange on a registered secure session. `context`, when given, parents the
+    /// exchange's `matter.exchange` span. Unlike the controller's public API it does not
+    /// default to `ServiceContext.current`: `nil` means no exchange span.
+    public func openExchange(sessionID localSessionID: UInt16, context: ServiceContext? = nil) throws -> ControllerExchange {
         if isStopped { throw MessagingError.stopped }
         guard let entry = sessions[localSessionID] else {
             throw MessagingError.unknownSession(localSessionID)
@@ -119,6 +122,7 @@ extension ControllerMessenger {
             initiatedLocally: true
         )
         manager.open(key, peerAddress: entry.peerAddress, config: mrpConfig(for: entry.mrp), now: clock.now)
+        startExchangeSpan(key, context: context)
         return ControllerExchange(key: key, peerAddress: entry.peerAddress, messenger: self)
     }
 
