@@ -238,7 +238,7 @@ try await controller.writeAttribute(
 
 ```swift
 // Toggle a light
-try await controller.invoke(
+_ = try await controller.invokeCommand(
     nodeID: device.nodeID,
     endpointID: EndpointID(rawValue: 1),
     clusterID: .onOff,
@@ -250,14 +250,14 @@ For commands with parameters, provide them as TLV fields:
 
 ```swift
 // Move to a specific level with transition time
-try await controller.invoke(
+_ = try await controller.invokeCommand(
     nodeID: device.nodeID,
     endpointID: EndpointID(rawValue: 1),
     clusterID: .levelControl,
     commandID: LevelControlCluster.Command.moveToLevel,
-    fields: TLVElement.structure([
-        TLVElement(tag: .contextSpecific(0), value: .unsignedInt(200)),  // level
-        TLVElement(tag: .contextSpecific(1), value: .unsignedInt(10)),   // transitionTime (tenths of seconds)
+    commandFields: .structure([
+        TLVElement.TLVField(tag: .contextSpecific(0), value: .unsignedInt(200)),  // level
+        TLVElement.TLVField(tag: .contextSpecific(1), value: .unsignedInt(10)),   // transitionTime (tenths of seconds)
     ])
 )
 ```
@@ -324,7 +324,7 @@ The keys are public constants in `MatterLogKey`; spans use the same names for th
 | Key | Value |
 |---|---|
 | `matter.subsystem` | One of the ten subsystems above |
-| `matter.node` | Node ID, hex. Frame lines carry it on an operational session, not on a PASE one |
+| `matter.node` | Node ID, hex. On an operational session it is carried on send, receive, drop and standalone-ack lines; never on a PASE session. Retransmit, give-up, ack-received and response-timeout lines never carry it |
 | `matter.session` | Local session ID, hex; the literal `unsecured` for an unsecured scope |
 | `matter.exchange` | Exchange ID, hex |
 | `matter.protocol` | Protocol ID, hex |
