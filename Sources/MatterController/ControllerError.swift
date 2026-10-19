@@ -116,17 +116,28 @@ extension ControllerError {
     /// Whether `error` means the request was abandoned because ``MatterController/stop()`` (or
     /// the messenger's `stop()`) ran, rather than because it failed.
     ///
-    /// Stopping reaches a caller in either of two forms: `MessagingError.stopped` as thrown,
-    /// or, from an operational request, the ``transportError(_:)`` the controller maps it to.
-    /// This is true for both and for nothing else, another transport error included.
+    /// Stopping reaches a caller as `MessagingError.stopped` as thrown, or mapped by the
+    /// controller: to ``transportError(_:)`` from an operational request, or to
+    /// ``commissioningFailed(_:)`` from commissioning. This is true for those three forms and
+    /// false for every other error, including one whose message only mentions `stopped`.
     public static func isStopped(_ error: any Error) -> Bool {
         switch error {
         case MessagingError.stopped:
             return true
-        case ControllerError.transportError(let detail):
-            return detail == "\(MessagingError.stopped)"
+        case let error as ControllerError:
+            return error == .operational(.stopped) || error == .commissioning(.stopped)
         default:
             return false
         }
+    }
+
+    /// A messaging failure on an operational exchange that has no more specific case.
+    static func operational(_ messaging: MessagingError) -> ControllerError {
+        .transportError("\(messaging)")
+    }
+
+    /// A messaging failure during commissioning.
+    static func commissioning(_ messaging: MessagingError) -> ControllerError {
+        .commissioningFailed("Messaging failure: \(messaging)")
     }
 }

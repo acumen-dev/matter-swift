@@ -1301,8 +1301,9 @@ public actor MatterController {
     }
 
     /// Stop the message layer: pending requests fail with
-    /// `MessagingError.stopped`, or an operational request with the transport
-    /// error it maps to; ``ControllerError/isStopped(_:)`` recognises both.
+    /// `MessagingError.stopped`, or with the error it maps to: a transport
+    /// error from an operational request, a commissioning failure from
+    /// commissioning. ``ControllerError/isStopped(_:)`` recognises all three.
     /// Cancels every live subscription (finishing its event stream) first.
     /// Terminal for this controller instance.
     public func stop() async {
@@ -2084,7 +2085,7 @@ public actor MatterController {
     /// anything else passes through.
     private static func commissioningError(_ error: any Error) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
-        return ControllerError.commissioningFailed("Messaging failure: \(messaging)")
+        return ControllerError.commissioning(messaging)
     }
 
     /// Drop the cached session if `error` says it is gone and it is still the
@@ -2110,7 +2111,7 @@ public actor MatterController {
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
         case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
-            return ControllerError.transportError("\(messaging)")
+            return ControllerError.operational(messaging)
         }
     }
 }

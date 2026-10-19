@@ -368,6 +368,7 @@ struct IMTelemetryTests {
             (ControllerError.deviceNotFound, .error),
             (CancellationError(), nil),
             (MessagingError.stopped, nil),
+            (ControllerError.transportError("stopped"), nil),
         ]
         for (error, expected) in cases {
             #expect(IMRequestOutcome(recording: error, controllerStopped: false) == expected, "\(error)")

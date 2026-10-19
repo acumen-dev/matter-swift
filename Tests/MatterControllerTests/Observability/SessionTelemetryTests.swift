@@ -152,6 +152,21 @@ struct SessionTelemetryTests {
         await rig.controller.stop()
     }
 
+    @Test("A commission cut short by stop() during PASE throws an error isStopped recognises")
+    func commissionStopped() async throws {
+        let rig = try await makeControllerRig()
+        var peer = TestPeer(link: rig.link)
+        var seen = Set<UInt32>()
+        let address = rig.link.b.address
+        let commissioning = Task { try await rig.controller.commission(address: address, setupCode: 20202021) }
+        let pbkdf = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(pbkdf.exchangeHeader.protocolOpcode == SecureChannelOpcode.pbkdfParamRequest.rawValue)
+        await rig.controller.stop()
+        let error = await #expect(throws: (any Error).self) { _ = try await commissioning.value }
+        #expect(error as? ControllerError == .commissioningFailed("Messaging failure: \(MessagingError.stopped)"))
+        #expect(error.map(ControllerError.isStopped) == true)
+    }
+
     @Test("A CASE attempt ended by stop() is not counted and its span ends without error status")
     func caseStopped() async throws {
         let rig = try await makeControllerRig(installSession: false)

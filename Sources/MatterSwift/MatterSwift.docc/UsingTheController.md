@@ -290,11 +290,11 @@ for await report in subscription.reports {
 
 ## Stopping the Controller
 
-`stop()` is terminal. Requests still in flight, and any made afterwards, fail with `MessagingError.stopped`, or, from an operational request, with the `ControllerError.transportError` it maps to. `ControllerError.isStopped(_:)` is true for either form and false for every other error, so a caller can treat a stopped request as abandoned rather than failed:
+`stop()` is terminal. Requests still in flight, and any made afterwards, fail with `MessagingError.stopped`, or with the error the controller maps it to: a `ControllerError.transportError` from an operational request, or a `ControllerError.commissioningFailed` from commissioning. `ControllerError.isStopped(_:)` is true for those three forms, so a caller can treat a stopped request as abandoned rather than failed. It is false for every other error. A commissioning step that wraps the failure in its own message (for example `AddNOC failed: …`) is not recognised, and nor is any other error a stopped request happens to end with:
 
 ```swift
 do {
-    try await controller.invoke(nodeID: nodeID, endpointID: endpoint, clusterID: .onOff, commandID: OnOffCluster.Command.toggle)
+    _ = try await controller.invokeCommand(nodeID: nodeID, endpointID: endpoint, clusterID: .onOff, commandID: OnOffCluster.Command.toggle)
 } catch where ControllerError.isStopped(error) {
     // Shutting down: not a device failure.
 }
