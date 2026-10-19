@@ -117,7 +117,8 @@ extension MatterLogValue {
         return "\(endpoint)/\(cluster)/\(attribute)"
     }
 
-    /// A report entry's path, with its status when the device sent one instead of data.
+    /// A report entry's path, plus its status for a status entry. Never its value: render that
+    /// with ``value(_:clusterID:)``.
     public static func reportEntry(_ report: AttributeReportIB) -> String {
         if let data = report.attributeData { return path(data.path) }
         if let status = report.attributeStatus {
