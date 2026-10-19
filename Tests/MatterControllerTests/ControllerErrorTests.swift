@@ -20,6 +20,7 @@ struct ControllerErrorTests {
         #expect(!ControllerError.isStopped(ControllerError.transportError("\(MessagingError.exchangeClosed)")))
         #expect(!ControllerError.isStopped(MessagingError.sessionClosed))
         #expect(!ControllerError.isStopped(ControllerError.timeout("stopped")))
+        // Not a shape a stop produces (commissioning steps only parse bytes already received): it pins the exact match.
         #expect(!ControllerError.isStopped(ControllerError.commissioningFailed("AddNOC failed: \(MessagingError.stopped)")))
         #expect(!ControllerError.isStopped(ControllerError.commissioningFailed("Messaging failure: \(MessagingError.sessionClosed)")))
         #expect(!ControllerError.isStopped(ControllerError.commissioningFailed("\(MessagingError.stopped)")))
