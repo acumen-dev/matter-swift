@@ -921,11 +921,13 @@ public actor ControllerMessenger {
         )
     }
 
-    /// The static frame metadata plus, on a secure session, its peer's `matter.node`. Call it
-    /// only inside a log call's metadata autoclosure.
+    /// The static frame metadata plus, on a secure session, its peer's `matter.node` (none
+    /// for a PASE session, whose peer has no operational node ID yet). Call it only inside a
+    /// log call's metadata autoclosure.
     func frameMetadata(key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, reason: String? = nil) -> Logger.Metadata {
         var metadata = Self.frameMetadata(key: key, header: header, counter: counter, reason: reason)
-        if case .secured(let localSessionID) = key.scope, let peer = sessions[localSessionID]?.session.peerNodeID {
+        if case .secured(let localSessionID) = key.scope,
+           let peer = sessions[localSessionID]?.session.peerNodeID, peer != .unspecified {
             metadata[MatterLogKey.node] = MatterLogValue.hex(peer.rawValue)
         }
         return metadata
