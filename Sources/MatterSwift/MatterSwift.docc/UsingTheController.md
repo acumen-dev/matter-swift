@@ -413,7 +413,7 @@ These never appear in a log message, metadata value, span attribute or span even
   - MatterTypes: `SetupCode`, `StoredFabric`, `StoredControllerIdentity`.
 - The internal IM request path never logs payloads. Only the public IM API logs decoded command fields and values.
 - Fields and values of the clusters in `MatterLogValue.sensitiveClusters` are always `<redacted>`: 0x0031 (Network Commissioning), 0x003C (Administrator Commissioning), 0x003E (Operational Credentials), 0x003F (Group Key Management), 0x0046 (ICD Management), 0x0101 (Door Lock), 0x0452 (Thread Border Router Management), 0x0453 (Thread Network Directory) and 0x050E (Account Login). The redaction fails closed: a path whose cluster is unknown, such as a wildcard, is redacted too.
-- `MatterLogValue.value(_:clusterID:)`, `MatterLogValue.path(_:)` and `MatterLogValue.describe(_:)` are the controller's own renderers for IM values, paths and report entries. A consumer that logs IM values under `matter.*` keys, or in its own lines, should render them with these, so they are redacted by the same rule.
+- `MatterLogValue.value(_:clusterID:)`, `MatterLogValue.path(_:)` and `MatterLogValue.reportEntry(_:)` are the controller's own renderers for IM values, paths and report entries. A consumer that logs IM values under `matter.*` keys, or in its own lines, should render them with these, so they are redacted by the same rule.
 - TLV values elsewhere are rendered with `String(describing:)`, which is module-qualified, so debug lines that carry values are noisy.
 
 ### Limits

@@ -118,7 +118,7 @@ extension MatterLogValue {
     }
 
     /// A report entry's path, with its status when the device sent one instead of data.
-    public static func describe(_ report: AttributeReportIB) -> String {
+    public static func reportEntry(_ report: AttributeReportIB) -> String {
         if let data = report.attributeData { return path(data.path) }
         if let status = report.attributeStatus {
             return "\(path(status.path)) status \(hexString(status.status.status))"

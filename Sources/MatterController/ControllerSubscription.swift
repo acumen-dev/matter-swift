@@ -435,7 +435,7 @@ public actor ControllerSubscription {
         defer { reportSpan.end() }
         let logged = logger.logLevel <= .debug
         guard logged || reportSpan.isRecording else { return }
-        let paths = report.attributes.map(MatterLogValue.describe)
+        let paths = report.attributes.map(MatterLogValue.reportEntry)
         if logged {
             let reportMetadata = metadata(id)
             logger.debug("ReportData chunk \(chunk)\(report.moreChunkedMessages ? " (more follow)" : ""): \(report.attributes.count) attribute(s), \(report.events.count) event(s) [\(paths.joined(separator: ", "))]", metadata: reportMetadata)

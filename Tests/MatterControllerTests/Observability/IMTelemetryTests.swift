@@ -340,8 +340,8 @@ struct IMTelemetryTests {
         let path = AttributePath(endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0102), attributeID: AttributeID(rawValue: 0x1A))
         #expect(MatterLogValue.path(path) == "0x1/0x102/0x1A")
         #expect(MatterLogValue.path(AttributePath(endpointID: nil, clusterID: ClusterID(rawValue: 6), attributeID: nil)) == "*/0x6/*")
-        #expect(MatterLogValue.describe(AttributeReportIB(attributeData: AttributeDataIB(path: path, data: value))) == "0x1/0x102/0x1A")
-        #expect(MatterLogValue.describe(AttributeReportIB(attributeStatus: AttributeStatusIB(path: path, status: StatusIB(status: 0x86))))
+        #expect(MatterLogValue.reportEntry(AttributeReportIB(attributeData: AttributeDataIB(path: path, data: value))) == "0x1/0x102/0x1A")
+        #expect(MatterLogValue.reportEntry(AttributeReportIB(attributeStatus: AttributeStatusIB(path: path, status: StatusIB(status: 0x86))))
                 == "0x1/0x102/0x1A status 0x86")
     }
 
