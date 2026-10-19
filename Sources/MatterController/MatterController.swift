@@ -1301,8 +1301,10 @@ public actor MatterController {
     }
 
     /// Stop the message layer: pending requests fail with
-    /// `MessagingError.stopped`. Cancels every live subscription (finishing
-    /// its event stream) first. Terminal for this controller instance.
+    /// `MessagingError.stopped`, or an operational request with the transport
+    /// error it maps to; ``ControllerError/isStopped(_:)`` recognises both.
+    /// Cancels every live subscription (finishing its event stream) first.
+    /// Terminal for this controller instance.
     public func stop() async {
         stopped = true
         let tracked = subscriptions

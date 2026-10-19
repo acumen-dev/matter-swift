@@ -421,7 +421,8 @@ struct IMTelemetryTests {
         }
         _ = try await nextNewFrame(&peer, session: rig.peerSession, seen: &seen)
         await rig.controller.stop()
-        await #expect(throws: (any Error).self) { _ = try await call.value }
+        let error = await #expect(throws: (any Error).self) { _ = try await call.value }
+        #expect(error.map(ControllerError.isStopped) == true, "the caller can tell the request was stopped")
 
         expectNoIMMetrics(rig.telemetry, kind: .invoke)
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.im.invoke").first)

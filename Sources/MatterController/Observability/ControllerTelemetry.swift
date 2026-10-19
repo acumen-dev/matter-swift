@@ -63,8 +63,9 @@ enum IMRequestOutcome: String, CaseIterable, Sendable {
     }
 
     /// The outcome to record for a failed request, or nil for an aborted one: cancellation and
-    /// `stop()` are not failures and are not counted. After `stop()` the messenger's
-    /// `MessagingError.stopped` reaches the caller already mapped, hence `controllerStopped`.
+    /// `stop()` are not failures and are not counted. `controllerStopped` covers whatever a
+    /// request ends with once `stop()` has run, in a form ``ControllerError/isStopped(_:)``
+    /// does not recognise too.
     init?(recording error: any Error, controllerStopped: Bool) {
         if isAborted(error, controllerStopped: controllerStopped) { return nil }
         self.init(error)
@@ -72,10 +73,9 @@ enum IMRequestOutcome: String, CaseIterable, Sendable {
 }
 
 /// Whether `error` ended an operation that was aborted rather than failed: cancellation, or
-/// ``MatterController/stop()`` (the messenger's `MessagingError.stopped`, or `controllerStopped`
-/// once the controller has mapped it).
+/// ``MatterController/stop()`` (``ControllerError/isStopped(_:)``, or `controllerStopped`).
 func isAborted(_ error: any Error, controllerStopped: Bool) -> Bool {
-    controllerStopped || error is CancellationError || error as? MessagingError == .stopped
+    controllerStopped || error is CancellationError || ControllerError.isStopped(error)
 }
 
 /// ``isAborted(_:controllerStopped:)`` for a subscription. Its own cancellation stands in for
@@ -108,8 +108,7 @@ enum SessionOutcome: String, CaseIterable, Sendable {
     }
 
     /// The outcome to record for a failed establishment, or nil for an aborted one, as
-    /// ``IMRequestOutcome/init(recording:controllerStopped:)``: after `stop()` the messenger's
-    /// `MessagingError.stopped` reaches here already mapped, hence `controllerStopped`.
+    /// ``IMRequestOutcome/init(recording:controllerStopped:)``, `controllerStopped` included.
     init?(recording error: any Error, controllerStopped: Bool) {
         if isAborted(error, controllerStopped: controllerStopped) { return nil }
         self.init(error)

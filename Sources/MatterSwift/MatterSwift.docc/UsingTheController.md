@@ -288,6 +288,18 @@ for await report in subscription.reports {
 }
 ```
 
+## Stopping the Controller
+
+`stop()` is terminal. Requests still in flight, and any made afterwards, fail with `MessagingError.stopped`, or, from an operational request, with the `ControllerError.transportError` it maps to. `ControllerError.isStopped(_:)` is true for either form and false for every other error, so a caller can treat a stopped request as abandoned rather than failed:
+
+```swift
+do {
+    try await controller.invoke(nodeID: nodeID, endpointID: endpoint, clusterID: .onOff, commandID: OnOffCluster.Command.toggle)
+} catch where ControllerError.isStopped(error) {
+    // Shutting down: not a device failure.
+}
+```
+
 ## Observability
 
 The controller reports through three standard Swift server ecosystem APIs: swift-log, swift-metrics and swift-distributed-tracing. Metrics and tracing are no-ops until you bootstrap a backend or pass one in.
