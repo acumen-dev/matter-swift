@@ -141,7 +141,11 @@ private struct ServerPathRig {
     }
 }
 
-@Suite("Device server interface paths", .timeLimit(.minutes(5)))
+/// Serialized: every test but two runs a real PASE handshake (SPAKE2+ on `BigUInt`, about
+/// 6 CPU-seconds each in a debug build). Run in parallel they occupy the cooperative pool's
+/// threads with synchronous arithmetic and starve every other suite's tasks; on a 2-CPU Linux
+/// gate that pushed unrelated suites past their 60 s time limits.
+@Suite("Device server interface paths", .serialized, .timeLimit(.minutes(5)))
 struct DeviceServerPathTests {
 
     @Test("Config.interfaces reaches the transport")
