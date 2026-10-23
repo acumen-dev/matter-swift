@@ -41,7 +41,8 @@ int cms_open_udp(int family, uint16_t port, int *err);
 
 /// sendmsg to `dst`. When `ifindex` != 0 or `src_literal` is a non-empty
 /// address literal, a PKTINFO cmsg pins the interface / source address.
-/// Returns bytes sent, or -1 with errno set.
+/// Sends with MSG_DONTWAIT: a full send buffer fails with EAGAIN/EWOULDBLOCK
+/// instead of blocking. Returns bytes sent, or -1 with errno set.
 ssize_t cms_send(int fd, const void *buf, size_t len,
                  const struct sockaddr *dst, socklen_t dstlen,
                  uint32_t ifindex, const char *src_literal);

@@ -129,7 +129,8 @@ ssize_t cms_send(int fd, const void *buf, size_t len,
             return -1;
         }
     }
-    return sendmsg(fd, &m, 0);
+    /* Never block: callers hold a lock across this call that the receive threads take. */
+    return sendmsg(fd, &m, MSG_DONTWAIT);
 }
 
 ssize_t cms_recv(int fd, void *buf, size_t len,

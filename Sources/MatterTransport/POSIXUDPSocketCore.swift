@@ -151,10 +151,11 @@ public final class POSIXUDPSocketCore: Sendable {
     ///   allowed interface has a route (or the host's `%zone` interface is
     ///   gone); ``TransportPathError/pathUnavailable(_:errno:)`` when the
     ///   pinned path cannot reach the peer — `EHOSTUNREACH`, `ENETUNREACH`,
-    ///   `EADDRNOTAVAIL`; `EINVAL` when the path's address or interface is no
+    ///   `EADDRNOTAVAIL`; `EHOSTDOWN` on Darwin; `EINVAL` when the path's address or interface is no
     ///   longer on the host (Linux's answer); `EAFNOSUPPORT` for a path of the
     ///   other address family; `ENXIO` for a `%zone` interface that is gone —
-    ///   and ``TransportError/sendFailed(_:)`` otherwise.
+    ///   and ``TransportError/sendFailed(_:)`` otherwise, including a full send
+    ///   buffer (`EAGAIN`: sends never block).
     public func send(_ data: Data, to address: MatterAddress, via path: MatterPath?) throws -> MatterSendResult {
         let host = MatterAddress.strippingBrackets(address.host)
         guard let destination = Destination(address.host) else { throw TransportError.invalidAddress(host) }
@@ -206,7 +207,9 @@ public final class POSIXUDPSocketCore: Sendable {
         logger.trace("UDP send: host=\(host) port=\(port) dataLen=\(data.count) path=\(path)")
 
         // Held across sendmsg: close() hands the descriptor to its receive thread to
-        // close, so only the lock keeps it open (not recycled) for the whole call.
+        // close, so only the lock keeps it open (not recycled) for the whole call. The
+        // send is non-blocking (MSG_DONTWAIT), so a full send buffer cannot stall the
+        // receive threads behind this lock.
         let (sent, err): (Int, Int32) = try state.withLock { state in
             let fd = destination.family == AF_INET6 ? state.fd6 : state.fd4
             guard fd >= 0 else { throw TransportError.notBound }
@@ -220,13 +223,23 @@ public final class POSIXUDPSocketCore: Sendable {
         }
 
         guard sent < 0 else { return }
-        if err == EHOSTUNREACH || err == ENETUNREACH || err == EADDRNOTAVAIL
-            || (err == EINVAL && !Self.isOnHost(path)) {
+        if Self.isPathLoss(err) || (err == EINVAL && !Self.isOnHost(path)) {
             logger.debug("UDP send by \(path) to \(host):\(port) failed: errno=\(err) (\(Self.describe(err)))")
             throw TransportPathError.pathUnavailable(path, errno: err)
         }
         logger.error("UDP sendmsg errno=\(err) (\(Self.describe(err))) host=\(host) port=\(port) path=\(path)")
         throw TransportError.sendFailed(err)
+    }
+
+    /// The errnos a pinned send answers when its path cannot reach the peer.
+    /// Darwin reports neighbour-discovery failure on the pinned interface as `EHOSTDOWN`.
+    /// A full send buffer (`EAGAIN`/`EWOULDBLOCK`, sends are non-blocking) is not a path
+    /// loss: it surfaces as ``TransportError/sendFailed(_:)``.
+    private static func isPathLoss(_ err: Int32) -> Bool {
+        #if canImport(Darwin)
+        if err == EHOSTDOWN { return true }
+        #endif
+        return err == EHOSTUNREACH || err == ENETUNREACH || err == EADDRNOTAVAIL
     }
 
     /// Whether `path`'s interface is present and up and still holds its address.
