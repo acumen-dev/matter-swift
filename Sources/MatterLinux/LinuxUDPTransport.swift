@@ -2,17 +2,18 @@
 // Copyright 2026 Monagle Pty Ltd
 
 import Foundation
-import NIOCore
-import NIOPosix
 import MatterTransport
 import Logging
 
 // MARK: - LinuxUDPTransport
 
-/// Linux platform UDP transport using SwiftNIO's `DatagramBootstrap`.
+/// Linux platform UDP transport over ``POSIXUDPSocketCore``: an `AF_INET6`
+/// (`IPV6_V6ONLY`) and an `AF_INET` socket bound to the same port, with
+/// `PKTINFO` on every send naming the interface and source address (the
+/// pinned path, or the one the interface policy selects).
 ///
-/// Binds a single dual-stack UDP channel on `"::"` (all interfaces, IPv4+IPv6),
-/// accepting both native IPv6 and IPv4-mapped addresses.
+/// Not SwiftNIO: NIO reports packet info on receive but cannot set
+/// `IPV6_PKTINFO` on a write.
 ///
 /// ```swift
 /// let transport = LinuxUDPTransport()
@@ -24,144 +25,46 @@ import Logging
 /// ```
 public actor LinuxUDPTransport: MatterUDPTransport {
 
-    // MARK: - State
-
-    private let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    private var channel: Channel?
-    private var receiveContinuation: AsyncStream<(Data, MatterAddress)>.Continuation?
-    private let _receiveStream: AsyncStream<(Data, MatterAddress)>
-    private let logger: Logger
+    private let core: POSIXUDPSocketCore
 
     // MARK: - Init
 
     public init(logger: Logger = Logger(label: "matter.linux.udp")) {
-        self.logger = logger
-        let (stream, continuation) = AsyncStream<(Data, MatterAddress)>.makeStream()
-        self._receiveStream = stream
-        self.receiveContinuation = continuation
+        self.core = POSIXUDPSocketCore(logger: logger)
     }
 
     // MARK: - MatterUDPTransport
 
     public func bind(port: UInt16) async throws {
-        guard let cont = receiveContinuation else {
-            throw LinuxTransportError.notBound
-        }
-
-        // Use SocketAddress(ipAddress:port:) which relies on inet_pton rather
-        // than getaddrinfo.  getaddrinfo rejects port 0 on some Linux
-        // configurations (including certain Docker base images), so this path
-        // is required for ephemeral-port (port 0) support.
-        let bindAddress = try SocketAddress(ipAddress: "::", port: Int(port))
-
-        let handler = MatterDatagramHandler(continuation: cont)
-        let ch = try await DatagramBootstrap(group: group)
-            .channelOption(.socketOption(.so_reuseaddr), value: 1)
-            .channelInitializer { channel in
-                channel.eventLoop.makeCompletedFuture {
-                    try channel.pipeline.syncOperations.addHandler(handler)
-                }
-            }
-            .bind(to: bindAddress)
-            .get()
-
-        self.channel = ch
-        logger.info("UDP transport bound on port \(port) (dual-stack IPv4/IPv6)")
+        try core.bind(port: port)
     }
 
     public func send(_ data: Data, to address: MatterAddress) async throws {
-        guard let ch = channel else { throw LinuxTransportError.notBound }
-        // Discovery gives IPv6 hosts in URL form ("[fd00::1]");
-        // SocketAddress(ipAddress:) takes the bare literal.
-        let address = MatterAddress(host: MatterAddress.strippingBrackets(address.host), port: address.port)
+        _ = try core.send(data, to: address, via: nil)
+    }
 
-        // The channel is bound to "::" (AF_INET6 dual-stack).  Sending to a
-        // plain IPv4 SocketAddress from an AF_INET6 socket raises EINVAL on
-        // Linux.  Map IPv4 targets to their IPv4-mapped IPv6 form first.
-        guard let raw = try? SocketAddress(ipAddress: address.host, port: Int(address.port)) else {
-            throw LinuxTransportError.invalidAddress(address.host)
-        }
-        let socketAddress: SocketAddress
-        if case .v4 = raw {
-            guard let mapped = try? SocketAddress(ipAddress: "::ffff:\(address.host)", port: Int(address.port)) else {
-                throw LinuxTransportError.invalidAddress(address.host)
-            }
-            socketAddress = mapped
-        } else {
-            socketAddress = raw
-        }
+    public func send(_ data: Data, to address: MatterAddress, via path: MatterPath?) async throws -> MatterSendResult? {
+        try core.send(data, to: address, via: path)
+    }
 
-        var buffer = ch.allocator.buffer(capacity: data.count)
-        buffer.writeBytes(data)
-        let envelope = AddressedEnvelope(remoteAddress: socketAddress, data: buffer)
-        try await ch.writeAndFlush(envelope).get()
+    public func setInterfacePolicy(_ policy: InterfacePolicy) async {
+        core.setPolicy(policy)
     }
 
     /// Returns the port the transport is currently bound to, or `nil` if not yet bound.
     public func boundPort() -> UInt16? {
-        guard let port = channel?.localAddress?.port else { return nil }
-        return UInt16(port)
+        core.boundPort
     }
 
-    /// Returns the pre-created receive stream. `nonisolated` because `receive()` is
-    /// not `async` in `MatterUDPTransport`; `_receiveStream` is a `let` set in `init`.
     public nonisolated func receive() -> AsyncStream<(Data, MatterAddress)> {
-        _receiveStream
+        core.datagrams.senderAndData()
+    }
+
+    public nonisolated func receiveDatagrams() -> AsyncStream<MatterDatagram> {
+        core.datagrams
     }
 
     public func close() async {
-        receiveContinuation?.finish()
-        receiveContinuation = nil
-        try? await channel?.close().get()
-        channel = nil
-        try? await group.shutdownGracefully()
+        core.close()
     }
-}
-
-// MARK: - MatterDatagramHandler
-
-final class MatterDatagramHandler: ChannelInboundHandler, @unchecked Sendable {
-    typealias InboundIn = AddressedEnvelope<ByteBuffer>
-
-    private let continuation: AsyncStream<(Data, MatterAddress)>.Continuation
-
-    init(continuation: AsyncStream<(Data, MatterAddress)>.Continuation) {
-        self.continuation = continuation
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        var envelope = Self.unwrapInboundIn(data)
-        let bytes = envelope.data.readBytes(length: envelope.data.readableBytes) ?? []
-        let payload = Data(bytes)
-
-        guard let sender = Self.matterAddress(envelope.remoteAddress) else { return }
-        continuation.yield((payload, sender))
-    }
-
-    /// The sender as a `MatterAddress`. The socket is dual-stack, so an IPv4
-    /// peer arrives as an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`); it is
-    /// reported in plain IPv4 form, the form exchanges and sessions are keyed
-    /// by. Every other address (including link-local) is passed through.
-    static func matterAddress(_ address: SocketAddress) -> MatterAddress? {
-        let port = UInt16(address.port ?? 0)
-        if case .v6(let v6) = address {
-            let bytes = withUnsafeBytes(of: v6.address.sin6_addr) { Array($0) }
-            if bytes.count == 16, bytes[0..<10].allSatisfy({ $0 == 0 }), bytes[10] == 0xFF, bytes[11] == 0xFF {
-                return MatterAddress(host: "\(bytes[12]).\(bytes[13]).\(bytes[14]).\(bytes[15])", port: port)
-            }
-        }
-        guard let host = address.ipAddress else { return nil }
-        return MatterAddress(host: host, port: port)
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        context.close(promise: nil)
-    }
-}
-
-// MARK: - Errors
-
-enum LinuxTransportError: Error {
-    case notBound
-    case invalidAddress(String)
 }

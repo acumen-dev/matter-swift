@@ -158,14 +158,14 @@ let package = Package(
             ]
         ),
 
-        // MARK: - Platform: Linux (SwiftNIO)
+        // MARK: - Platform: Linux
+        // The UDP transport is POSIXUDPSocketCore (MatterTransport); mDNS discovery
+        // (MDNSLinux) still runs on SwiftNIO.
 
         .target(
             name: "MatterLinux",
             dependencies: [
                 "MatterTransport",
-                .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "MDNSLinux", package: "mdns-swift"),
             ]

@@ -1,10 +1,10 @@
 // MatterLinux.swift
 // Copyright 2026 Monagle Pty Ltd
 
-/// Linux platform transport implementations using SwiftNIO.
+/// Linux platform transport implementations.
 ///
 /// Provides platform-specific networking for Linux deployments:
-/// - `LinuxUDPTransport`: SwiftNIO `DatagramBootstrap` for UDP communication
+/// - `LinuxUDPTransport`: POSIX UDP sockets (`POSIXUDPSocketCore`) for UDP communication
 /// - `LinuxDiscovery`: Pure-Swift mDNS responder (RFC 6762) for DNS-SD service discovery
 ///   (re-exported from `MDNSLinux` as `LinuxServiceDiscovery`)
 ///
