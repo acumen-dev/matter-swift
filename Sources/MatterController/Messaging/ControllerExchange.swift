@@ -46,6 +46,15 @@ public struct ControllerExchange: Sendable {
         return try await receive(timeout: timeout)
     }
 
+    /// The path the exchange's frames leave by: its own for an unsecured
+    /// exchange (pinned by its first send, or by the peer's first message),
+    /// its session's for a secure one. Nil while none is pinned, when the
+    /// transport cannot tell, and once an unsecured exchange is closed — read
+    /// a handshake's path before ``close()``.
+    public func path() async -> MatterPath? {
+        await messenger.pinnedPath(for: key)
+    }
+
     /// Close: send any owed ack now, stop delivering messages, and fail a
     /// pending ``receive(timeout:)`` with ``MessagingError/exchangeClosed``.
     /// An unacknowledged reliable message is *not* abandoned: MRP keeps

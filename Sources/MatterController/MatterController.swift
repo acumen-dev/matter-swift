@@ -136,6 +136,12 @@ public actor MatterController {
         /// `InstrumentationSystem.tracer` as it is when the controller is created.
         public var tracer: (any Tracer)?
 
+        /// Which network interfaces Matter traffic may use on a multi-homed host (default
+        /// `.automatic`: the route table decides). Pushed into the transport when the
+        /// message layer starts; each handshake, and the session it establishes, then keeps
+        /// the path its first message chose.
+        public var interfaces: InterfacePolicy
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -151,7 +157,8 @@ public actor MatterController {
             attestationTrustStore: AttestationTrustStore? = nil,
             metricsLabelPrefix: String = "matter",
             metricsFactory: (any MetricsFactory)? = nil,
-            tracer: (any Tracer)? = nil
+            tracer: (any Tracer)? = nil,
+            interfaces: InterfacePolicy = .automatic
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -168,6 +175,7 @@ public actor MatterController {
             self.metricsLabelPrefix = metricsLabelPrefix
             self.metricsFactory = metricsFactory
             self.tracer = tracer
+            self.interfaces = interfaces
         }
     }
 
@@ -859,7 +867,7 @@ public actor MatterController {
             throw ControllerError.paseHandshakeFailed("No free local session ID")
         }
         defer { sessionCache.releaseSessionID(sessionID) }
-        let paseContext = try await establishPASE(
+        let (paseContext, pasePath) = try await establishPASE(
             address: address, mrp: mrp, setupCode: setupCode, sessionID: sessionID,
             context: ServiceContext.current ?? .topLevel
         )
@@ -872,7 +880,7 @@ public actor MatterController {
         // CommissioningComplete. Register the PASE session before the first
         // encrypted request so the reply can be decrypted and routed.
         do {
-            try await messenger.registerSession(paseSession, peerAddress: address, mrp: mrp)
+            try await messenger.registerSession(paseSession, peerAddress: address, path: pasePath, mrp: mrp)
         } catch {
             throw Self.commissioningError(error)
         }
@@ -911,17 +919,19 @@ public actor MatterController {
     /// Commissioning step 1: PBKDFParamRequest → Pake3 on one unsecured exchange, inside a
     /// `matter.pase` span, with its info line (duration) and
     /// `<prefix>_sessions_established_total{type="pase"}`. Errors are mapped as commissioning errors.
+    /// Returns the context and the path the handshake ran on (the PASE session's path).
     private func establishPASE(
         address: MatterAddress,
         mrp: MRPParameters?,
         setupCode: UInt32,
         sessionID: UInt16,
         context: ServiceContext
-    ) async throws -> CommissioningController.CommissioningContext {
+    ) async throws -> (context: CommissioningController.CommissioningContext, path: MatterPath?) {
         let timeout = configuration.operationTimeout
         let (pbkdfReq, ctx1) = commissioning.beginPASE(passcode: setupCode, initiatorSessionID: sessionID)
         return try await instrumentedEstablishment(
-            .paseSession, context: context, sessionID: sessionID, mapError: Self.commissioningError
+            .paseSession, context: context, sessionID: sessionID,
+            establishedPath: { $0.path }, mapError: Self.commissioningError
         ) { paseContext in
             let handshake = await self.messenger.openExchange(peer: address, mrp: mrp, context: paseContext)
             do {
@@ -954,8 +964,9 @@ public actor MatterController {
                 guard statusReport.generalStatus == .success else {
                     throw ControllerError.paseHandshakeFailed("PASE StatusReport: \(statusReport.generalStatus)")
                 }
+                let path = await handshake.path()
                 await handshake.close()
-                return ctx3
+                return (ctx3, path)
             } catch {
                 await handshake.close()
                 throw error
@@ -1123,13 +1134,13 @@ public actor MatterController {
         }
         caseReservation = caseSessionID
         let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
-            let session = try await self.caseHandshake(
+            let (session, path) = try await self.caseHandshake(
                 nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
             )
             // Inside the CASE outcome, as on the operational path: established
             // means handshake and registration.
-            try await self.messenger.registerSession(session, peerAddress: address, mrp: mrp)
-            return session
+            try await self.messenger.registerSession(session, peerAddress: address, path: path, mrp: mrp)
+            return (session, path)
         }
         caseSession = established
         try commissioningFailureInjection?(.afterCASE)
@@ -1569,6 +1580,7 @@ public actor MatterController {
         messaging.metricsLabelPrefix = configuration.metricsLabelPrefix
         messaging.metricsFactory = configuration.metricsFactory
         messaging.tracer = configuration.tracer
+        messaging.interfaces = configuration.interfaces
         return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging, logger: logger)
     }
 
@@ -1689,8 +1701,9 @@ public actor MatterController {
         return try await instrumentedCASE(nodeID: nodeID, context: context) { caseContext in
             var usedAddress = address
             let session: SecureSession
+            let path: MatterPath?
             do {
-                session = try await self.caseHandshake(
+                (session, path) = try await self.caseHandshake(
                     nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
                 )
             } catch {
@@ -1702,7 +1715,7 @@ public actor MatterController {
                 self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
                 usedAddress = refreshed.address
                 do {
-                    session = try await self.caseHandshake(
+                    (session, path) = try await self.caseHandshake(
                         nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
                     )
                 } catch {
@@ -1718,12 +1731,12 @@ public actor MatterController {
                 throw ControllerError.deviceNotFound
             }
             do {
-                try await self.messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
+                try await self.messenger.registerSession(session, peerAddress: usedAddress, path: path, mrp: current.mrpParameters)
             } catch {
                 throw Self.operationalError(error, nodeID: nodeID)
             }
             self.sessionCache.store(session, for: nodeID)
-            return session
+            return (session, path)
         }
     }
 
@@ -1732,17 +1745,18 @@ public actor MatterController {
     /// on success it also records `<prefix>_case_duration`. `body` covers the handshake and
     /// the session's registration; the duration and the CASE line's `matter.latency_ms`
     /// include any address-refresh retry (the failed attempt, the re-resolve and the second
-    /// handshake).
+    /// handshake). `body` returns the session and the path its handshake ran on, which the
+    /// span records as `matter.interface` / `matter.local_address`.
     private func instrumentedCASE(
         nodeID: NodeID,
         context: ServiceContext,
-        _ body: (ServiceContext) async throws -> SecureSession
+        _ body: (ServiceContext) async throws -> (session: SecureSession, path: MatterPath?)
     ) async throws -> SecureSession {
         loggers.caseHandshake.debug("Establishing CASE session", metadata: .node(nodeID))
         return try await instrumentedEstablishment(
             .caseSession, context: context, nodeID: nodeID,
-            establishedSessionID: { $0.localSessionID }, body
-        )
+            establishedSessionID: { $0.session.localSessionID }, establishedPath: { $0.path }, body
+        ).session
     }
 
     /// Run one session establishment inside its `matter.case` / `matter.pase` span (child of
@@ -1750,13 +1764,15 @@ public actor MatterController {
     /// and `<prefix>_sessions_established_total{type,outcome}`. The outcome is classified from
     /// the error `body` threw; `mapError` gives the error logged, recorded on the span and
     /// thrown. An establishment cancelled or ended by ``stop()`` gets a debug line but is
-    /// neither counted nor timed, and its span ends without error status.
+    /// neither counted nor timed, and its span ends without error status. `establishedPath`
+    /// gives the path the handshake ran on, recorded on the span.
     private func instrumentedEstablishment<T: Sendable>(
         _ type: SessionType,
         context: ServiceContext,
         nodeID: NodeID? = nil,
         sessionID: UInt16? = nil,
         establishedSessionID: (T) -> UInt16? = { _ in nil },
+        establishedPath: (T) -> MatterPath? = { _ in nil },
         mapError: (any Error) -> any Error = { $0 },
         _ body: (ServiceContext) async throws -> T
     ) async throws -> T {
@@ -1781,6 +1797,10 @@ public actor MatterController {
             let session = establishedSessionID(result) ?? sessionID
             if let session, span.isRecording {
                 span.attributes[MatterLogKey.session] = MatterLogValue.hexString(session)
+            }
+            if let path = establishedPath(result), span.isRecording {
+                span.attributes[MatterLogKey.interface] = path.interfaceName
+                span.attributes[MatterLogKey.localAddress] = path.localAddress
             }
             logger.info(
                 "\(type.name) session established in \(MatterLogValue.milliseconds(elapsed)) ms",
@@ -1864,14 +1884,16 @@ public actor MatterController {
 
     /// Sigma1/2/3 with `nodeID` at `address` on one unsecured exchange,
     /// closed on every path. Returns the established session, not yet
-    /// registered with the message layer.
+    /// registered with the message layer, and the path every frame of the
+    /// handshake left by (nil when the transport cannot tell), for the session
+    /// to keep.
     private func caseHandshake(
         nodeID: NodeID,
         address: MatterAddress,
         mrp: MRPParameters?,
         localSessionID sessionID: UInt16,
         context: ServiceContext? = nil
-    ) async throws -> SecureSession {
+    ) async throws -> (session: SecureSession, path: MatterPath?) {
         let timeout = configuration.operationTimeout
         let (sigma1Data, handshakeCtx) = controllerSession.createSigma1(
             peerNodeID: nodeID,
@@ -1915,8 +1937,9 @@ public actor MatterController {
             await handshake.close()
             throw error
         }
+        let path = await handshake.path()
         await handshake.close()
-        return session
+        return (session, path)
     }
 
     /// Reserve a local session ID that no registered, cached or in-flight
@@ -2110,7 +2133,8 @@ public actor MatterController {
             return ControllerError.timeout("No response from node \(nodeID.rawValue)")
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
-        case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
+        case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse,
+             .pathLost, .noAllowedRoute:
             return ControllerError.operational(messaging)
         }
     }

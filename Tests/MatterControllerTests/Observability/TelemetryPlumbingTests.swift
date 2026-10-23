@@ -88,6 +88,7 @@ struct TelemetryPlumbingTests {
             "acme_controller_messages_total", "acme_mrp_retransmits_total", "acme_mrp_give_ups_total",
             "acme_exchange_timeouts_total", "acme_im_requests_total", "acme_sessions_established_total",
             "acme_subscription_lost_total", "acme_resubscribes_total",
+            "acme_transport_path_selections_total", "acme_transport_path_repins_total",
         ])
         #expect(Set(metrics.timers.map(\.label)) == ["acme_im_request_duration", "acme_case_duration", "acme_report_interval"])
         let dimensionNames = Set(
@@ -96,6 +97,8 @@ struct TelemetryPlumbingTests {
         #expect(dimensionNames == ["direction", "protocol", "kind", "outcome", "type", "reason"])
         #expect(metrics.counters.filter { $0.label == "acme_im_requests_total" }.count == 20)
         #expect(metrics.counters.filter { $0.label == "acme_controller_messages_total" }.count == 12)
+        #expect(metrics.counters.filter { $0.label == "acme_transport_path_selections_total" }.count == 3)
+        #expect(metrics.counters.filter { $0.label == "acme_transport_path_repins_total" }.count == 2)
     }
 
     @Test("A controller's metrics default to the matter prefix and its configured factory")

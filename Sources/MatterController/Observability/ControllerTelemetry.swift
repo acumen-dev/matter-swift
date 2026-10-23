@@ -7,6 +7,7 @@ import Metrics
 import Tracing
 import MatterTypes
 import MatterProtocol
+import MatterTransport
 
 // MARK: - Bounded dimensions
 
@@ -82,6 +83,15 @@ func isAborted(_ error: any Error, controllerStopped: Bool) -> Bool {
 /// `stop()`, which cancels every subscription before it stops the messenger.
 func isSubscriptionAborted(_ error: any Error, cancelled: Bool) -> Bool {
     isAborted(error, controllerStopped: cancelled)
+}
+
+/// `reason` of `<prefix>_transport_path_repins_total`: why a secure session moved to
+/// another path.
+enum RepinReason: String, CaseIterable, Sendable {
+    /// An authenticated message arrived on another allowed interface.
+    case arrival
+    /// The pinned path lost its route to the peer; the session re-selected.
+    case routeLost = "route_lost"
 }
 
 /// `type` of `<prefix>_sessions_established_total`.
@@ -166,6 +176,11 @@ struct ControllerMetrics: Sendable {
     let subscriptionLost: [SubscriptionLossReason: Counter]
     let resubscribes: Counter
     let reportInterval: Metrics.Timer
+    /// `<prefix>_transport_path_selections_total{outcome}`: sends that chose their path (the
+    /// first of an exchange or session, and re-selections), by how the transport chose it.
+    let pathSelections: [PathSelectionOutcome: Counter]
+    /// `<prefix>_transport_path_repins_total{reason}`: secure sessions moved to another path.
+    let pathRepins: [RepinReason: Counter]
 
     init(prefix: String, factory: any MetricsFactory) {
         func counter(_ name: String, _ dimensions: [(String, String)] = []) -> Counter {
@@ -201,6 +216,12 @@ struct ControllerMetrics: Sendable {
         })
         resubscribes = counter("resubscribes_total")
         reportInterval = timer("report_interval")
+        pathSelections = Dictionary(uniqueKeysWithValues: PathSelectionOutcome.allCases.map { outcome in
+            (outcome, counter("transport_path_selections_total", [("outcome", outcome.rawValue)]))
+        })
+        pathRepins = Dictionary(uniqueKeysWithValues: RepinReason.allCases.map { reason in
+            (reason, counter("transport_path_repins_total", [("reason", reason.rawValue)]))
+        })
     }
 
     func message(_ direction: MessageDirection, protocolID: UInt16) {

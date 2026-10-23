@@ -36,7 +36,7 @@ public struct MatterDatagram: Sendable {
 }
 
 /// How a send chose its path.
-public enum PathSelectionOutcome: String, Sendable {
+public enum PathSelectionOutcome: String, Sendable, CaseIterable {
     case preferred, `fallthrough`, routeTable = "route_table"
 }
 

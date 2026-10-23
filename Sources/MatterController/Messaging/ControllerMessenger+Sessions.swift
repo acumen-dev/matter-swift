@@ -14,11 +14,16 @@ extension ControllerMessenger {
     /// Make a secure session's traffic routable. Register before the first
     /// request on it, so the reply can be decrypted and demultiplexed.
     ///
-    /// Registering the same session object again updates its address and MRP
-    /// parameters (for exchanges opened from then on) but keeps its
+    /// `path` is the path its handshake ran on (``ControllerExchange/path()``):
+    /// every frame of the session leaves by it until authenticated traffic
+    /// arrives on another allowed interface or it loses its route. With nil,
+    /// the session's first send selects one.
+    ///
+    /// Registering the same session object again updates its address, path and
+    /// MRP parameters (for exchanges opened from then on) but keeps its
     /// received-counter window, so a replay is still recognised. Passing
     /// `mrp: nil` when re-registering clears the parameters to the messenger
-    /// default.
+    /// default; `path: nil` unpins the session.
     ///
     /// A *different* session under a registered local session ID is refused
     /// with ``MessagingError/sessionIDInUse(_:)``, leaving the registered one
@@ -34,7 +39,7 @@ extension ControllerMessenger {
     /// `MatterAddress.canonicalised`), the form inbound senders are matched in.
     ///
     /// - Throws: ``MessagingError/sessionIDInUse(_:)``.
-    public func registerSession(_ session: SecureSession, peerAddress: MatterAddress, mrp: MRPParameters? = nil) throws {
+    public func registerSession(_ session: SecureSession, peerAddress: MatterAddress, path: MatterPath? = nil, mrp: MRPParameters? = nil) throws {
         let peerAddress = peerAddress.canonicalised
         if var existing = sessions[session.localSessionID] {
             guard existing.session === session else {
@@ -42,12 +47,13 @@ extension ControllerMessenger {
             }
             start()
             existing.peerAddress = peerAddress
+            existing.path = path
             existing.mrp = mrp
             sessions[session.localSessionID] = existing
             return
         }
         start()
-        sessions[session.localSessionID] = SessionEntry(session: session, peerAddress: peerAddress, mrp: mrp)
+        sessions[session.localSessionID] = SessionEntry(session: session, peerAddress: peerAddress, mrp: mrp, path: path)
     }
 
     /// Local session IDs currently registered.
@@ -105,6 +111,11 @@ extension ControllerMessenger {
     /// The session's current peer address (follows the peer's source address).
     public func peerAddress(forSession localSessionID: UInt16) -> MatterAddress? {
         sessions[localSessionID]?.peerAddress
+    }
+
+    /// The path the session's traffic leaves by, if pinned.
+    public func path(forSession localSessionID: UInt16) -> MatterPath? {
+        sessions[localSessionID]?.path
     }
 
     /// Open an exchange on a registered secure session. `context`, when given, parents the

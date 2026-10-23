@@ -21,6 +21,8 @@ let fastMRP = MRPConfig(
 /// A controller on `link.a` with test telemetry injected (logger label `test.controller`),
 /// mirrored sessions 10 (controller) / 20 (peer), and node 0x42 known at `link.b` (or
 /// `deviceAddress`), with session 10 as its operational session unless `installSession` is false.
+/// `transport`, when given, wraps `link.a` (with a logger into the same capture); `interfaces`
+/// is the controller's interface policy.
 struct ControllerRig {
     let telemetry: TestTelemetry
     let link: FaultInjectingLink
@@ -36,7 +38,9 @@ func makeControllerRig(
     discovery: any MatterDiscovery = MockDiscovery(),
     installSession: Bool = true,
     deviceAddress: MatterAddress? = nil,
-    fabricManager: FabricManager? = nil
+    fabricManager: FabricManager? = nil,
+    transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
+    interfaces: InterfacePolicy = .automatic
 ) async throws -> ControllerRig {
     let telemetry = TestTelemetry()
     let link = FaultInjectingLink(seed: 11)
@@ -44,13 +48,15 @@ func makeControllerRig(
         fabricID: FabricID(rawValue: 1),
         mrp: mrp,
         metricsFactory: telemetry.metrics,
-        tracer: telemetry.tracer
+        tracer: telemetry.tracer,
+        interfaces: interfaces
     )
+    let controllerTransport = transport?(link, telemetry.logger(label: "test.transport")) ?? link.a
     let logger = telemetry.logger(label: "test.controller")
     let controller: MatterController
     if let fabricManager {
         controller = try MatterController(
-            transport: link.a,
+            transport: controllerTransport,
             discovery: discovery,
             configuration: configuration,
             stored: StoredControllerState(
@@ -60,7 +66,7 @@ func makeControllerRig(
         )
     } else {
         controller = try MatterController(
-            transport: link.a,
+            transport: controllerTransport,
             discovery: discovery,
             configuration: configuration,
             logger: logger
@@ -132,9 +138,14 @@ func makeTestFabric() throws -> TestFabric {
 
 /// A rig whose controller is on a ``TestFabric``, with no session installed: a
 /// `CASEProtocolHandler(fabricInfo: fabric.deviceFabric)` answers the controller's Sigma1 for real.
-func makeCASEControllerRig() async throws -> (rig: ControllerRig, fabric: TestFabric) {
+func makeCASEControllerRig(
+    transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
+    interfaces: InterfacePolicy = .automatic
+) async throws -> (rig: ControllerRig, fabric: TestFabric) {
     let fabric = try makeTestFabric()
-    let rig = try await makeControllerRig(installSession: false, fabricManager: fabric.manager)
+    let rig = try await makeControllerRig(
+        installSession: false, fabricManager: fabric.manager, transport: transport, interfaces: interfaces
+    )
     return (rig, fabric)
 }
 
