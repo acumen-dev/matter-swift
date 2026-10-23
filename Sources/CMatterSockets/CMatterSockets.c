@@ -27,10 +27,16 @@ int cms_open_udp(int family, uint16_t port, int *err) {
     int fd = socket(family, SOCK_DGRAM, 0);
     if (fd < 0) { if (err) *err = errno; return -1; }
     int one = 1;
+    // SO_REUSEADDR is best-effort: failing to set it does not break the design.
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     int rc;
     if (family == AF_INET6) {
-        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof one);
+        // Not best-effort: a silent dual-stack socket would break the per-family design.
+        if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof one) != 0) {
+            if (err) *err = errno;
+            close(fd);
+            return -1;
+        }
         rc = setsockopt(fd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof one);
     } else {
 #ifdef __APPLE__

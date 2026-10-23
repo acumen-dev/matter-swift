@@ -63,8 +63,9 @@ struct SocketShimTests {
     func pktinfoKeepsPortV6() throws {
         var err: Int32 = 0
         let rx = cms_open_udp(AF_INET6, 0, &err); try #require(rx >= 0)
+        defer { close(rx) }
         let tx = cms_open_udp(AF_INET6, 0, &err); try #require(tx >= 0)
-        defer { close(rx); close(tx) }
+        defer { close(tx) }
         let lo = loopbackIndex()
         var dst = sockaddr_in6.loopback(port: cms_bound_port(rx))
         let sent = withUnsafePointer(to: &dst) {
@@ -86,8 +87,9 @@ struct SocketShimTests {
     func pktinfoKeepsPortV4() throws {
         var err: Int32 = 0
         let rx = cms_open_udp(AF_INET, 0, &err); try #require(rx >= 0)
+        defer { close(rx) }
         let tx = cms_open_udp(AF_INET, 0, &err); try #require(tx >= 0)
-        defer { close(rx); close(tx) }
+        defer { close(tx) }
         let lo = loopbackIndex()
         var dst = sockaddr_in.loopback(port: cms_bound_port(rx))
         let sent = withUnsafePointer(to: &dst) {
@@ -105,10 +107,56 @@ struct SocketShimTests {
         #expect(String(cString: dstText) == "127.0.0.1")
     }
 
-    @Test("Route probe answers on loopback and refuses an unreachable scope")
+    @Test("A bogus interface index in the PKTINFO cmsg fails the send (IPv6)")
+    func bogusIfindexV6() throws {
+        var err: Int32 = 0
+        let rx = cms_open_udp(AF_INET6, 0, &err); try #require(rx >= 0)
+        defer { close(rx) }
+        let tx = cms_open_udp(AF_INET6, 0, &err); try #require(tx >= 0)
+        defer { close(tx) }
+        var dst = sockaddr_in6.loopback(port: cms_bound_port(rx))
+        let sent = withUnsafePointer(to: &dst) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                cms_send(tx, [UInt8(1)], 1, $0, socklen_t(MemoryLayout<sockaddr_in6>.size), 0x7fffffff, nil)
+            }
+        }
+        #expect(sent == -1)
+    }
+
+    @Test("A bogus interface index in the PKTINFO cmsg fails the send (IPv4)")
+    func bogusIfindexV4() throws {
+        var err: Int32 = 0
+        let rx = cms_open_udp(AF_INET, 0, &err); try #require(rx >= 0)
+        defer { close(rx) }
+        let tx = cms_open_udp(AF_INET, 0, &err); try #require(tx >= 0)
+        defer { close(tx) }
+        var dst = sockaddr_in.loopback(port: cms_bound_port(rx))
+        let sent = withUnsafePointer(to: &dst) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                cms_send(tx, [UInt8(1)], 1, $0, socklen_t(MemoryLayout<sockaddr_in>.size), 0x7fffffff, nil)
+            }
+        }
+        #expect(sent == -1)
+    }
+
+    @Test("Route probe answers unscoped and scoped on loopback, and reports errors for bad scope or literal")
     func routeProbe() {
+        let lo = loopbackIndex()
         var src = [CChar](repeating: 0, count: 64)
         #expect(cms_route_probe(AF_INET6, "::1", 0, 0, &src, 64) == 0)
         #expect(String(cString: src) == "::1")
+        src = [CChar](repeating: 0, count: 64)
+        #expect(cms_route_probe(AF_INET6, "::1", 0, lo, &src, 64) == 0)
+        #expect(String(cString: src) == "::1")
+        src = [CChar](repeating: 0, count: 64)
+        #expect(cms_route_probe(AF_INET, "127.0.0.1", 0, 0, &src, 64) == 0)
+        #expect(String(cString: src) == "127.0.0.1")
+        src = [CChar](repeating: 0, count: 64)
+        #expect(cms_route_probe(AF_INET, "127.0.0.1", 0, lo, &src, 64) == 0)
+        #expect(String(cString: src) == "127.0.0.1")
+        #expect(cms_route_probe(AF_INET6, "::1", 0, 0x7fffffff, &src, 64) != 0)
+        #expect(cms_route_probe(AF_INET, "127.0.0.1", 0, 0x7fffffff, &src, 64) != 0)
+        #expect(cms_route_probe(AF_INET6, "not-an-address", 0, 0, &src, 64) != 0)
+        #expect(cms_route_probe(AF_INET, "not-an-address", 0, 0, &src, 64) != 0)
     }
 }
