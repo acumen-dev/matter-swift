@@ -95,6 +95,25 @@ struct MessengerPathTests {
         await rig.messenger.stop()
     }
 
+    @Test("The ack a handshake's close flushes leaves by the handshake's path")
+    func closingAckStaysOnHandshakePath() async throws {
+        let rig = PathRig()
+        var peer = TestPeer(link: rig.link)
+        let exchange = await rig.messenger.openExchange(peer: rig.link.b.address)
+        try await exchange.send(protocolID: .echo, opcode: echoRequest, payload: Data([1]))
+        let first = try await peer.next()
+        rig.endpoint.setRouteTable("en1")
+        try await peer.send(ScriptedPeer.unsecuredReply(to: first, protocolID: .echo, opcode: echoResponse, payload: Data([2]), counter: 500))
+        _ = try await exchange.receive(timeout: .seconds(30))
+        await exchange.close()                                  // the owed ack goes out now, after the pin is forgotten
+        #expect(await eventually { rig.endpoint.sends.count == 2 })
+        let ack = try await peer.next()
+        #expect(ack.isStandaloneAck)
+        #expect(rig.sentPaths == [en0Path, en0Path])
+        #expect(rig.selections("route_table") == 1, "the closing ack selects nothing")
+        await rig.messenger.stop()
+    }
+
     @Test("Preference is honoured on first contact")
     func preferenceOnFirstContact() async throws {
         let rig = PathRig(policy: InterfacePolicy(preferred: ["en1"]))
@@ -142,6 +161,20 @@ struct MessengerPathTests {
         #expect(await none.messenger.closingExchangeCount == 0, "MRP does not retransmit into nothing")
         #expect(none.logged(.warning, containing: "No allowed interface"))
         await none.messenger.stop()
+    }
+
+    @Test("An owner's unreliable frame with no allowed route fails its exchange")
+    func unreliableSendWithoutRouteFails() async throws {
+        let rig = PathRig(policy: InterfacePolicy(excluded: ["en0", "en1"]))
+        let exchange = await rig.messenger.openExchange(peer: rig.link.b.address)
+        let error = MessagingError.noAllowedRoute(exchange.key, peer: rig.link.b.address)
+        await #expect(throws: error) {
+            try await exchange.send(protocolID: .echo, opcode: echoRequest, payload: Data([1]), reliable: false)
+        }
+        await #expect(throws: error) { _ = try await exchange.receive(timeout: .seconds(5)) }
+        #expect(rig.endpoint.sends.isEmpty)
+        #expect(await rig.messenger.activeExchangeCount == 0)
+        await rig.messenger.stop()
     }
 
     @Test("Unauthenticated traffic never moves a pin")
@@ -342,6 +375,8 @@ struct ControllerPathTests {
             payload: sigma2, counter: 800
         ))
         let sigma3 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        // en1 can no longer be selected: an ack that left unpinned would go by en0.
+        fake.setReachable("en1", [])
         try await peer.send(ScriptedPeer.unsecuredReply(
             to: sigma3, protocolID: .secureChannel, opcode: SecureChannelOpcode.statusReport.rawValue,
             payload: StatusReportMessage(generalStatus: .success, protocolID: 0, protocolStatus: 0).encode(), counter: 801
@@ -349,11 +384,109 @@ struct ControllerPathTests {
         let session = try await establishing.value
 
         #expect(fake.policy == policy)
+        #expect(rig.telemetry.counter("matter_transport_path_selections_total", [("outcome", "preferred")]) == 1,
+                "one selection for the whole handshake, its closing ack included")
         #expect(fake.sends.allSatisfy { $0.path == en1Path }, "\(fake.sends.map(\.path))")
         #expect(await rig.controller.messenger.path(forSession: session.localSessionID) == en1Path)
         let span = try #require(rig.telemetry.finishedSpans(named: "matter.case").first)
         #expect(span.attributes.get(MatterLogKey.interface) == .string("en1"))
         #expect(span.attributes.get(MatterLogKey.localAddress) == .string("fd48::b"))
+        await rig.controller.stop()
+    }
+
+    @Test("A session whose re-selection finds no allowed route is invalidated, as for a silent peer")
+    func noRouteInvalidatesSession() async throws {
+        let endpoint = LockedValue<MultiInterfaceEndpoint?>(nil)
+        let rig = try await makeControllerRig(mrp: fastMRP, transport: { link, logger in
+            let fake = Self.dualHomed(link, logger)
+            endpoint.withLock { $0 = fake }
+            return fake
+        })
+        let fake = try #require(endpoint.withLock { $0 })
+        try await rig.controller.messenger.registerSession(rig.controllerSession, peerAddress: rig.link.b.address, path: en1Path)
+        fake.setReachable("en0", [])
+        fake.setReachable("en1", [])
+        let node = rig.node
+        await #expect(throws: ControllerError.peerUnreachable(node)) {
+            _ = try await rig.controller.invokeCommand(
+                nodeID: node, endpointID: EndpointID(rawValue: 1), clusterID: ClusterID(rawValue: 0x0102), commandID: CommandID(rawValue: 0x05)
+            )
+        }
+        #expect(rig.telemetry.logs.entries.contains { $0.message.contains("en1 lost its route") })
+        #expect(rig.telemetry.logs.entries.contains { $0.message == "Session invalidated: peer unreachable" })
+        #expect(await rig.controller.messenger.registeredSessionIDs.isEmpty)
+        #expect(fake.sends.isEmpty)
+        await rig.controller.stop()
+    }
+
+    @Test("A CASE with no allowed route to the stored address re-resolves the node and tries again there")
+    func noRouteReResolves() async throws {
+        let moved = MatterAddress(host: "10.0.0.2", port: 5540)
+        let stale = MatterAddress(host: "10.0.0.9", port: 5540)
+        let discovery = InMemoryDiscovery { _ in moved }
+        let endpoint = LockedValue<MultiInterfaceEndpoint?>(nil)
+        let rig = try await makeControllerRig(
+            mrp: fastMRP, discovery: discovery, installSession: false, deviceAddress: stale,
+            transport: { link, logger in
+                let fake = Self.dualHomed(link, logger)      // reaches 10.0.0.2 only
+                endpoint.withLock { $0 = fake }
+                return fake
+            }
+        )
+        let fake = try #require(endpoint.withLock { $0 })
+        let name = OperationalInstanceName(
+            compressedFabricID: await rig.controller.compressedFabricIDForTesting, nodeID: rig.node.rawValue
+        ).instanceName
+        try await discovery.advertise(service: MatterServiceRecord(name: name, serviceType: .operational, host: "10.0.0.2", port: 5540))
+        rig.link.setInterceptor { _, _ in .drop }            // the retry gets no answer either
+        let node = rig.node
+
+        await #expect(throws: ControllerError.peerUnreachable(node)) { _ = try await rig.controller.session(for: node) }
+
+        #expect(rig.telemetry.logs.entries.contains { $0.message.hasPrefix("No allowed interface has a route to 10.0.0.9:5540") })
+        #expect(rig.telemetry.logs.entries.contains { $0.message == "Operational address changed: 10.0.0.9:5540 → 10.0.0.2:5540" })
+        #expect(!fake.sends.isEmpty)
+        #expect(fake.sends.allSatisfy { $0.to == moved })
+        #expect(await rig.controller.device(for: node)?.operationalAddress == moved)
+        await rig.controller.stop()
+    }
+
+    @Test("A CASE whose path vanishes mid-handshake retries at once on a fresh selection")
+    func lostPathRetriesCASE() async throws {
+        let endpoint = LockedValue<MultiInterfaceEndpoint?>(nil)
+        let (rig, fabric) = try await makeCASEControllerRig(transport: { link, logger in
+            let fake = Self.dualHomed(link, logger)
+            fake.setRouteTable("en1")
+            endpoint.withLock { $0 = fake }
+            return fake
+        })
+        let fake = try #require(endpoint.withLock { $0 })
+        var peer = TestPeer(link: rig.link)
+        var seen = Set<UInt32>()
+        let node = rig.node
+        let establishing = Task { try await rig.controller.session(for: node) }
+        let lostSigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(fake.sends.first?.path == en1Path)
+        fake.setReachable("en1", [])                         // the retransmission finds no route on en1
+
+        let sigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(sigma1.exchangeHeader.exchangeID != lostSigma1.exchangeHeader.exchangeID, "a fresh handshake")
+        let (sigma2, _) = try CASEProtocolHandler(fabricInfo: fabric.deviceFabric).handleSigma1(payload: sigma1.payload, responderSessionID: 300)
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: sigma1, protocolID: .secureChannel, opcode: SecureChannelOpcode.caseSigma2.rawValue,
+            payload: sigma2, counter: 800
+        ))
+        let sigma3 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: sigma3, protocolID: .secureChannel, opcode: SecureChannelOpcode.statusReport.rawValue,
+            payload: StatusReportMessage(generalStatus: .success, protocolID: 0, protocolStatus: 0).encode(), counter: 801
+        ))
+        let session = try await establishing.value
+
+        #expect(rig.telemetry.logs.entries.contains { $0.message.hasPrefix("CASE path en1 lost its route") })
+        #expect(!rig.telemetry.logs.entries.contains { $0.message.hasPrefix("Operational address changed") })
+        #expect(await rig.controller.messenger.path(forSession: session.localSessionID) == en0Path)
+        #expect(Array(fake.sends.dropFirst()).allSatisfy { $0.path == en0Path }, "\(fake.sends.map(\.path))")
         await rig.controller.stop()
     }
 }

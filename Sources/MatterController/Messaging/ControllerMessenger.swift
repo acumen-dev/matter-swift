@@ -29,7 +29,7 @@ import MatterTransport
 /// - every reliable message received is acknowledged: piggybacked on the next
 ///   message of its exchange, otherwise standalone after the standalone-ack
 ///   timeout, or at once when the exchange closes;
-/// - every frame leaves by a pinned path (``sendPinned(_:to:key:)``): an
+/// - every frame leaves by a pinned path (``sendPinned(_:to:key:queuedPath:fromOwner:)``): an
 ///   exchange we open (PASE, CASE) is pinned by its first send, which lets
 ///   the transport select under ``Configuration/interfaces``, and every later
 ///   frame of it — Sigma3, acks, MRP copies — leaves the same way; a secure
@@ -104,6 +104,10 @@ public actor ControllerMessenger {
         let note: String
         /// The exchange the frame belongs to, whose pinned path it leaves by.
         let key: ExchangeKey?
+        /// The exchange's pinned path when the frame was queued: it still leaves by it
+        /// if the exchange is forgotten before the frame is sent (the ack `close()`
+        /// flushes, a frame behind a failure in the same batch).
+        let path: MatterPath?
     }
 
     /// How far ahead the timer parks when nothing is pending. It always
@@ -346,7 +350,7 @@ public actor ControllerMessenger {
         // State is final: arm the timer before suspending in the send.
         rearmTimer()
         do {
-            try await sendPinned(bytes, to: address, key: key)
+            try await sendPinned(bytes, to: address, key: key, fromOwner: true)
         } catch where reliable {
             transportLogger.warning(
                 "Send on exchange \(key.exchangeID) to \(MatterLogValue.address(address)) failed; MRP will retransmit: \(error)",
@@ -780,7 +784,7 @@ public actor ControllerMessenger {
                     ]) { $1 }
                 )
                 recordExchangeEvent(key, "retransmit", attributes: [MatterLogKey.attempt: .int64(Int64(attempt))])
-                outgoing.append(Outgoing(bytes: message, address: address, note: "retransmission on exchange \(key.exchangeID)", key: key))
+                outgoing.append(Outgoing(bytes: message, address: address, note: "retransmission on exchange \(key.exchangeID)", key: key, path: pinnedPath(for: key)))
             case .exhausted where closing.contains(key):
                 // The owner already closed the exchange; nobody to tell.
                 telemetry.metrics.mrpGiveUps.increment()
@@ -847,7 +851,7 @@ public actor ControllerMessenger {
     func transmit(_ outgoing: [Outgoing]) async {
         for item in outgoing {
             do {
-                try await sendPinned(item.bytes, to: item.address, key: item.key)
+                try await sendPinned(item.bytes, to: item.address, key: item.key, queuedPath: item.path)
             } catch {
                 transportLogger.warning("Send failed (\(item.note)) to \(MatterLogValue.address(item.address)): \(error)", metadata: [
                     MatterLogKey.reason: "send_failed",
@@ -872,7 +876,7 @@ public actor ControllerMessenger {
             let (bytes, counter) = try encode(header, payload: Data(), key: key, inbound: inbound)
             telemetry.metrics.message(.outbound, protocolID: header.protocolID)
             mrpLogger.trace("standalone ack", metadata: frameMetadata(key: key, header: header, counter: counter, path: pinnedPath(for: key)))
-            return Outgoing(bytes: bytes, address: address, note: "standalone ack \(ackCounter)", key: key)
+            return Outgoing(bytes: bytes, address: address, note: "standalone ack \(ackCounter)", key: key, path: pinnedPath(for: key))
         } catch {
             mrpLogger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)", metadata: Self.exchangeMetadata(key))
             return nil

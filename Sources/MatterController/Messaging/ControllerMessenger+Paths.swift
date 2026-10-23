@@ -19,13 +19,24 @@ extension ControllerMessenger {
     /// - `pathUnavailable` on a secure session re-selects and resends once (the peer accepts
     ///   the new source, since the message authenticates); on an unsecured exchange (a
     ///   handshake) it fails the exchange at once with ``MessagingError/pathLost(_:_:)``;
-    /// - `noAllowedRoute` fails an exchange with a reliable message outstanding with
-    ///   ``MessagingError/noAllowedRoute(_:peer:)``, and drops anything else (an ack).
+    /// - `noAllowedRoute` fails the exchange with ``MessagingError/noAllowedRoute(_:peer:)``
+    ///   when the frame is its owner's (`fromOwner`) or a reliable message is outstanding on
+    ///   it, and drops anything else (an ack the messenger sends on its own).
     ///
     /// Any other transport error is thrown.
-    func sendPinned(_ bytes: Data, to address: MatterAddress, key: ExchangeKey?) async throws {
+    ///
+    /// The exchange's current pin wins; `queuedPath`, the pin when the frame was queued, is
+    /// used once the exchange is forgotten (so the ack `close()` flushes still leaves by the
+    /// handshake's path, and a secure ack still follows an arrival re-pin).
+    func sendPinned(
+        _ bytes: Data,
+        to address: MatterAddress,
+        key: ExchangeKey?,
+        queuedPath: MatterPath? = nil,
+        fromOwner: Bool = false
+    ) async throws {
         await awaitInterfacePolicy()
-        let pinned = key.flatMap(pinnedPath(for:))
+        let pinned = key.flatMap(pinnedPath(for:)) ?? queuedPath
         do {
             let result = try await transport.send(bytes, to: address, via: pinned)
             if pinned == nil, let key, let result {
@@ -37,12 +48,12 @@ extension ControllerMessenger {
             case .pathUnavailable(let lost, _):
                 switch key.scope {
                 case .secured(let localSessionID):
-                    try await reselect(bytes, to: address, key: key, sessionID: localSessionID, lost: lost)
+                    try await reselect(bytes, to: address, key: key, sessionID: localSessionID, lost: lost, fromOwner: fromOwner)
                 case .unsecured:
                     handshakePathLost(key, lost: lost, peer: address)
                 }
             case .noAllowedRoute:
-                noAllowedRoute(key, peer: address)
+                noAllowedRoute(key, peer: address, fromOwner: fromOwner)
             }
         }
     }
@@ -55,14 +66,11 @@ extension ControllerMessenger {
     }
 
     /// Pin exchange `key` (or its session) to the path a send selected, and count the
-    /// selection. Nothing is pinned for an exchange or session that went away while the send
-    /// was in flight, nor over a pin another send set meanwhile (the first selection holds).
-    /// Returns whether it pinned.
+    /// selection. Nothing is pinned — or counted — for an exchange or session that went away
+    /// while the send was in flight (an ack of a stale exchange), nor over a pin another send
+    /// set meanwhile (the first selection holds). Returns whether it pinned.
     @discardableResult
     func recordSelection(_ result: MatterSendResult, key: ExchangeKey) -> Bool {
-        if let outcome = result.selection {
-            telemetry.metrics.pathSelections[outcome]?.increment()
-        }
         switch key.scope {
         case .unsecured:
             guard manager.exchange(for: key) != nil, exchangePaths[key] == nil else { return false }
@@ -80,13 +88,18 @@ extension ControllerMessenger {
                 metadata: Self.pathMetadata(result.path).merging([MatterLogKey.session: MatterLogValue.hex(localSessionID)]) { $1 }
             )
         }
+        if let outcome = result.selection {
+            telemetry.metrics.pathSelections[outcome]?.increment()
+        }
         return true
     }
 
     /// A secure session's pinned path lost its route: unpin, resend once by a fresh
     /// selection, and pin the session to what it chose. If another send already re-pinned
     /// the session meanwhile, resend by that path instead.
-    func reselect(_ bytes: Data, to address: MatterAddress, key: ExchangeKey, sessionID: UInt16, lost: MatterPath) async throws {
+    func reselect(
+        _ bytes: Data, to address: MatterAddress, key: ExchangeKey, sessionID: UInt16, lost: MatterPath, fromOwner: Bool
+    ) async throws {
         let session = MatterLogValue.hexString(sessionID)
         if var entry = sessions[sessionID], entry.path == lost {
             entry.path = nil
@@ -104,7 +117,7 @@ extension ControllerMessenger {
         do {
             result = try await transport.send(bytes, to: address, via: current)
         } catch TransportPathError.noAllowedRoute {
-            noAllowedRoute(key, peer: address)
+            noAllowedRoute(key, peer: address, fromOwner: fromOwner)
             return
         }
         guard current == nil, let result, recordSelection(result, key: key) else { return }
@@ -130,12 +143,13 @@ extension ControllerMessenger {
         failExchange(key, with: .pathLost(key, lost))
     }
 
-    /// No allowed interface has a route to `peer`. An exchange with a reliable message
-    /// outstanding fails now: MRP retransmitting into no path only delays the same answer.
-    /// A frame with nothing outstanding behind it (an ack) is dropped.
-    func noAllowedRoute(_ key: ExchangeKey, peer: MatterAddress) {
+    /// No allowed interface has a route to `peer`. The exchange fails now when its owner
+    /// sent the frame (reliable or not) or a reliable message is outstanding on it: MRP
+    /// retransmitting into no path only delays the same answer. A frame the messenger sends
+    /// on its own with nothing outstanding behind it (an ack) is dropped.
+    func noAllowedRoute(_ key: ExchangeKey, peer: MatterAddress, fromOwner: Bool) {
         let metadata = Self.exchangeMetadata(key).merging([MatterLogKey.reason: "no_allowed_route"]) { $1 }
-        guard manager.exchange(for: key)?.pendingMessage != nil else {
+        guard let exchange = manager.exchange(for: key), fromOwner || exchange.pendingMessage != nil else {
             transportLogger.warning(
                 "No allowed interface has a route to \(MatterLogValue.address(peer)); dropping a frame on exchange \(key.exchangeID)",
                 metadata: metadata

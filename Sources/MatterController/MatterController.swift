@@ -1134,7 +1134,7 @@ public actor MatterController {
         }
         caseReservation = caseSessionID
         let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
-            let (session, path) = try await self.caseHandshake(
+            let (session, path) = try await self.caseHandshakeRetryingLostPath(
                 nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
             )
             // Inside the CASE outcome, as on the operational path: established
@@ -1703,19 +1703,19 @@ public actor MatterController {
             let session: SecureSession
             let path: MatterPath?
             do {
-                (session, path) = try await self.caseHandshake(
+                (session, path) = try await self.caseHandshakeRetryingLostPath(
                     nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
                 )
             } catch {
                 let original = Self.operationalError(error, nodeID: nodeID)
-                guard Self.nothingAnswered(original, nodeID: nodeID),
+                guard Self.nothingAnswered(original, nodeID: nodeID) || Self.pathVanished(error),
                       let refreshed = try await self.refreshedAddress(nodeID: nodeID, tried: address, context: caseContext) else {
                     throw original
                 }
                 self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
                 usedAddress = refreshed.address
                 do {
-                    (session, path) = try await self.caseHandshake(
+                    (session, path) = try await self.caseHandshakeRetryingLostPath(
                         nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
                     )
                 } catch {
@@ -1872,13 +1872,44 @@ public actor MatterController {
         return (resolved.address, await registry.device(for: nodeID)?.mrpParameters)
     }
 
+    /// Whether a handshake failed because the path it was pinned to lost its
+    /// route (unmapped `error`): nothing could answer it there.
+    private static func pathVanished(_ error: any Error) -> Bool {
+        if case MessagingError.pathLost? = error as? MessagingError { return true }
+        return false
+    }
+
     /// Whether `error` (already mapped by ``operationalError(_:nodeID:)``)
     /// means nothing answered, rather than a device that answered badly.
+    /// No allowed route maps to `peerUnreachable` and counts; a vanished path
+    /// is checked on the unmapped error (``pathVanished(_:)``).
     private static func nothingAnswered(_ error: any Error, nodeID: NodeID) -> Bool {
         switch error as? ControllerError {
         case .peerUnreachable(let node)?: return node == nodeID
         case .timeout?: return true
         default: return false
+        }
+    }
+
+    /// ``caseHandshake(nodeID:address:mrp:localSessionID:context:)``, retried once at once
+    /// when the path it was pinned to lost its route mid-handshake (`pathLost`): the fresh
+    /// exchange selects a path afresh, so a flapped interface costs one Sigma1, not an
+    /// address re-resolve.
+    private func caseHandshakeRetryingLostPath(
+        nodeID: NodeID,
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        localSessionID sessionID: UInt16,
+        context: ServiceContext? = nil
+    ) async throws -> (session: SecureSession, path: MatterPath?) {
+        do {
+            return try await caseHandshake(nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context)
+        } catch MessagingError.pathLost(_, let lost) {
+            loggers.caseHandshake.info(
+                "CASE path \(lost.interfaceName) lost its route to \(MatterLogValue.address(address)); retrying on a fresh selection",
+                metadata: Logger.Metadata.node(nodeID).merging([MatterLogKey.reason: "path_lost"]) { $1 }
+            )
+            return try await caseHandshake(nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context)
         }
     }
 
@@ -2125,16 +2156,17 @@ public actor MatterController {
     private static func operationalError(_ error: any Error, nodeID: NodeID) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
         switch messaging {
-        case .peerUnreachable, .sessionClosed, .unknownSession:
+        case .peerUnreachable, .sessionClosed, .unknownSession, .noAllowedRoute:
             // The session is gone from the message layer (unacknowledged,
-            // closed, or unregistered): invalidate it, as for a silent peer.
+            // closed, or unregistered), or no allowed interface reaches the
+            // node: invalidate it and re-resolve, as for a silent peer.
             return ControllerError.peerUnreachable(nodeID)
         case .responseTimeout:
             return ControllerError.timeout("No response from node \(nodeID.rawValue)")
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
         case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse,
-             .pathLost, .noAllowedRoute:
+             .pathLost:
             return ControllerError.operational(messaging)
         }
     }
