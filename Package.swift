@@ -80,10 +80,23 @@ let package = Package(
 
         // MARK: - Transport Abstractions
 
+        // Thin C shim for sendmsg/recvmsg with PKTINFO control messages (per-peer
+        // interface / source-address pinning). Not a product.
+        .target(
+            name: "CMatterSockets",
+            dependencies: [],
+            cSettings: [
+                // Darwin's module build ignores an in-source define; pass it on the command line.
+                .define("__APPLE_USE_RFC_3542", to: "1", .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])),
+                .define("_GNU_SOURCE", .when(platforms: [.linux])),
+            ]
+        ),
+
         .target(
             name: "MatterTransport",
             dependencies: [
                 "MatterTypes",
+                "CMatterSockets",
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "MDNSCore", package: "mdns-swift"),
             ]
@@ -254,6 +267,10 @@ let package = Package(
                 .product(name: "Tracing", package: "swift-distributed-tracing"),
                 .product(name: "InMemoryTracing", package: "swift-distributed-tracing"),
             ]
+        ),
+        .testTarget(
+            name: "MatterTransportTests",
+            dependencies: ["MatterTransport", "CMatterSockets", "MatterTestSupport"]
         ),
         .testTarget(
             name: "MatterAppleTests",
