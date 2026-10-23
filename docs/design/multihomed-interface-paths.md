@@ -141,9 +141,12 @@ first send; the new configuration field is `interfaces: InterfacePolicy = .autom
 - **Sessions:** `registerSession(_:peerAddress:path:mrp:)` gives the session the
   handshake's path (`SessionEntry.path`).
 - **Re-pin** only on a message that decrypted and passed counter de-duplication (the gate
-  that already updates `peerAddress`): if its arrival path is on a different allowed
-  interface, the session re-pins to it and logs at info
-  (`session 0x1a2b re-pinned en1 → en0 (traffic arrived on en0)`). Arrival on an
+  that already updates `peerAddress`): if its arrival path differs from the pin in any way
+  (another allowed interface, or another local address on the same interface), the
+  session re-pins to it and logs at info — `session 0x1a2b re-pinned en1 → en0 (traffic
+  arrived on en0)` for an interface change, `session 0x1a2b: address changed on en1:
+  fd48::b → fd48::c` for a local-address change — and counts a repin. A first pin on a
+  session that had none logs at debug and is not counted as a repin. Arrival on an
   excluded interface leaves the pin (debug log).
 - **Peer-initiated exchanges** reply by their session's path; an unsecured one by its
   arrival path.
@@ -156,9 +159,14 @@ first send; the new configuration field is `interfaces: InterfacePolicy = .autom
 ### Device server (`MatterDeviceServer`)
 
 Same rules as a responder: a PASE/CASE handshake is pinned to the arrival path of its
-first message; the session inherits it; re-pin only on authenticated arrival; route loss
-re-selects for sessions. Replies to the iPhone therefore leave from the address it sent
-to, by the interface it arrived on.
+first message; the session inherits it; re-pin only on authenticated arrival, on any
+change of arrival path (interface or local address), with the same log wording as the
+controller. Route loss re-selects once — for a session's datagram, and also for a
+handshake frame: unlike the controller, which fails its own handshake at once, the
+responder cannot restart the initiator's handshake, so it re-selects that one frame
+and lets the initiator's MRP and authentication decide. Replies to the iPhone therefore
+leave from the address it sent to, by the interface it arrived on. The bridge logs
+re-pins but does not count them: `MatterDevice` has no metrics dependency.
 
 ## 4. CASE busy
 

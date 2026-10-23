@@ -444,6 +444,8 @@ Set `Configuration.interfaces` to an `InterfacePolicy`:
 
 ```swift
 let controller = try MatterController(
+    transport: AppleUDPTransport(),
+    discovery: AppleDiscovery(),
     configuration: .init(
         fabricID: FabricID(rawValue: 1),
         interfaces: InterfacePolicy(preferred: ["en0"], excluded: ["utun3"])
@@ -457,7 +459,7 @@ The policy is an order, not an allow-list: the controller uses the first preferr
 
 - A PASE or CASE handshake is pinned to the path its first message chose. Every later frame on it (Sigma3, acknowledgements, retransmissions) uses that path, and unauthenticated traffic never moves it.
 - The session that handshake establishes inherits the path.
-- A session re-pins only when a message that decrypted and passed counter de-duplication arrives on a different allowed interface. A datagram arriving on an excluded interface never moves the pin.
+- A session re-pins only when a message that decrypted and passed counter de-duplication arrives by a different path: another allowed interface, or another local address on the same interface. A datagram arriving on an excluded interface never moves the pin. A session that had no pin and takes one from an arrival is not counted as a re-pin.
 - If the pinned path loses its route (`TransportPathError.pathUnavailable`), a session re-selects and resends. A handshake in flight fails at once, because changing source mid-handshake breaks it anyway, and a CASE attempt that hit it is retried once straight away on a fresh selection.
 - If no allowed interface has a route (`noAllowedRoute`), the controller treats the device as unreachable: the session is invalidated and the device's address re-resolved.
 
@@ -470,6 +472,7 @@ Device-side, `MatterDeviceServer.Config.interfaces` applies the same rules as a 
 | `en1 preferred, no route to fdf3:...; using en0` style line (`Path to <host>: ...; using <interface> (<address>)`) | info, `transport` | A send passed over a preferred interface |
 | `Interface <name> named in the Matter interface policy is down` / `missing` / `available again` | warning / info, `transport` | A named interface's state; logged when the policy is applied and when it changes, never per send |
 | `Session 0x1a2b re-pinned en1 → en0 (traffic arrived on en0)` | info, `session` | Re-pin on authenticated arrival |
+| `Session 0x1a2b: address changed on en0: fd48::a → fd48::c` | info, `session` | Re-pin on authenticated arrival at a new local address of the same interface |
 | `Session 0x1a2b: en1 lost its route to <address>; re-selecting`, then `re-pinned to ...` | info, `session` | Route lost; the session moved |
 | `CASE path en1 lost its route to <address>; retrying on a fresh selection` | info, `case` | A handshake restarted after losing its path |
 | `matter_transport_path_selections_total{outcome}` | counter | Sends that chose their path: `preferred`, `fallthrough` or `route_table` |
