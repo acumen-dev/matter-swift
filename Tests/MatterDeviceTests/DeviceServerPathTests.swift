@@ -167,8 +167,11 @@ private struct ServerPathRig {
         let (sigma3, _) = try initiator.handleSigma2(
             payload: sigma2.payload, context: context, responderRCAC: fabric.device.rcac, localSessionID: initiatorSessionID
         )
+        // Sigma3 acknowledges Sigma2, and the StatusReport is acknowledged below, so no
+        // retransmission of this handshake can leave after it.
         let statusIndex = try await exchange(
-            Self.caseMessage(sigma3, opcode: .caseSigma3, exchangeID: exchangeID, counter: firstCounter + 1),
+            Self.caseMessage(sigma3, opcode: .caseSigma3, exchangeID: exchangeID, counter: firstCounter + 1,
+                             acknowledging: sigma2.messageHeader.messageCounter),
             arrivingOn: interface
         )
         // The first new send after Sigma3 may be a Sigma2 retransmission; find the report.
@@ -180,19 +183,29 @@ private struct ServerPathRig {
         let status = try #require(endpoint.sends.indices.dropFirst(statusIndex).first {
             (try? MatterMessage.decodeUnsecured(from: endpoint.sends[$0].data).exchangeHeader?.protocolOpcode) == SecureChannelOpcode.statusReport.rawValue
         })
-        let report = try StatusReportMessage.decode(from: DuplicateHandlingTests.unsecuredBody(endpoint.sends[status].data))
+        let statusMessage = try MatterMessage.decodeUnsecured(from: endpoint.sends[status].data)
+        let report = try StatusReportMessage.decode(from: statusMessage.payload)
         try #require(report.generalStatus == .success)
+        try await link.a.send(
+            Self.caseMessage(Data(), opcode: .standaloneAck, exchangeID: exchangeID, counter: firstCounter + 2,
+                             acknowledging: statusMessage.messageHeader.messageCounter, reliable: false),
+            to: link.b.address
+        )
         return (sigma2Index, status)
     }
 
-    private static func caseMessage(_ payload: Data, opcode: SecureChannelOpcode, exchangeID: UInt16, counter: UInt32) -> Data {
+    private static func caseMessage(
+        _ payload: Data, opcode: SecureChannelOpcode, exchangeID: UInt16, counter: UInt32,
+        acknowledging ack: UInt32? = nil, reliable: Bool = true
+    ) -> Data {
         MatterMessage.encodeUnsecured(
             messageHeader: MessageHeader(sessionID: 0, messageCounter: counter),
             exchangeHeader: ExchangeHeader(
-                flags: ExchangeFlags(initiator: true, reliableDelivery: true),
+                flags: ExchangeFlags(initiator: true, reliableDelivery: reliable),
                 protocolOpcode: opcode.rawValue,
                 exchangeID: exchangeID,
-                protocolID: MatterProtocolID.secureChannel.rawValue
+                protocolID: MatterProtocolID.secureChannel.rawValue,
+                acknowledgedMessageCounter: ack
             ),
             payload: payload
         )

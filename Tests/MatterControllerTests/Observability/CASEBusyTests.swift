@@ -9,7 +9,10 @@ import MatterTransport
 import MatterTestSupport
 @testable import MatterController
 
-@Suite("CASE busy StatusReport", .timeLimit(.minutes(1)))
+/// The waits here are event-driven and a failed establishment ends them at once (see
+/// `failFast`), so the limit is only a hang guard: five minutes, as for the branch's other
+/// path suites, because on a loaded 2-CPU host a minute measures the host, not the code.
+@Suite("CASE busy StatusReport", .timeLimit(.minutes(5)))
 struct CASEBusyTests {
 
     /// An operation timeout no loaded host reaches, for the tests its value does not decide.
