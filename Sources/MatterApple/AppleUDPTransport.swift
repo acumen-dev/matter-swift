@@ -71,7 +71,7 @@ public actor AppleUDPTransport: MatterUDPTransport {
     }
 
     public nonisolated func receive() -> AsyncStream<(Data, MatterAddress)> {
-        core.datagrams.senderAndData()
+        core.addressedData
     }
 
     public nonisolated func receiveDatagrams() -> AsyncStream<MatterDatagram> {

@@ -12,7 +12,7 @@
 //    IPV6_BOUND_IF / IP_BOUND_IF.
 //  - Linux: IPV6_PKTINFO / IP_PKTINFO cmsgs; receive enabled with
 //    IPV6_RECVPKTINFO / IP_PKTINFO. Route probing scopes with
-//    IPV6_UNICAST_IF / IP_UNICAST_IF (the IPv4 value is network byte order).
+//    IPV6_UNICAST_IF / IP_UNICAST_IF (both take the index in network byte order).
 
 #ifndef CMATTERSOCKETS_H
 #define CMATTERSOCKETS_H

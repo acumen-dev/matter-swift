@@ -191,13 +191,12 @@ int cms_route_probe(int family, const char *peer_literal, uint32_t scope_ifindex
             ? setsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, &idx, sizeof idx)
             : setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &idx, sizeof idx);
 #else
-        if (family == AF_INET6) {
-            unsigned int idx = ifindex;
-            rc = setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_IF, &idx, sizeof idx);
-        } else {
-            uint32_t idx = htonl(ifindex);
-            rc = setsockopt(fd, IPPROTO_IP, IP_UNICAST_IF, &idx, sizeof idx);
-        }
+        // Both options take the index in network byte order (the kernel ntohl()s
+        // it); a host-order index names a nonexistent interface: EADDRNOTAVAIL.
+        uint32_t idx = htonl(ifindex);
+        rc = family == AF_INET6
+            ? setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_IF, &idx, sizeof idx)
+            : setsockopt(fd, IPPROTO_IP, IP_UNICAST_IF, &idx, sizeof idx);
 #endif
         if (rc != 0) { int e = errno; close(fd); return e; }
     }

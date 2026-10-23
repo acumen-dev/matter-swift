@@ -97,10 +97,65 @@ struct POSIXUDPSocketCoreTests {
         defer { rx.close(); tx.close() }
         let path = MatterPath(interfaceIndex: loopbackIndex, interfaceName: loopbackName, localAddress: "fd00:dead::1")
 
-        #expect(throws: TransportPathError.pathUnavailable(path, errno: EADDRNOTAVAIL)) {
+        // Darwin refuses the source with EADDRNOTAVAIL; Linux with EINVAL, which the
+        // core reads as a lost path only because the address is not on the interface.
+        #if canImport(Darwin)
+        let expected = EADDRNOTAVAIL
+        #else
+        let expected = EINVAL
+        #endif
+        #expect(throws: TransportPathError.pathUnavailable(path, errno: expected)) {
             try tx.send(Data([1]), to: MatterAddress(host: "::1", port: try #require(rx.boundPort)), via: path)
         }
     }
+
+    @Test("A pinned path of the other address family fails as pathUnavailable without sending")
+    func pinnedPathOtherFamily() async throws {
+        let rx = try Self.bound()
+        let tx = try Self.bound()
+        defer { rx.close(); tx.close() }
+        let path = MatterPath(interfaceIndex: loopbackIndex, interfaceName: loopbackName, localAddress: "::1")
+
+        #expect(throws: TransportPathError.pathUnavailable(path, errno: EAFNOSUPPORT)) {
+            try tx.send(Data([1]), to: MatterAddress(host: "127.0.0.1", port: try #require(rx.boundPort)), via: path)
+        }
+    }
+
+    @Test("A link-local destination whose zone names no interface has no route, pinned or not")
+    func missingZone() async throws {
+        let tx = try Self.bound()
+        defer { tx.close() }
+        let peer = MatterAddress(host: "fe80::1%nosuch0", port: 5540)
+        let path = MatterPath(interfaceIndex: loopbackIndex, interfaceName: loopbackName, localAddress: "::1")
+
+        #expect(throws: TransportPathError.noAllowedRoute(peer: peer)) {
+            try tx.send(Data([1]), to: peer, via: nil)
+        }
+        #expect(throws: TransportPathError.pathUnavailable(path, errno: ENXIO)) {
+            try tx.send(Data([1]), to: peer, via: path)
+        }
+    }
+
+    #if canImport(Darwin)
+    // Linux gives `lo` no fe80:: address by default; Darwin gives lo0 fe80::1.
+    @Test("A selected send to a zoned link-local address uses the zone's interface")
+    func linkLocalZone() async throws {
+        let rx = try Self.bound()
+        let tx = try Self.bound()
+        defer { rx.close(); tx.close() }
+        let peer = MatterAddress(host: "fe80::1%lo0", port: try #require(rx.boundPort))
+
+        let result = try tx.send(Data([7]), to: peer, via: nil)
+        #expect(result.path.interfaceName == "lo0")
+        #expect(result.path.localAddress == "fe80::1")
+
+        let datagram = try #require(await Self.firstDatagram(rx))
+        #expect(datagram.data == Data([7]))
+        #expect(datagram.sender == MatterAddress(host: "fe80::1%lo0", port: try #require(tx.boundPort)))
+        #expect(datagram.path?.interfaceName == "lo0")
+        #expect(datagram.path?.localAddress == "fe80::1")
+    }
+    #endif
 
     @Test(
         "Excluding loopback leaves no route to ::1",
@@ -145,6 +200,9 @@ struct POSIXUDPSocketCoreTests {
             _ = try await capture.first { $0.message.contains("UDP receive loop ended") && $0.message.contains(name) }
         }
         #expect(await Self.firstDatagram(core) == nil)
+        #expect(throws: TransportError.notBound) {
+            try core.send(Data([1]), to: MatterAddress(host: "127.0.0.1", port: 9), via: nil)
+        }
     }
 
     @Test(

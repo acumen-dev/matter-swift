@@ -61,7 +61,7 @@ public enum POSIXInterfaces {
         via interface: InterfaceSnapshot?,
         interfaces: [InterfaceSnapshot]
     ) -> (index: UInt32, source: String)? {
-        guard let destination = Destination(peer.host) else { return nil }
+        guard let destination = Destination(peer.host), !destination.zoneMissing else { return nil }
         var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
         let rc = cms_route_probe(
             destination.family, destination.literal, destination.scope,
@@ -118,7 +118,10 @@ struct Destination {
     let literal: String
     /// The `%zone` interface index for a scoped IPv6 literal, else 0.
     let scope: UInt32
+    /// The literal names a `%zone` that is no interface of this host (any more).
+    let zoneMissing: Bool
 
+    /// nil when `host` is not an IP literal.
     init?(_ host: String) {
         let canonical = MatterAddress.canonicalHost(host)
         let parts = canonical.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
@@ -128,15 +131,18 @@ struct Destination {
         if parts.count == 1, inet_pton(AF_INET, bare, &v4) == 1 {
             family = AF_INET
             scope = 0
+            zoneMissing = false
         } else if inet_pton(AF_INET6, bare, &v6) == 1 {
             family = AF_INET6
             if parts.count == 2 {
                 let zone = String(parts[1])
                 let index = UInt32(if_nametoindex(zone))
-                guard let resolved = index != 0 ? index : UInt32(zone) else { return nil }
+                let resolved = index != 0 ? index : UInt32(zone) ?? 0
                 scope = resolved
+                zoneMissing = resolved == 0
             } else {
                 scope = 0
+                zoneMissing = false
             }
         } else {
             return nil

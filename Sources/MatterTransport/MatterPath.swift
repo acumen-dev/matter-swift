@@ -58,17 +58,3 @@ public enum TransportPathError: Error, Sendable, Equatable {
     /// No allowed interface has a route to the peer.
     case noAllowedRoute(peer: MatterAddress)
 }
-
-extension AsyncStream where Element == MatterDatagram {
-    /// These datagrams as `(data, sender)`, dropping the path: the
-    /// ``MatterUDPTransport/receive()`` form. Finishes when this stream does.
-    public func senderAndData() -> AsyncStream<(Data, MatterAddress)> {
-        AsyncStream<(Data, MatterAddress)>(bufferingPolicy: .unbounded) { continuation in
-            let pump = Task {
-                for await datagram in self { continuation.yield((datagram.data, datagram.sender)) }
-                continuation.finish()
-            }
-            continuation.onTermination = { _ in pump.cancel() }
-        }
-    }
-}

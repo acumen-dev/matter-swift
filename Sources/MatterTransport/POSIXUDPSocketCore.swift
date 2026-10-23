@@ -22,13 +22,26 @@ import Synchronization
 /// a `PKTINFO` control message, which on a bound socket keeps the bound
 /// source port (measured on macOS 27). Each received datagram reports the
 /// interface it arrived on and the local address it was sent to.
+///
+/// Each receive thread owns its socket: ``close()`` only wakes the threads
+/// (through a wake pipe), and each closes its own descriptor on the way out,
+/// so a descriptor number is never released while a thread may still read it.
+/// `shutdown(2)` cannot do the waking: on Darwin it fails with `ENOTCONN` on
+/// an unconnected UDP socket and leaves a blocked `recvmsg` blocked.
 public final class POSIXUDPSocketCore: Sendable {
 
     private struct State {
         var fd6: Int32 = -1
         var fd4: Int32 = -1
+        /// Read end of the wake pipe, polled by both receive threads; the last
+        /// thread out closes it.
+        var wakeRead: Int32 = -1
+        /// Write end of the wake pipe; ``close()`` closes it, which wakes the threads.
+        var wakeWrite: Int32 = -1
+        var receiveThreads = 0
         var closed = false
         var monitor = InterfacePolicyMonitor(policy: .automatic)
+        var addressedData: AsyncStream<(Data, MatterAddress)>?
     }
 
     private let logger: Logger
@@ -36,11 +49,31 @@ public final class POSIXUDPSocketCore: Sendable {
     private let continuation: AsyncStream<MatterDatagram>.Continuation
 
     /// Every datagram received on either socket. Finishes on ``close()``.
+    ///
+    /// One stream: consume it here or through ``addressedData``, not both.
     public let datagrams: AsyncStream<MatterDatagram>
 
     public init(logger: Logger) {
         self.logger = logger
         (datagrams, continuation) = AsyncStream<MatterDatagram>.makeStream(bufferingPolicy: .unbounded)
+    }
+
+    /// ``datagrams`` as `(data, sender)`, without the path. Created on first
+    /// use; every call returns that same stream.
+    public var addressedData: AsyncStream<(Data, MatterAddress)> {
+        state.withLock { state in
+            if let stream = state.addressedData { return stream }
+            let datagrams = self.datagrams
+            let stream = AsyncStream<(Data, MatterAddress)>(bufferingPolicy: .unbounded) { continuation in
+                let pump = Task {
+                    for await datagram in datagrams { continuation.yield((datagram.data, datagram.sender)) }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in pump.cancel() }
+            }
+            state.addressedData = stream
+            return stream
+        }
     }
 
     // MARK: - Bind
@@ -51,28 +84,36 @@ public final class POSIXUDPSocketCore: Sendable {
     public func bind(port: UInt16) throws {
         try state.withLock { state in
             guard !state.closed, state.fd6 < 0 else { throw TransportError.bindFailed(EINVAL) }
+            var wake: [Int32] = [-1, -1]
+            guard pipe(&wake) == 0 else { throw TransportError.socketCreationFailed }
+
             // An ephemeral IPv6 port may be taken for IPv4: retry with a fresh one.
             let attempts = port == 0 ? 8 : 1
             var lastError: Int32 = 0
             for _ in 0..<attempts {
                 var err: Int32 = 0
                 let fd6 = cms_open_udp(AF_INET6, port, &err)
-                guard fd6 >= 0 else { throw TransportError.bindFailed(err) }
+                guard fd6 >= 0 else { lastError = err; break }
                 let shared = cms_bound_port(fd6)
                 let fd4 = cms_open_udp(AF_INET, shared, &err)
                 guard fd4 >= 0 else {
                     closeDescriptor(fd6)
                     lastError = err
                     if err == EADDRINUSE { continue }
-                    throw TransportError.bindFailed(err)
+                    break
                 }
                 state.fd6 = fd6
                 state.fd4 = fd4
-                startReceiveThread(fd: fd6, name: "matter.udp.recv6")
-                startReceiveThread(fd: fd4, name: "matter.udp.recv4")
+                state.wakeRead = wake[0]
+                state.wakeWrite = wake[1]
+                state.receiveThreads = 2
+                startReceiveThread(fd: fd6, wake: wake[0], name: "matter.udp.recv6")
+                startReceiveThread(fd: fd4, wake: wake[0], name: "matter.udp.recv4")
                 logger.info("UDP transport bound on port \(shared) (POSIX, IPv4+IPv6)")
                 return
             }
+            closeDescriptor(wake[0])
+            closeDescriptor(wake[1])
             throw TransportError.bindFailed(lastError)
         }
     }
@@ -107,9 +148,13 @@ public final class POSIXUDPSocketCore: Sendable {
     ///
     /// - Throws: ``TransportError/invalidAddress(_:)`` for a host that is not
     ///   an IP literal; ``TransportPathError/noAllowedRoute(peer:)`` when no
-    ///   allowed interface has a route; ``TransportPathError/pathUnavailable(_:errno:)``
-    ///   when the path cannot reach the peer (`EHOSTUNREACH`, `ENETUNREACH`,
-    ///   `EADDRNOTAVAIL`); ``TransportError/sendFailed(_:)`` otherwise.
+    ///   allowed interface has a route (or the host's `%zone` interface is
+    ///   gone); ``TransportPathError/pathUnavailable(_:errno:)`` when the
+    ///   pinned path cannot reach the peer — `EHOSTUNREACH`, `ENETUNREACH`,
+    ///   `EADDRNOTAVAIL`; `EINVAL` when the path's address or interface is no
+    ///   longer on the host (Linux's answer); `EAFNOSUPPORT` for a path of the
+    ///   other address family; `ENXIO` for a `%zone` interface that is gone —
+    ///   and ``TransportError/sendFailed(_:)`` otherwise.
     public func send(_ data: Data, to address: MatterAddress, via path: MatterPath?) throws -> MatterSendResult {
         let host = MatterAddress.strippingBrackets(address.host)
         guard let destination = Destination(address.host) else { throw TransportError.invalidAddress(host) }
@@ -118,9 +163,21 @@ public final class POSIXUDPSocketCore: Sendable {
         let chosen: MatterPath
         let outcome: PathSelectionOutcome?
         if let path {
+            if destination.zoneMissing {
+                logger.debug("UDP send by \(path) to \(host): its zone names no interface")
+                throw TransportPathError.pathUnavailable(path, errno: ENXIO)
+            }
+            if Self.family(of: path.localAddress) != destination.family {
+                logger.debug("UDP send by \(path) to \(host): the path is of the other address family")
+                throw TransportPathError.pathUnavailable(path, errno: EAFNOSUPPORT)
+            }
             chosen = path
             outcome = nil
         } else {
+            if destination.zoneMissing {
+                logger.debug("No route to \(host): its zone names no interface")
+                throw TransportPathError.noAllowedRoute(peer: address)
+            }
             let interfaces = POSIXInterfaces.snapshot()
             let (policy, changes) = state.withLock { state in
                 (state.monitor.policy, state.monitor.update(interfaces))
@@ -148,6 +205,8 @@ public final class POSIXUDPSocketCore: Sendable {
     private func sendPinned(_ data: Data, to destination: Destination, port: UInt16, host: String, path: MatterPath) throws {
         logger.trace("UDP send: host=\(host) port=\(port) dataLen=\(data.count) path=\(path)")
 
+        // Held across sendmsg: close() hands the descriptor to its receive thread to
+        // close, so only the lock keeps it open (not recycled) for the whole call.
         let (sent, err): (Int, Int32) = try state.withLock { state in
             let fd = destination.family == AF_INET6 ? state.fd6 : state.fd4
             guard fd >= 0 else { throw TransportError.notBound }
@@ -161,7 +220,8 @@ public final class POSIXUDPSocketCore: Sendable {
         }
 
         guard sent < 0 else { return }
-        if err == EHOSTUNREACH || err == ENETUNREACH || err == EADDRNOTAVAIL {
+        if err == EHOSTUNREACH || err == ENETUNREACH || err == EADDRNOTAVAIL
+            || (err == EINVAL && !Self.isOnHost(path)) {
             logger.debug("UDP send by \(path) to \(host):\(port) failed: errno=\(err) (\(Self.describe(err)))")
             throw TransportPathError.pathUnavailable(path, errno: err)
         }
@@ -169,49 +229,72 @@ public final class POSIXUDPSocketCore: Sendable {
         throw TransportError.sendFailed(err)
     }
 
+    /// Whether `path`'s interface is present and up and still holds its address.
+    /// Linux answers a `PKTINFO` source that is not on the host with `EINVAL`.
+    private static func isOnHost(_ path: MatterPath) -> Bool {
+        guard let interface = POSIXInterfaces.snapshot().first(where: { $0.index == path.interfaceIndex }) else {
+            return false
+        }
+        return interface.isUp && interface.addresses.contains(path.localAddress)
+    }
+
     // MARK: - Close
 
-    /// Closes both sockets (their receive threads exit) and finishes ``datagrams``.
+    /// Wakes both receive threads, which close their sockets and exit, and
+    /// finishes ``datagrams``. Sends after this throw ``TransportError/notBound``.
     public func close() {
         state.withLock { state in
             guard !state.closed else { return }
             state.closed = true
-            for fd in [state.fd6, state.fd4] where fd >= 0 {
-                // close() alone does not wake a recvmsg blocked on Linux; shutdown() does.
-                _ = shutdown(fd, Int32(SHUT_RDWR))
-                closeDescriptor(fd)
-            }
             state.fd6 = -1
             state.fd4 = -1
+            if state.wakeWrite >= 0 {
+                // The threads poll the read end: closing the write end wakes them (POLLHUP).
+                closeDescriptor(state.wakeWrite)
+                state.wakeWrite = -1
+            }
         }
         continuation.finish()
     }
 
     // MARK: - Receive
 
-    private func startReceiveThread(fd: Int32, name: String) {
-        let thread = Thread { [self] in receiveLoop(fd: fd, name: name) }
+    private func startReceiveThread(fd: Int32, wake: Int32, name: String) {
+        let thread = Thread { [self] in receiveLoop(fd: fd, wake: wake, name: name) }
         thread.name = name
         thread.qualityOfService = .userInitiated
         thread.start()
     }
 
-    private func receiveLoop(fd: Int32, name: String) {
+    /// Owns `fd`: reads it until ``close()``, then closes it. The last thread
+    /// out closes the wake pipe's read end.
+    private func receiveLoop(fd: Int32, wake: Int32, name: String) {
         var buffer = [UInt8](repeating: 0, count: 2048)
         var from = sockaddr_storage()
         var ifindex: UInt32 = 0
         var local = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        let readable = Int16(POLLIN)
 
-        while true {
+        while !state.withLock({ $0.closed }) {
+            var fds = [pollfd(fd: fd, events: readable, revents: 0),
+                       pollfd(fd: wake, events: readable, revents: 0)]
+            let ready = poll(&fds, nfds_t(fds.count), -1)
+            if ready < 0 {
+                let err = errno
+                if err == EINTR { continue }
+                logger.warning("UDP poll errno=\(err) (\(Self.describe(err)))")
+                break
+            }
+            if fds[1].revents != 0 { break }   // woken by close()
+            guard fds[0].revents != 0 else { continue }
+
             let n = buffer.withUnsafeMutableBytes { bytes in
                 cms_recv(fd, bytes.baseAddress, bytes.count, &from, &ifindex, &local, local.count)
             }
-            if n <= 0 {
-                let err = n < 0 ? errno : 0
+            if n < 0 {
+                let err = errno
                 if err == EBADF || err == EINVAL || err == ENOTSOCK { break }
-                // After close(): Linux wakes the shut-down socket with 0, never EBADF.
-                if state.withLock({ $0.closed }) { break }
-                if n < 0, err != EINTR { logger.warning("UDP recvmsg errno=\(err) (\(Self.describe(err)))") }
+                if err != EINTR && err != EAGAIN { logger.warning("UDP recvmsg errno=\(err) (\(Self.describe(err)))") }
                 continue
             }
 
@@ -221,6 +304,14 @@ public final class POSIXUDPSocketCore: Sendable {
             continuation.yield(MatterDatagram(data: Data(buffer[..<n]), sender: sender, path: path))
         }
 
+        closeDescriptor(fd)
+        state.withLock { state in
+            state.receiveThreads -= 1
+            if state.receiveThreads == 0, state.wakeRead >= 0 {
+                closeDescriptor(state.wakeRead)
+                state.wakeRead = -1
+            }
+        }
         logger.info("UDP receive loop ended (fd closed) [\(name)]")
     }
 
@@ -276,6 +367,11 @@ public final class POSIXUDPSocketCore: Sendable {
                 logger.info("Interface \(change.name) named in the Matter interface policy is available again")
             }
         }
+    }
+
+    /// The family of an address literal (IPv6 literals contain a colon).
+    private static func family(of literal: String) -> Int32 {
+        literal.contains(":") ? AF_INET6 : AF_INET
     }
 
     private static func reason(_ skip: PathSelection.Skip) -> String {
