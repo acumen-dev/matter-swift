@@ -71,16 +71,22 @@ private struct ServerPathRig {
         logs.entries.contains { $0.level == level && $0.message.contains(text) }
     }
 
-    /// Run PASE as the commissioner, each message arriving on `interface`.
-    func performPASE(arrivingOn interface: String) async throws -> (session: SecureSession, pake3: Data) {
+    /// Run PASE as the commissioner, each message arriving on `interface`, with message
+    /// counters `firstCounter`, +1, +2. `afterPBKDF` runs once the PBKDFParamResponse is in.
+    func performPASE(
+        arrivingOn interface: String,
+        firstCounter: UInt32 = 1,
+        afterPBKDF: () async throws -> Void = {}
+    ) async throws -> (session: SecureSession, pake3: Data) {
         let initiatorSessionID: UInt16 = 100
         let request = DuplicateHandlingTests.pbkdfRequest(initiatorSessionID: initiatorSessionID)
         let requestTLV = request.tlvEncode()
 
         let pbkdfIndex = try await exchange(
-            DuplicateHandlingTests.unsecuredMessage(payload: requestTLV, opcode: .pbkdfParamRequest, counter: 1),
+            DuplicateHandlingTests.unsecuredMessage(payload: requestTLV, opcode: .pbkdfParamRequest, counter: firstCounter),
             arrivingOn: interface
         )
+        try await afterPBKDF()
         let responseTLV = try DuplicateHandlingTests.unsecuredBody(endpoint.sends[pbkdfIndex].data)
         let pbkdfResponse = try PASEMessages.PBKDFParamResponse.fromTLV(responseTLV)
 
@@ -89,13 +95,13 @@ private struct ServerPathRig {
         let (proverContext, pA) = try Spake2p.proverStep1(w0: w0)
 
         let pake2Index = try await exchange(
-            DuplicateHandlingTests.unsecuredMessage(payload: PASEMessages.Pake1Message(pA: pA).tlvEncode(), opcode: .pasePake1, counter: 2),
+            DuplicateHandlingTests.unsecuredMessage(payload: PASEMessages.Pake1Message(pA: pA).tlvEncode(), opcode: .pasePake1, counter: firstCounter + 1),
             arrivingOn: interface
         )
         let pake2 = try PASEMessages.Pake2Message.fromTLV(DuplicateHandlingTests.unsecuredBody(endpoint.sends[pake2Index].data))
         let (cA, ke) = try Spake2p.proverStep2(context: proverContext, pB: pake2.pB, cB: pake2.cB, hashContext: hashContext, w1: w1)
 
-        let pake3 = DuplicateHandlingTests.unsecuredMessage(payload: PASEMessages.Pake3Message(cA: cA).tlvEncode(), opcode: .pasePake3, counter: 3)
+        let pake3 = DuplicateHandlingTests.unsecuredMessage(payload: PASEMessages.Pake3Message(cA: cA).tlvEncode(), opcode: .pasePake3, counter: firstCounter + 2)
         let statusIndex = try await exchange(pake3, arrivingOn: interface)
         let status = try StatusReportMessage.decode(from: DuplicateHandlingTests.unsecuredBody(endpoint.sends[statusIndex].data))
         try #require(status.generalStatus == .success)
@@ -235,13 +241,36 @@ struct DeviceServerPathTests {
         await rig.server.stop()
     }
 
-    @Test("A pin outlives its peer's silence only while a session uses the address")
-    func idlePinsArePruned() async throws {
+    @Test("A new handshake is answered by its own arrival path; the peer pin moves only when its session is established")
+    func newHandshakeUsesItsOwnPath() async throws {
+        let rig = ServerPathRig(routeTable: "en0")
+        try await rig.server.start()
+        let peer = rig.link.a.address.canonicalised
+        _ = try await rig.performPASE(arrivingOn: "en0")
+        #expect(await rig.server.peerPaths[peer]?.interfaceName == "en0")
+        let before = rig.endpoint.sends.count
+
+        let second = try await rig.performPASE(arrivingOn: "en1", firstCounter: 11) {
+            #expect(rig.endpoint.sends.last?.path.interfaceName == "en1", "the PBKDFParamResponse leaves by the handshake's arrival path")
+            #expect(await rig.server.peerPaths[peer]?.interfaceName == "en0", "unauthenticated traffic does not move the peer pin")
+        }
+        #expect(rig.sentInterfaces.dropFirst(before).allSatisfy { $0 == "en1" })
+        #expect(await rig.server.peerPaths[peer]?.interfaceName == "en1", "the new session inherits its handshake's path")
+        #expect(rig.logged(.info, containing: "re-pinned en0/fd48::a → en1/fd48::b (session"))
+
+        // A secured reply on the new session (arriving on en1, already the pin) leaves by en1.
+        #expect(try await rig.toggle(session: second.session, exchangeID: 0x0501, arrivingOn: "en1") == "en1")
+        await rig.server.stop()
+    }
+
+    @Test("Unsecured traffic outside a handshake creates no peer pin")
+    func strayUnsecuredCreatesNoPin() async throws {
         let rig = ServerPathRig(routeTable: "en0")
         try await rig.server.start()
         let peer = rig.link.a.address.canonicalised
 
-        // An unanswered unsecured message (an unknown opcode) pins, then idles out.
+        // An unknown opcode, then a handshake's first message: the server handles
+        // datagrams in order, so once the reply is out the stray has been processed.
         let stray = MatterMessage.encodeUnsecured(
             messageHeader: MessageHeader(sessionID: 0, messageCounter: 9),
             exchangeHeader: ExchangeHeader(
@@ -254,17 +283,33 @@ struct DeviceServerPathTests {
         )
         rig.endpoint.setArrival("en1")
         try await rig.link.a.send(stray, to: rig.link.b.address)
-        try await pollUntil { await rig.server.peerPaths[peer] != nil }
-        await rig.server.prunePeerPaths(now: .now + .seconds(60))
-        #expect(await rig.server.peerPaths[peer]?.interfaceName == "en1", "still within the idle limit")
-        await rig.server.prunePeerPaths(now: .now + MatterDeviceServer.peerPathIdleLimit + .seconds(1))
-        #expect(await rig.server.peerPaths[peer] == nil)
-
-        // Once a session uses the address, silence no longer unpins it.
-        _ = try await rig.performPASE(arrivingOn: "en1")
-        await rig.server.prunePeerPaths(now: .now + MatterDeviceServer.peerPathIdleLimit + .seconds(1))
+        _ = try await rig.performPASE(arrivingOn: "en1") {
+            #expect(await rig.server.peerPaths.isEmpty, "neither the stray nor the handshake pins the peer")
+        }
         #expect(await rig.server.peerPaths[peer]?.interfaceName == "en1")
         await rig.server.stop()
         #expect(await rig.server.peerPaths.isEmpty)
+    }
+
+    @Test("A pin outlives its peer's silence only while a session uses the address")
+    func idlePinsArePruned() async throws {
+        let rig = ServerPathRig(routeTable: "en0")
+        try await rig.server.start()
+        let sessionPeer = rig.link.a.address.canonicalised
+        let pase = try await rig.performPASE(arrivingOn: "en1")
+
+        // An authenticated message from another source address (the peer's port changed)
+        // pins that address, which no session uses.
+        let moved = MatterAddress(host: rig.link.a.address.host, port: 6000)
+        let invoke = try DuplicateHandlingTests.toggleRequest(endpointID: rig.light.endpointID, session: pase.session, exchangeID: 0x0601)
+        try await rig.link.a.send(invoke.message, to: rig.link.b.address, from: moved)
+        try await pollUntil { await rig.server.peerPaths[moved.canonicalised] != nil }
+
+        await rig.server.prunePeerPaths(now: .now + .seconds(60))
+        #expect(await rig.server.peerPaths[moved.canonicalised] != nil, "still within the idle limit")
+        await rig.server.prunePeerPaths(now: .now + MatterDeviceServer.peerPathIdleLimit + .seconds(1))
+        #expect(await rig.server.peerPaths[moved.canonicalised] == nil)
+        #expect(await rig.server.peerPaths[sessionPeer]?.interfaceName == "en1", "a session's address keeps its pin")
+        await rig.server.stop()
     }
 }
