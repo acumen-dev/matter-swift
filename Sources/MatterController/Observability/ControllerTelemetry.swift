@@ -181,6 +181,8 @@ struct ControllerMetrics: Sendable {
     let pathSelections: [PathSelectionOutcome: Counter]
     /// `<prefix>_transport_path_repins_total{reason}`: secure sessions moved to another path.
     let pathRepins: [RepinReason: Counter]
+    /// `<prefix>_case_busy_waits_total`: CASE attempts the peer answered `busy`, and that were waited out.
+    let caseBusyWaits: Counter
 
     init(prefix: String, factory: any MetricsFactory) {
         func counter(_ name: String, _ dimensions: [(String, String)] = []) -> Counter {
@@ -222,6 +224,7 @@ struct ControllerMetrics: Sendable {
         pathRepins = Dictionary(uniqueKeysWithValues: RepinReason.allCases.map { reason in
             (reason, counter("transport_path_repins_total", [("reason", reason.rawValue)]))
         })
+        caseBusyWaits = counter("case_busy_waits_total")
     }
 
     func message(_ direction: MessageDirection, protocolID: UInt16) {

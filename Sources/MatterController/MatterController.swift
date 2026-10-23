@@ -111,6 +111,14 @@ public actor MatterController {
         /// host schedules it. Production code leaves the default.
         public var discoveryClock: any MRPClock
 
+        /// The clock a CASE `busy` wait runs on: when a peer answers Sigma1 with a `busy`
+        /// StatusReport, the controller sleeps at least the time it asked for on this clock
+        /// (and checks the wait against `operationTimeout` on it). Default: `ContinuousClock()`.
+        /// MRP and the handshake's own timeouts are not on it.
+        ///
+        /// A seam for tests, as ``discoveryClock``: production code leaves the default.
+        public var retryClock: any MRPClock
+
         /// The roots and Certification Declaration signing keys device attestation is verified
         /// against during commissioning. `nil` (the default) uses
         /// `AttestationTrustStore.bundledProduction()`, the DCL production PAAs and CSA CD
@@ -154,6 +162,7 @@ public actor MatterController {
             addressRefreshTimeout: Duration = .seconds(5),
             commissionableResolveTimeout: Duration = .seconds(5),
             discoveryClock: any MRPClock = ContinuousClock(),
+            retryClock: any MRPClock = ContinuousClock(),
             attestationTrustStore: AttestationTrustStore? = nil,
             metricsLabelPrefix: String = "matter",
             metricsFactory: (any MetricsFactory)? = nil,
@@ -171,6 +180,7 @@ public actor MatterController {
             self.addressRefreshTimeout = addressRefreshTimeout
             self.commissionableResolveTimeout = commissionableResolveTimeout
             self.discoveryClock = discoveryClock
+            self.retryClock = retryClock
             self.attestationTrustStore = attestationTrustStore
             self.metricsLabelPrefix = metricsLabelPrefix
             self.metricsFactory = metricsFactory
@@ -1134,7 +1144,7 @@ public actor MatterController {
         }
         caseReservation = caseSessionID
         let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
-            let (session, path) = try await self.caseHandshakeRetryingLostPath(
+            let (session, path) = try await self.caseHandshakeHonouringBusy(
                 nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
             )
             // Inside the CASE outcome, as on the operational path: established
@@ -1703,7 +1713,7 @@ public actor MatterController {
             let session: SecureSession
             let path: MatterPath?
             do {
-                (session, path) = try await self.caseHandshakeRetryingLostPath(
+                (session, path) = try await self.caseHandshakeHonouringBusy(
                     nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
                 )
             } catch {
@@ -1715,7 +1725,7 @@ public actor MatterController {
                 self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
                 usedAddress = refreshed.address
                 do {
-                    (session, path) = try await self.caseHandshakeRetryingLostPath(
+                    (session, path) = try await self.caseHandshakeHonouringBusy(
                         nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
                     )
                 } catch {
@@ -1891,6 +1901,49 @@ public actor MatterController {
         }
     }
 
+    /// ``caseHandshakeRetryingLostPath(nodeID:address:mrp:localSessionID:context:)``, with a
+    /// `busy` Sigma1 answer honoured: wait the minimum the peer stated on
+    /// `configuration.retryClock`, then retry with a fresh Sigma1.
+    ///
+    /// One deadline (`retryClock.now + operationTimeout`, fixed here) covers the whole call;
+    /// a wait that would pass it fails at once. Three busy answers give up. Worst case per
+    /// call: 3 busy-answered attempts, each at most one lost-path retry, so 6 handshakes
+    /// (the lost-path retry sits inside the busy loop and never re-arms it).
+    private func caseHandshakeHonouringBusy(
+        nodeID: NodeID,
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        localSessionID sessionID: UInt16,
+        context: ServiceContext? = nil
+    ) async throws -> (session: SecureSession, path: MatterPath?) {
+        let clock = configuration.retryClock
+        let deadline = clock.now + configuration.operationTimeout
+        var busyAnswers = 0
+        while true {
+            do {
+                return try await caseHandshakeRetryingLostPath(
+                    nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context
+                )
+            } catch let busy as CASEBusy {
+                busyAnswers += 1
+                let ms = Int(busy.minimumWait.components.seconds * 1000
+                    + busy.minimumWait.components.attoseconds / 1_000_000_000_000_000)
+                if clock.now + busy.minimumWait > deadline {
+                    throw ControllerError.caseSessionFailed("peer busy; asked to wait \(ms) ms")
+                }
+                if busyAnswers >= Self.maxCASEBusyAttempts {
+                    throw ControllerError.caseSessionFailed("peer busy after \(Self.maxCASEBusyAttempts) attempts")
+                }
+                loggers.caseHandshake.info("Node busy; retrying CASE in \(ms) ms", metadata: .node(nodeID))
+                telemetry.metrics.caseBusyWaits.increment()
+                try await clock.sleep(until: clock.now + busy.minimumWait)
+            }
+        }
+    }
+
+    /// Busy-answered CASE attempts after which ``caseHandshakeHonouringBusy`` gives up.
+    private static let maxCASEBusyAttempts = 3
+
     /// ``caseHandshake(nodeID:address:mrp:localSessionID:context:)``, retried once at once
     /// when the path it was pinned to lost its route mid-handshake (`pathLost`): the fresh
     /// exchange selects a path afresh, so a flapped interface costs one Sigma1, not an
@@ -1940,6 +1993,20 @@ public actor MatterController {
                 payload: sigma1Data,
                 timeout: timeout
             )
+            if sigma2.protocolID == MatterProtocolID.secureChannel.rawValue,
+               sigma2.opcode == SecureChannelOpcode.statusReport.rawValue,
+               let report = try? StatusReportMessage.decode(from: sigma2.payload),
+               report.protocolID == MatterProtocolID.secureChannel.rawValue,
+               report.protocolStatus == SecureChannelStatusCode.busy.rawValue {
+                var wait: UInt16 = 0
+                if let data = report.protocolData, data.count >= 2 {
+                    let base = data.startIndex
+                    wait = UInt16(data[base]) | UInt16(data[base + 1]) << 8
+                } else {
+                    loggers.caseHandshake.debug("CASE busy StatusReport without a minimum wait; treating it as 0 ms", metadata: .node(nodeID))
+                }
+                throw CASEBusy(minimumWait: .milliseconds(Int(wait)))
+            }
             try Self.expect(sigma2, .caseSigma2, failure: ControllerError.caseSessionFailed)
 
             // Sigma2 → Sigma3 + session
@@ -2236,4 +2303,9 @@ private extension SessionType {
 
     /// The start of the info line for a failed establishment.
     var failed: String { self == .caseSession ? "CASE session failed" : "PASE failed" }
+}
+
+/// A CASE Sigma1 answered by a `busy` StatusReport: the peer asks for `minimumWait` before a retry.
+struct CASEBusy: Error {
+    let minimumWait: Duration
 }

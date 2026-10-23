@@ -40,13 +40,17 @@ func makeControllerRig(
     deviceAddress: MatterAddress? = nil,
     fabricManager: FabricManager? = nil,
     transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
-    interfaces: InterfacePolicy = .automatic
+    interfaces: InterfacePolicy = .automatic,
+    operationTimeout: Duration = .seconds(30),
+    retryClock: (any MRPClock)? = nil
 ) async throws -> ControllerRig {
     let telemetry = TestTelemetry()
     let link = FaultInjectingLink(seed: 11)
     let configuration = MatterController.Configuration(
         fabricID: FabricID(rawValue: 1),
+        operationTimeout: operationTimeout,
         mrp: mrp,
+        retryClock: retryClock ?? ContinuousClock(),
         metricsFactory: telemetry.metrics,
         tracer: telemetry.tracer,
         interfaces: interfaces
@@ -140,11 +144,14 @@ func makeTestFabric() throws -> TestFabric {
 /// `CASEProtocolHandler(fabricInfo: fabric.deviceFabric)` answers the controller's Sigma1 for real.
 func makeCASEControllerRig(
     transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
-    interfaces: InterfacePolicy = .automatic
+    interfaces: InterfacePolicy = .automatic,
+    operationTimeout: Duration = .seconds(30),
+    retryClock: (any MRPClock)? = nil
 ) async throws -> (rig: ControllerRig, fabric: TestFabric) {
     let fabric = try makeTestFabric()
     let rig = try await makeControllerRig(
-        installSession: false, fabricManager: fabric.manager, transport: transport, interfaces: interfaces
+        installSession: false, fabricManager: fabric.manager, transport: transport, interfaces: interfaces,
+        operationTimeout: operationTimeout, retryClock: retryClock
     )
     return (rig, fabric)
 }

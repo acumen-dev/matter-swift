@@ -89,6 +89,7 @@ struct TelemetryPlumbingTests {
             "acme_exchange_timeouts_total", "acme_im_requests_total", "acme_sessions_established_total",
             "acme_subscription_lost_total", "acme_resubscribes_total",
             "acme_transport_path_selections_total", "acme_transport_path_repins_total",
+            "acme_case_busy_waits_total",
         ])
         #expect(Set(metrics.timers.map(\.label)) == ["acme_im_request_duration", "acme_case_duration", "acme_report_interval"])
         let dimensionNames = Set(
