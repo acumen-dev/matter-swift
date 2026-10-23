@@ -266,8 +266,9 @@ public final class POSIXUDPSocketCore: Sendable {
         thread.start()
     }
 
-    /// Owns `fd`: reads it until ``close()``, then closes it. The last thread
-    /// out closes the wake pipe's read end.
+    /// Owns `fd`: reads it until ``close()``, then closes it. Leaving for any
+    /// other reason withdraws `fd` from sends first. The last thread out closes
+    /// the wake pipe's read end.
     private func receiveLoop(fd: Int32, wake: Int32, name: String) {
         var buffer = [UInt8](repeating: 0, count: 2048)
         var from = sockaddr_storage()
@@ -288,13 +289,19 @@ public final class POSIXUDPSocketCore: Sendable {
             if fds[1].revents != 0 { break }   // woken by close()
             guard fds[0].revents != 0 else { continue }
 
+            // Non-blocking: poll can report a datagram the kernel then drops (Linux, bad
+            // checksum), and a blocking recvmsg would then sit where the wake cannot reach.
             let n = buffer.withUnsafeMutableBytes { bytes in
-                cms_recv(fd, bytes.baseAddress, bytes.count, &from, &ifindex, &local, local.count)
+                cms_recv(fd, bytes.baseAddress, bytes.count, &from, &ifindex, &local, local.count,
+                         Int32(MSG_DONTWAIT))
             }
             if n < 0 {
                 let err = errno
                 if err == EBADF || err == EINVAL || err == ENOTSOCK { break }
-                if err != EINTR && err != EAGAIN { logger.warning("UDP recvmsg errno=\(err) (\(Self.describe(err)))") }
+                // EAGAIN / EWOULDBLOCK: nothing to read after all; back to poll.
+                if err != EINTR && err != EAGAIN && err != EWOULDBLOCK {
+                    logger.warning("UDP recvmsg errno=\(err) (\(Self.describe(err)))")
+                }
                 continue
             }
 
@@ -304,6 +311,15 @@ public final class POSIXUDPSocketCore: Sendable {
             continuation.yield(MatterDatagram(data: Data(buffer[..<n]), sender: sender, path: path))
         }
 
+        // Leaving without close(): withdraw the descriptor from sends (under the lock
+        // they hold across sendmsg) before closing it, so none can reach a recycled number.
+        let died = state.withLock { state -> Bool in
+            guard !state.closed else { return false }
+            if state.fd6 == fd { state.fd6 = -1 }
+            if state.fd4 == fd { state.fd4 = -1 }
+            return true
+        }
+        if died { logger.error("UDP receive loop died [\(name)]; its socket is closed and no longer sends") }
         closeDescriptor(fd)
         state.withLock { state in
             state.receiveThreads -= 1

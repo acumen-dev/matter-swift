@@ -46,12 +46,14 @@ ssize_t cms_send(int fd, const void *buf, size_t len,
                  const struct sockaddr *dst, socklen_t dstlen,
                  uint32_t ifindex, const char *src_literal);
 
-/// recvmsg. Fills the sender, the arrival interface index (0 if unknown) and
-/// the destination address literal (empty if unknown, never carries a zone).
+/// recvmsg with `flags` (e.g. MSG_DONTWAIT). Fills the sender, the arrival
+/// interface index (0 if unknown) and the destination address literal (empty
+/// if unknown, never carries a zone).
 /// Returns bytes received, or -1 with errno set.
 ssize_t cms_recv(int fd, void *buf, size_t len,
                  struct sockaddr_storage *from,
-                 uint32_t *ifindex, char *dst_literal, size_t dst_cap);
+                 uint32_t *ifindex, char *dst_literal, size_t dst_cap,
+                 int flags);
 
 /// Ask the kernel which source address it would use to reach `peer_literal`,
 /// optionally scoped to `ifindex` (0 = unscoped). `scope_ifindex` becomes the

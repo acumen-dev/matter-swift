@@ -76,7 +76,7 @@ struct SocketShimTests {
         #expect(sent == 1)
         var buf = [UInt8](repeating: 0, count: 16); var from = sockaddr_storage(); var ifindex: UInt32 = 0
         var dstText = [CChar](repeating: 0, count: 64)
-        let n = cms_recv(rx, &buf, 16, &from, &ifindex, &dstText, 64)
+        let n = cms_recv(rx, &buf, 16, &from, &ifindex, &dstText, 64, 0)
         #expect(n == 1)
         #expect(from.port == cms_bound_port(tx))      // the bound port, not an ephemeral one
         #expect(ifindex == lo)
@@ -100,7 +100,7 @@ struct SocketShimTests {
         #expect(sent == 1)
         var buf = [UInt8](repeating: 0, count: 16); var from = sockaddr_storage(); var ifindex: UInt32 = 0
         var dstText = [CChar](repeating: 0, count: 64)
-        let n = cms_recv(rx, &buf, 16, &from, &ifindex, &dstText, 64)
+        let n = cms_recv(rx, &buf, 16, &from, &ifindex, &dstText, 64, 0)
         #expect(n == 1)
         #expect(from.port == cms_bound_port(tx))
         #expect(ifindex == lo)

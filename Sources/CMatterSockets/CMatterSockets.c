@@ -134,7 +134,8 @@ ssize_t cms_send(int fd, const void *buf, size_t len,
 
 ssize_t cms_recv(int fd, void *buf, size_t len,
                  struct sockaddr_storage *from,
-                 uint32_t *ifindex, char *dst_literal, size_t dst_cap) {
+                 uint32_t *ifindex, char *dst_literal, size_t dst_cap,
+                 int flags) {
     struct iovec iov;
     iov.iov_base = buf;
     iov.iov_len = len;
@@ -158,7 +159,7 @@ ssize_t cms_recv(int fd, void *buf, size_t len,
     if (ifindex) *ifindex = 0;
     if (dst_literal && dst_cap > 0) dst_literal[0] = '\0';
 
-    ssize_t n = recvmsg(fd, &m, 0);
+    ssize_t n = recvmsg(fd, &m, flags);
     if (n < 0) return n;
 
     for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c)) {
