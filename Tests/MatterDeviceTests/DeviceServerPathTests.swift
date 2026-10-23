@@ -3,6 +3,7 @@
 
 import Testing
 import Foundation
+import Crypto
 import Logging
 import MatterTypes
 import MatterTransport
@@ -25,7 +26,7 @@ private struct ServerPathRig {
     let server: MatterDeviceServer
     let light: BridgedEndpoint
 
-    init(policy: InterfacePolicy = .automatic, routeTable: String? = "en0") {
+    init(policy: InterfacePolicy = .automatic, routeTable: String? = "en0", bridge: MatterBridge = MatterBridge()) {
         let peerHost = link.a.address.host
         endpoint = MultiInterfaceEndpoint(
             wrapping: link.b,
@@ -36,7 +37,6 @@ private struct ServerPathRig {
             routeTable: routeTable,
             logger: logs.logger(label: "test.transport")
         )
-        let bridge = MatterBridge()
         light = bridge.addDimmableLight(name: "Path Light", uniqueID: "path-light")
         server = MatterDeviceServer(
             bridge: bridge,
@@ -139,6 +139,112 @@ private struct ServerPathRig {
         }
         return try #require(response)
     }
+
+    /// Run CASE as the commissioner (`fabric.controller` → node 0x42) on `exchangeID`, each
+    /// message arriving on `interface`, with message counters `firstCounter` and +1.
+    /// `afterSigma2` runs once Sigma2 is in. Returns the Sigma2 and StatusReport send indices.
+    @discardableResult
+    func performCASE(
+        _ fabric: CASETestFabric,
+        arrivingOn interface: String,
+        exchangeID: UInt16,
+        firstCounter: UInt32,
+        initiatorSessionID: UInt16,
+        afterSigma2: () async throws -> Void = {}
+    ) async throws -> (sigma2: Int, status: Int) {
+        let initiator = CASEProtocolHandler(fabricInfo: fabric.controller)
+        let (sigma1, context) = initiator.createSigma1(
+            peerNodeID: fabric.device.nodeID, peerFabricID: fabric.device.fabricID,
+            peerRootPublicKey: fabric.rootKey.publicKey, initiatorSessionID: initiatorSessionID
+        )
+        let sigma2Index = try await exchange(
+            Self.caseMessage(sigma1, opcode: .caseSigma1, exchangeID: exchangeID, counter: firstCounter),
+            arrivingOn: interface
+        )
+        try await afterSigma2()
+        let sigma2 = try MatterMessage.decodeUnsecured(from: endpoint.sends[sigma2Index].data)
+        try #require(sigma2.exchangeHeader?.protocolOpcode == SecureChannelOpcode.caseSigma2.rawValue)
+        let (sigma3, _) = try initiator.handleSigma2(
+            payload: sigma2.payload, context: context, responderRCAC: fabric.device.rcac, localSessionID: initiatorSessionID
+        )
+        let statusIndex = try await exchange(
+            Self.caseMessage(sigma3, opcode: .caseSigma3, exchangeID: exchangeID, counter: firstCounter + 1),
+            arrivingOn: interface
+        )
+        // The first new send after Sigma3 may be a Sigma2 retransmission; find the report.
+        try await pollUntil {
+            endpoint.sends.dropFirst(statusIndex).contains {
+                (try? MatterMessage.decodeUnsecured(from: $0.data).exchangeHeader?.protocolOpcode) == SecureChannelOpcode.statusReport.rawValue
+            }
+        }
+        let status = try #require(endpoint.sends.indices.dropFirst(statusIndex).first {
+            (try? MatterMessage.decodeUnsecured(from: endpoint.sends[$0].data).exchangeHeader?.protocolOpcode) == SecureChannelOpcode.statusReport.rawValue
+        })
+        let report = try StatusReportMessage.decode(from: DuplicateHandlingTests.unsecuredBody(endpoint.sends[status].data))
+        try #require(report.generalStatus == .success)
+        return (sigma2Index, status)
+    }
+
+    private static func caseMessage(_ payload: Data, opcode: SecureChannelOpcode, exchangeID: UInt16, counter: UInt32) -> Data {
+        MatterMessage.encodeUnsecured(
+            messageHeader: MessageHeader(sessionID: 0, messageCounter: counter),
+            exchangeHeader: ExchangeHeader(
+                flags: ExchangeFlags(initiator: true, reliableDelivery: true),
+                protocolOpcode: opcode.rawValue,
+                exchangeID: exchangeID,
+                protocolID: MatterProtocolID.secureChannel.rawValue
+            ),
+            payload: payload
+        )
+    }
+}
+
+/// A fabric whose root signed both a commissioner NOC (node 1) and the device's (node 0x42);
+/// `store` holds the device's side as a committed fabric.
+private struct CASETestFabric {
+    let rootKey: P256.Signing.PrivateKey
+    let controller: FabricInfo
+    let device: FabricInfo
+    let store: InMemoryFabricStore
+
+    init() throws {
+        let rootKey = P256.Signing.PrivateKey()
+        self.rootKey = rootKey
+        let fabricID = FabricID(rawValue: 1)
+        let rcac = try MatterCertificate.generateRCAC(key: rootKey, fabricID: fabricID)
+        let ipk = Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+        func node(_ id: UInt64) throws -> FabricInfo {
+            let key = P256.Signing.PrivateKey()
+            let noc = try MatterCertificate.generateNOC(
+                signerKey: rootKey, issuerDN: rcac.subject, nodePublicKey: key.publicKey,
+                nodeID: NodeID(rawValue: id), fabricID: fabricID
+            )
+            return FabricInfo(
+                fabricIndex: FabricIndex(rawValue: 1), fabricID: fabricID, nodeID: NodeID(rawValue: id),
+                rcac: rcac, noc: noc, operationalKey: key, ipkEpochKey: ipk
+            )
+        }
+        let device = try node(0x42)
+        self.controller = try node(1)
+        self.device = device
+        self.store = InMemoryFabricStore(StoredDeviceState(
+            fabrics: [StoredFabric(
+                fabricIndex: 1, nocTLV: device.noc.tlvEncode(), icacTLV: nil, rcacTLV: rcac.tlvEncode(),
+                operationalKeyRaw: device.operationalKey.rawRepresentation, ipkEpochKey: ipk,
+                caseAdminSubject: 1, adminVendorId: 0xFFF1
+            )],
+            acls: [],
+            nextFabricIndex: 2
+        ))
+    }
+}
+
+/// A fabric store holding `state`; saves replace it.
+private actor InMemoryFabricStore: MatterFabricStore {
+    private var state: StoredDeviceState?
+    init(_ state: StoredDeviceState) { self.state = state }
+    func load() async throws -> StoredDeviceState? { state }
+    func save(_ state: StoredDeviceState) async throws { self.state = state }
 }
 
 /// Serialized: every test but two runs a real PASE handshake (SPAKE2+ on `BigUInt`, about
@@ -314,6 +420,45 @@ struct DeviceServerPathTests {
         await rig.server.prunePeerPaths(now: .now + MatterDeviceServer.peerPathIdleLimit + .seconds(1))
         #expect(await rig.server.peerPaths[moved.canonicalised] == nil)
         #expect(await rig.server.peerPaths[sessionPeer]?.interfaceName == "en1", "a session's address keeps its pin")
+        await rig.server.stop()
+    }
+
+    @Test("A new CASE handshake is answered by its own arrival path; the peer pin moves when Sigma3 succeeds")
+    func caseHandshakeUsesItsOwnPath() async throws {
+        let fabric = try CASETestFabric()
+        let rig = ServerPathRig(routeTable: "en0", bridge: try await MatterBridge(fabricStore: fabric.store))
+        try await rig.server.start()
+        let peer = rig.link.a.address.canonicalised
+
+        try await rig.performCASE(fabric, arrivingOn: "en0", exchangeID: 0x0701, firstCounter: 1, initiatorSessionID: 200)
+        #expect(await rig.server.peerPaths[peer]?.interfaceName == "en0")
+        let before = rig.endpoint.sends.count
+
+        let second = try await rig.performCASE(fabric, arrivingOn: "en1", exchangeID: 0x0702, firstCounter: 11, initiatorSessionID: 201) {
+            #expect(rig.endpoint.sends.last?.path.interfaceName == "en1", "Sigma2 leaves by the handshake's arrival path")
+            #expect(await rig.server.peerPaths[peer]?.interfaceName == "en0", "Sigma1 does not move the peer pin")
+        }
+        #expect(rig.endpoint.sends[second.sigma2].path.interfaceName == "en1")
+        #expect(rig.endpoint.sends[second.status].path.interfaceName == "en1")
+        #expect(rig.sentInterfaces.dropFirst(before).allSatisfy { $0 == "en1" }, "\(rig.sentInterfaces)")
+        #expect(await rig.server.peerPaths[peer]?.interfaceName == "en1", "the new CASE session inherits its handshake's path")
+        #expect(rig.logged(.info, containing: "re-pinned en0/fd48::a → en1/fd48::b (session"))
+        await rig.server.stop()
+    }
+
+    @Test("A new local address on the pinned interface re-pins, logged as an address change")
+    func addressChangeOnSameInterface() async throws {
+        let rig = ServerPathRig(routeTable: "en0")
+        try await rig.server.start()
+        let peer = rig.link.a.address.canonicalised
+        let pase = try await rig.performPASE(arrivingOn: "en0")
+        rig.endpoint.setAddresses("en0", ["fd48::c"])
+
+        #expect(try await rig.toggle(session: pase.session, exchangeID: 0x0801, arrivingOn: "en0") == "en0")
+        #expect(rig.endpoint.sends.last?.path.localAddress == "fd48::c", "the reply leaves from the address the peer sent to")
+        #expect(await rig.server.peerPaths[peer]?.localAddress == "fd48::c")
+        #expect(rig.logged(.info, containing: "address changed on en0: fd48::a → fd48::c"))
+        #expect(!rig.logged(.info, containing: "re-pinned"))
         await rig.server.stop()
     }
 }

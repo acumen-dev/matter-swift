@@ -272,6 +272,47 @@ struct MessengerPathTests {
         await rig.messenger.stop()
     }
 
+    @Test("A new local address on the pinned interface re-pins, logged as an address change")
+    func addressChangeOnSameInterface() async throws {
+        let rig = PathRig()
+        var peer = TestPeer(link: rig.link)
+        let stalePath = MatterPath(interfaceIndex: 7, interfaceName: "en0", localAddress: "fd48::9")
+        let sessions = try await rig.registerSession(path: stalePath)
+        rig.endpoint.setArrival("en0")                          // arrives as en0/fd48::a
+        try await peer.send(try ScriptedPeer.secured(
+            session: sessions.peer, exchangeID: 0x4200, initiator: true,
+            protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue,
+            payload: ReportData(subscriptionID: SubscriptionID(rawValue: 3)).tlvEncode()
+        ))
+        let ack = try await peer.nextSecured(session: sessions.peer)
+        #expect(ack.isStandaloneAck)
+        #expect(rig.sentPaths == [en0Path], "the ack leaves from the address the peer sent to")
+        #expect(await rig.messenger.path(forSession: 10) == en0Path)
+        #expect(rig.logged(.info, containing: "Session 0xA: address changed on en0: fd48::9 → fd48::a"))
+        #expect(!rig.logged(.info, containing: "re-pinned en0 → en0"))
+        #expect(rig.repins("arrival") == 1)
+        await rig.messenger.stop()
+    }
+
+    @Test("A first pin from arrival is logged at debug and not counted as a repin")
+    func firstPinIsNotARepin() async throws {
+        let rig = PathRig()
+        var peer = TestPeer(link: rig.link)
+        let sessions = try await rig.registerSession(path: nil)
+        rig.endpoint.setArrival("en1")
+        try await peer.send(try ScriptedPeer.secured(
+            session: sessions.peer, exchangeID: 0x4200, initiator: true,
+            protocolID: .interactionModel, opcode: InteractionModelOpcode.reportData.rawValue,
+            payload: ReportData(subscriptionID: SubscriptionID(rawValue: 3)).tlvEncode()
+        ))
+        _ = try await peer.nextSecured(session: sessions.peer)
+        #expect(await rig.messenger.path(forSession: 10) == en1Path)
+        #expect(rig.logged(.debug, containing: "Session 0xA pinned to en1 (traffic arrived on en1)"))
+        #expect(!rig.logged(.info, containing: "re-pinned"))
+        #expect(rig.repins("arrival") == 0)
+        await rig.messenger.stop()
+    }
+
     @Test("Arrival on an excluded interface leaves the pin")
     func excludedArrivalKeepsPin() async throws {
         let rig = PathRig(policy: InterfacePolicy(excluded: ["en1"]))
@@ -340,6 +381,10 @@ struct MessengerPathTests {
 @Suite("MatterController interface paths", .timeLimit(.minutes(5)))
 struct ControllerPathTests {
 
+    /// An operation timeout no loaded host reaches: these tests are decided by MRP and path
+    /// events, never by the 30 s default.
+    static let patientTimeout: Duration = .seconds(600)
+
     /// The dual-homed fake of ``PathRig`` around the controller's end of the link.
     private static func dualHomed(_ link: FaultInjectingLink, _ logger: Logger) -> MultiInterfaceEndpoint {
         let peerHost = link.b.address.host
@@ -362,28 +407,31 @@ struct ControllerPathTests {
             let fake = Self.dualHomed(link, logger)
             endpoint.withLock { $0 = fake }
             return fake
-        }, interfaces: policy)
+        }, interfaces: policy, operationTimeout: Self.patientTimeout, mrp: slowMRP)
         let fake = try #require(endpoint.withLock { $0 })
         var peer = TestPeer(link: rig.link)
         var seen = Set<UInt32>()
         let node = rig.node
         let establishing = Task { try await rig.controller.session(for: node) }
+        let watch = failFast(on: establishing, closing: rig.link)
+        defer { watch.cancel() }
         let sigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(fake.policy == policy)
         let (sigma2, _) = try CASEProtocolHandler(fabricInfo: fabric.deviceFabric).handleSigma1(payload: sigma1.payload, responderSessionID: 300)
         try await peer.send(ScriptedPeer.unsecuredReply(
             to: sigma1, protocolID: .secureChannel, opcode: SecureChannelOpcode.caseSigma2.rawValue,
             payload: sigma2, counter: 800
         ))
         let sigma3 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
-        // en1 can no longer be selected: an ack that left unpinned would go by en0.
-        fake.setReachable("en1", [])
+        // A fresh selection would now pick en0: an ack that left unpinned would go by en0,
+        // while every pinned frame (Sigma3's retransmits, the closing ack) still has en1.
+        await fake.setInterfacePolicy(InterfacePolicy(preferred: ["en0"]))
         try await peer.send(ScriptedPeer.unsecuredReply(
             to: sigma3, protocolID: .secureChannel, opcode: SecureChannelOpcode.statusReport.rawValue,
             payload: StatusReportMessage(generalStatus: .success, protocolID: 0, protocolStatus: 0).encode(), counter: 801
         ))
         let session = try await establishing.value
 
-        #expect(fake.policy == policy)
         #expect(rig.telemetry.counter("matter_transport_path_selections_total", [("outcome", "preferred")]) == 1,
                 "one selection for the whole handshake, its closing ack included")
         #expect(fake.sends.allSatisfy { $0.path == en1Path }, "\(fake.sends.map(\.path))")
@@ -392,6 +440,74 @@ struct ControllerPathTests {
         #expect(span.attributes.get(MatterLogKey.interface) == .string("en1"))
         #expect(span.attributes.get(MatterLogKey.localAddress) == .string("fd48::b"))
         await rig.controller.stop()
+    }
+
+    @Test("Every PASE frame leaves by the path its first frame chose, and the PASE session inherits it")
+    func paseSessionKeepsHandshakePath() async throws {
+        let endpoint = LockedValue<MultiInterfaceEndpoint?>(nil)
+        let rig = try await makeControllerRig(
+            mrp: slowMRP,
+            transport: { link, logger in
+                let fake = Self.dualHomed(link, logger)
+                endpoint.withLock { $0 = fake }
+                return fake
+            },
+            interfaces: InterfacePolicy(preferred: ["en1"]), operationTimeout: Self.patientTimeout
+        )
+        let fake = try #require(endpoint.withLock { $0 })
+        var peer = TestPeer(link: rig.link)
+        var seen = Set<UInt32>()
+        let address = rig.link.b.address
+        let commissioning = Task { try await rig.controller.commission(address: address, setupCode: 20202021) }
+        let watch = failFast(on: commissioning, closing: rig.link)
+        defer { watch.cancel() }
+
+        let pbkdf = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(pbkdf.exchangeHeader.protocolOpcode == SecureChannelOpcode.pbkdfParamRequest.rawValue)
+        // From here a fresh selection would pick en0; only the handshake's pin keeps en1.
+        await fake.setInterfacePolicy(InterfacePolicy(preferred: ["en0"]))
+        let request = try PASEMessages.PBKDFParamRequest.fromTLV(pbkdf.payload)
+        let salt = Data(repeating: 0xBB, count: 16)
+        let response = PASEMessages.PBKDFParamResponse(
+            initiatorRandom: request.initiatorRandom, responderRandom: Data(repeating: 0xCC, count: 32),
+            responderSessionID: 200, iterations: 1000, salt: salt
+        ).tlvEncode()
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: pbkdf, protocolID: .secureChannel, opcode: SecureChannelOpcode.pbkdfParamResponse.rawValue,
+            payload: response, counter: 900
+        ))
+
+        let pake1Frame = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(pake1Frame.exchangeHeader.protocolOpcode == SecureChannelOpcode.pasePake1.rawValue)
+        let pake1 = try PASEMessages.Pake1Message.fromTLV(pake1Frame.payload)
+        let verifier = try Spake2p.computeVerifier(passcode: 20202021, salt: salt, iterations: 1000)
+        let hashContext = Spake2p.computeHashContext(pbkdfParamRequest: pbkdf.payload, pbkdfParamResponse: response)
+        let (verifierContext, pB, cB) = try Spake2p.verifierStep1(pA: pake1.pA, verifier: verifier, hashContext: hashContext)
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: pake1Frame, protocolID: .secureChannel, opcode: SecureChannelOpcode.pasePake2.rawValue,
+            payload: PASEMessages.Pake2Message(pB: pB, cB: cB).tlvEncode(), counter: 901
+        ))
+
+        let pake3Frame = try await nextNewUnsecuredFrame(&peer, seen: &seen)
+        #expect(pake3Frame.exchangeHeader.protocolOpcode == SecureChannelOpcode.pasePake3.rawValue)
+        _ = try Spake2p.verifierStep2(context: verifierContext, cA: PASEMessages.Pake3Message.fromTLV(pake3Frame.payload).cA)
+        try await peer.send(ScriptedPeer.unsecuredReply(
+            to: pake3Frame, protocolID: .secureChannel, opcode: SecureChannelOpcode.statusReport.rawValue,
+            payload: StatusReportMessage(generalStatus: .success, protocolID: 0, protocolStatus: 0).encode(), counter: 902
+        ))
+
+        // The first frame on the PASE session (ArmFailSafe) is secured: it follows the three
+        // handshake frames and the handshake's closing ack.
+        while try MessageHeader.decode(from: try await peer.nextDatagram()).0.sessionID != 200 {}
+        let paseSessionID = request.initiatorSessionID
+        #expect(await rig.controller.messenger.path(forSession: paseSessionID) == en1Path)
+        #expect(fake.sends.count >= 4)
+        #expect(fake.sends.allSatisfy { $0.path == en1Path }, "\(fake.sends.map(\.path))")
+        #expect(rig.telemetry.counter("matter_transport_path_selections_total", [("outcome", "preferred")]) == 1,
+                "one selection for the handshake; the session inherits it")
+        watch.cancel()
+        await rig.controller.stop()
+        _ = await commissioning.result
     }
 
     @Test("A session whose re-selection finds no allowed route is invalidated, as for a silent peer")
@@ -425,13 +541,16 @@ struct ControllerPathTests {
         let stale = MatterAddress(host: "10.0.0.9", port: 5540)
         let discovery = InMemoryDiscovery { _ in moved }
         let endpoint = LockedValue<MultiInterfaceEndpoint?>(nil)
+        // The operation timeout is far beyond fastMRP's give-up, so a loaded host cannot turn
+        // the expected peerUnreachable into a timeout.
         let rig = try await makeControllerRig(
             mrp: fastMRP, discovery: discovery, installSession: false, deviceAddress: stale,
             transport: { link, logger in
                 let fake = Self.dualHomed(link, logger)      // reaches 10.0.0.2 only
                 endpoint.withLock { $0 = fake }
                 return fake
-            }
+            },
+            operationTimeout: Self.patientTimeout
         )
         let fake = try #require(endpoint.withLock { $0 })
         let name = OperationalInstanceName(
@@ -459,15 +578,25 @@ struct ControllerPathTests {
             fake.setRouteTable("en1")
             endpoint.withLock { $0 = fake }
             return fake
-        })
+        }, operationTimeout: Self.patientTimeout)
         let fake = try #require(endpoint.withLock { $0 })
+        // en1 loses its route the moment the first Sigma1 is on the wire, so its first
+        // retransmission (whenever MRP sends it) finds no route on en1.
+        let flipped = LockedValue(false)
+        rig.link.setInterceptor { _, side in
+            if side == .a, flipped.withLock({ let first = !$0; $0 = true; return first }) {
+                fake.setReachable("en1", [])
+            }
+            return .deliver(after: .zero)
+        }
         var peer = TestPeer(link: rig.link)
         var seen = Set<UInt32>()
         let node = rig.node
         let establishing = Task { try await rig.controller.session(for: node) }
+        let watch = failFast(on: establishing, closing: rig.link)
+        defer { watch.cancel() }
         let lostSigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
         #expect(fake.sends.first?.path == en1Path)
-        fake.setReachable("en1", [])                         // the retransmission finds no route on en1
 
         let sigma1 = try await nextNewUnsecuredFrame(&peer, seen: &seen)
         #expect(sigma1.exchangeHeader.exchangeID != lostSigma1.exchangeHeader.exchangeID, "a fresh handshake")

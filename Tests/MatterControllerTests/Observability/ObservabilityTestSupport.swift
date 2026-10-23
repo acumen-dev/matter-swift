@@ -146,14 +146,38 @@ func makeCASEControllerRig(
     transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
     interfaces: InterfacePolicy = .automatic,
     operationTimeout: Duration = .seconds(30),
-    retryClock: (any MRPClock)? = nil
+    retryClock: (any MRPClock)? = nil,
+    mrp: MRPConfig = .default
 ) async throws -> (rig: ControllerRig, fabric: TestFabric) {
     let fabric = try makeTestFabric()
     let rig = try await makeControllerRig(
-        installSession: false, fabricManager: fabric.manager, transport: transport, interfaces: interfaces,
+        mrp: mrp, installSession: false, fabricManager: fabric.manager, transport: transport, interfaces: interfaces,
         operationTimeout: operationTimeout, retryClock: retryClock
     )
     return (rig, fabric)
+}
+
+/// Retransmission far slower than any test reply (60 s, one retransmission): a test's
+/// answers never race MRP, and nothing gives up while the test is still answering.
+let slowMRP = MRPConfig(
+    peer: MRPParameters(sessionIdleInterval: .seconds(60), sessionActiveInterval: .seconds(60)),
+    maxRetransmissions: 1
+)
+
+/// Watches `task` (the operation under test) while the test scripts the peer: if it ends
+/// with an error first, records the error and closes the peer's end of `link`, so a pending
+/// ``nextNewUnsecuredFrame(_:seen:)`` throws at once instead of waiting out the time limit.
+/// Cancel the watch before awaiting an expected failure, and when the test is done.
+func failFast<T: Sendable>(
+    on task: Task<T, any Error>,
+    closing link: FaultInjectingLink,
+    sourceLocation: SourceLocation = #_sourceLocation
+) -> Task<Void, Never> {
+    Task {
+        guard case .failure(let error) = await task.result, !Task.isCancelled else { return }
+        Issue.record("The operation under test ended before the test was done: \(error)", sourceLocation: sourceLocation)
+        await link.b.close()
+    }
 }
 
 // MARK: - Needles
