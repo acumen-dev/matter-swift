@@ -198,16 +198,30 @@ extension ControllerMessenger {
         }
         let old = entry.path
         entry.path = arrival
-        sessionLogger.info(
-            "Session \(session) re-pinned \(old?.interfaceName ?? "none") → \(arrival.interfaceName) (traffic arrived on \(arrival.interfaceName))",
-            metadata: Self.pathMetadata(arrival).merging([
-                MatterLogKey.session: MatterLogValue.hex(sessionID),
-                MatterLogKey.reason: "arrival",
-            ]) { $1 }
-        )
-        if old != nil {
-            telemetry.metrics.pathRepins[.arrival]?.increment()
+        let metadata = Self.pathMetadata(arrival).merging([
+            MatterLogKey.session: MatterLogValue.hex(sessionID),
+            MatterLogKey.reason: "arrival",
+        ]) { $1 }
+        guard let old else {
+            // A first pin, not a move: nothing to count.
+            sessionLogger.debug(
+                "Session \(session) pinned to \(arrival.interfaceName) (traffic arrived on \(arrival.interfaceName))",
+                metadata: metadata
+            )
+            return
         }
+        if old.interfaceIndex == arrival.interfaceIndex, old.interfaceName == arrival.interfaceName {
+            sessionLogger.info(
+                "Session \(session): address changed on \(arrival.interfaceName): \(old.localAddress) → \(arrival.localAddress)",
+                metadata: metadata
+            )
+        } else {
+            sessionLogger.info(
+                "Session \(session) re-pinned \(old.interfaceName) → \(arrival.interfaceName) (traffic arrived on \(arrival.interfaceName))",
+                metadata: metadata
+            )
+        }
+        telemetry.metrics.pathRepins[.arrival]?.increment()
     }
 
     // MARK: - Metadata

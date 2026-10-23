@@ -1883,10 +1883,19 @@ public actor MatterDeviceServer {
         peerPaths[peer] = path
         peerPathsUsed[peer] = ContinuousClock.now
         if let old, old != path {
-            logger.info("Peer \(address) re-pinned \(old) → \(path) (session \(sessionID) established)")
+            logger.info("\(Self.repinText(peer: address, from: old, to: path)) (session \(sessionID) established)")
         } else {
             logger.debug("Peer \(address) pinned to \(path) (session \(sessionID) established)")
         }
+    }
+
+    /// `Peer <address> re-pinned en0/a → en1/b`, or `Peer <address>: address changed on
+    /// en1: a → b` when only the local address moved on the same interface.
+    private static func repinText(peer address: MatterAddress, from old: MatterPath, to new: MatterPath) -> String {
+        if old.interfaceIndex == new.interfaceIndex, old.interfaceName == new.interfaceName {
+            return "Peer \(address): address changed on \(new.interfaceName): \(old.localAddress) → \(new.localAddress)"
+        }
+        return "Peer \(address) re-pinned \(old) → \(new)"
     }
 
     /// An authenticated, de-duplicated message from `address` arrived on `arrival`. An
@@ -1902,7 +1911,11 @@ public actor MatterDeviceServer {
         }
         peerPaths[peer] = arrival
         peerPathsUsed[peer] = ContinuousClock.now
-        logger.info("Peer \(address) re-pinned \(old.map { "\($0)" } ?? "none") → \(arrival)")
+        if let old {
+            logger.info("\(Self.repinText(peer: address, from: old, to: arrival))")
+        } else {
+            logger.debug("Peer \(address) pinned to \(arrival) (traffic arrived on \(arrival.interfaceName))")
+        }
     }
 
     private func notePeerActivity(_ address: MatterAddress) {

@@ -66,6 +66,15 @@ public final class MultiInterfaceEndpoint: MatterUDPTransport, Sendable {
         }
     }
 
+    /// Replace `name`'s addresses; its first is the local address of paths on it.
+    public func setAddresses(_ name: String, _ addresses: [String]) {
+        state.withLock { state in
+            if let i = state.interfaces.firstIndex(where: { $0.snapshot.name == name }) {
+                state.interfaces[i].snapshot.addresses = addresses
+            }
+        }
+    }
+
     public func setRouteTable(_ name: String?) {
         state.withLock { $0.routeTable = name }
     }
