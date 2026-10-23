@@ -1143,9 +1143,10 @@ public actor MatterController {
             throw ControllerError.caseSessionFailed("No free local session ID")
         }
         caseReservation = caseSessionID
+        var busyBudget = CASEBusyBudget(clock: configuration.retryClock, timeout: configuration.operationTimeout)
         let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
             let (session, path) = try await self.caseHandshakeHonouringBusy(
-                nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
+                nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext, budget: &busyBudget
             )
             // Inside the CASE outcome, as on the operational path: established
             // means handshake and registration.
@@ -1709,12 +1710,14 @@ public actor MatterController {
         defer { sessionCache.releaseSessionID(sessionID) }
 
         return try await instrumentedCASE(nodeID: nodeID, context: context) { caseContext in
+            var busyBudget = CASEBusyBudget(clock: self.configuration.retryClock, timeout: self.configuration.operationTimeout)
             var usedAddress = address
             let session: SecureSession
             let path: MatterPath?
             do {
                 (session, path) = try await self.caseHandshakeHonouringBusy(
-                    nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
+                    nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext,
+                    budget: &busyBudget
                 )
             } catch {
                 let original = Self.operationalError(error, nodeID: nodeID)
@@ -1726,7 +1729,8 @@ public actor MatterController {
                 usedAddress = refreshed.address
                 do {
                     (session, path) = try await self.caseHandshakeHonouringBusy(
-                        nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
+                        nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext,
+                        budget: &busyBudget
                     )
                 } catch {
                     throw Self.operationalError(error, nodeID: nodeID)
@@ -1905,44 +1909,43 @@ public actor MatterController {
     /// `busy` Sigma1 answer honoured: wait the minimum the peer stated on
     /// `configuration.retryClock`, then retry with a fresh Sigma1.
     ///
-    /// One deadline (`retryClock.now + operationTimeout`, fixed here) covers the whole call;
-    /// a wait that would pass it fails at once. Three busy answers give up. Worst case per
-    /// call: 3 busy-answered attempts, each at most one lost-path retry, so 6 handshakes
-    /// (the lost-path retry sits inside the busy loop and never re-arms it).
+    /// `budget` belongs to one establishment and is shared by its attempts (first and
+    /// post-refresh): one deadline (`retryClock.now + operationTimeout`, fixed when the budget
+    /// is made) and one busy count. A wait that would pass the deadline fails at once; the
+    /// fourth busy answer (three waited retries) gives up. Worst case per establishment: 4
+    /// busy-answered attempts per handshake call, each with at most one lost-path retry (it
+    /// sits inside the busy loop and never re-arms it), but the budget is shared, so across
+    /// both calls of `establishCASESession` there are at most 4 busy answers: at most 8
+    /// handshakes while busy, plus one non-busy failed attempt's lost-path pair.
     private func caseHandshakeHonouringBusy(
         nodeID: NodeID,
         address: MatterAddress,
         mrp: MRPParameters?,
         localSessionID sessionID: UInt16,
-        context: ServiceContext? = nil
+        context: ServiceContext? = nil,
+        budget: inout CASEBusyBudget
     ) async throws -> (session: SecureSession, path: MatterPath?) {
-        let clock = configuration.retryClock
-        let deadline = clock.now + configuration.operationTimeout
-        var busyAnswers = 0
         while true {
             do {
                 return try await caseHandshakeRetryingLostPath(
                     nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context
                 )
             } catch let busy as CASEBusy {
-                busyAnswers += 1
+                budget.busyAnswers += 1
                 let ms = Int(busy.minimumWait.components.seconds * 1000
                     + busy.minimumWait.components.attoseconds / 1_000_000_000_000_000)
-                if clock.now + busy.minimumWait > deadline {
+                if budget.clock.now + busy.minimumWait > budget.deadline {
                     throw ControllerError.caseSessionFailed("peer busy; asked to wait \(ms) ms")
                 }
-                if busyAnswers >= Self.maxCASEBusyAttempts {
-                    throw ControllerError.caseSessionFailed("peer busy after \(Self.maxCASEBusyAttempts) attempts")
+                if budget.busyAnswers >= CASEBusyBudget.maxAttempts {
+                    throw ControllerError.caseSessionFailed("peer busy after \(CASEBusyBudget.maxAttempts) attempts")
                 }
                 loggers.caseHandshake.info("Node busy; retrying CASE in \(ms) ms", metadata: .node(nodeID))
                 telemetry.metrics.caseBusyWaits.increment()
-                try await clock.sleep(until: clock.now + busy.minimumWait)
+                try await budget.clock.sleep(until: budget.clock.now + busy.minimumWait)
             }
         }
     }
-
-    /// Busy-answered CASE attempts after which ``caseHandshakeHonouringBusy`` gives up.
-    private static let maxCASEBusyAttempts = 3
 
     /// ``caseHandshake(nodeID:address:mrp:localSessionID:context:)``, retried once at once
     /// when the path it was pinned to lost its route mid-handshake (`pathLost`): the fresh
@@ -2308,4 +2311,20 @@ private extension SessionType {
 /// A CASE Sigma1 answered by a `busy` StatusReport: the peer asks for `minimumWait` before a retry.
 struct CASEBusy: Error {
     let minimumWait: Duration
+}
+
+/// What one CASE establishment may spend on a peer answering `busy`: a deadline fixed at its
+/// start and a count of busy answers, shared by all its handshake attempts.
+struct CASEBusyBudget {
+    /// Busy-answered attempts after which the establishment gives up (three waited retries).
+    static let maxAttempts = 4
+
+    let clock: any MRPClock
+    let deadline: ContinuousClock.Instant
+    var busyAnswers = 0
+
+    init(clock: any MRPClock, timeout: Duration) {
+        self.clock = clock
+        deadline = clock.now + timeout
+    }
 }
