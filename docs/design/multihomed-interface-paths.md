@@ -1,6 +1,6 @@
 # Multi-homed hosts: interface policy and per-peer path pinning
 
-Status: approved design, 2026-10-23. Spans swift-matter and acumen-matter.
+Status: implemented (2026-10-23). Spans swift-matter and acumen-matter.
 
 ## Problem
 
@@ -166,8 +166,9 @@ A Sigma1 answered by a StatusReport with Secure Channel protocol status `busy` (
 carries a little-endian `uint16` minimum wait in milliseconds in `protocolData`.
 `caseHandshake` raises an internal `peerBusy(minimumWait:)`; `establishCASESession`
 waits at least that long on `MatterController.Configuration.retryClock`, then retries with a
-fresh Sigma1, at most three times. The retry count and the `operationTimeout` deadline are one
-budget per establishment, shared by its first and post-address-refresh attempts. A wait that would pass `operationTimeout` fails instead with
+fresh Sigma1, at most three times. The retry count and the `operationTimeout` deadline are
+one budget per establishment, shared by its first and post-address-refresh attempts. A wait
+that would pass `operationTimeout` fails instead with
 `caseSessionFailed("peer busy; asked to wait N ms")`. Each wait is logged at info. A
 missing or short `protocolData` is treated as a 0 ms wait (logged at debug).
 
