@@ -21,6 +21,8 @@ let fastMRP = MRPConfig(
 /// A controller on `link.a` with test telemetry injected (logger label `test.controller`),
 /// mirrored sessions 10 (controller) / 20 (peer), and node 0x42 known at `link.b` (or
 /// `deviceAddress`), with session 10 as its operational session unless `installSession` is false.
+/// `transport`, when given, wraps `link.a` (with a logger into the same capture); `interfaces`
+/// is the controller's interface policy.
 struct ControllerRig {
     let telemetry: TestTelemetry
     let link: FaultInjectingLink
@@ -36,21 +38,29 @@ func makeControllerRig(
     discovery: any MatterDiscovery = MockDiscovery(),
     installSession: Bool = true,
     deviceAddress: MatterAddress? = nil,
-    fabricManager: FabricManager? = nil
+    fabricManager: FabricManager? = nil,
+    transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
+    interfaces: InterfacePolicy = .automatic,
+    operationTimeout: Duration = .seconds(30),
+    retryClock: (any MRPClock)? = nil
 ) async throws -> ControllerRig {
     let telemetry = TestTelemetry()
     let link = FaultInjectingLink(seed: 11)
     let configuration = MatterController.Configuration(
         fabricID: FabricID(rawValue: 1),
+        operationTimeout: operationTimeout,
         mrp: mrp,
+        retryClock: retryClock ?? ContinuousClock(),
         metricsFactory: telemetry.metrics,
-        tracer: telemetry.tracer
+        tracer: telemetry.tracer,
+        interfaces: interfaces
     )
+    let controllerTransport = transport?(link, telemetry.logger(label: "test.transport")) ?? link.a
     let logger = telemetry.logger(label: "test.controller")
     let controller: MatterController
     if let fabricManager {
         controller = try MatterController(
-            transport: link.a,
+            transport: controllerTransport,
             discovery: discovery,
             configuration: configuration,
             stored: StoredControllerState(
@@ -60,7 +70,7 @@ func makeControllerRig(
         )
     } else {
         controller = try MatterController(
-            transport: link.a,
+            transport: controllerTransport,
             discovery: discovery,
             configuration: configuration,
             logger: logger
@@ -132,10 +142,42 @@ func makeTestFabric() throws -> TestFabric {
 
 /// A rig whose controller is on a ``TestFabric``, with no session installed: a
 /// `CASEProtocolHandler(fabricInfo: fabric.deviceFabric)` answers the controller's Sigma1 for real.
-func makeCASEControllerRig() async throws -> (rig: ControllerRig, fabric: TestFabric) {
+func makeCASEControllerRig(
+    transport: ((FaultInjectingLink, Logger) -> any MatterUDPTransport)? = nil,
+    interfaces: InterfacePolicy = .automatic,
+    operationTimeout: Duration = .seconds(30),
+    retryClock: (any MRPClock)? = nil,
+    mrp: MRPConfig = .default
+) async throws -> (rig: ControllerRig, fabric: TestFabric) {
     let fabric = try makeTestFabric()
-    let rig = try await makeControllerRig(installSession: false, fabricManager: fabric.manager)
+    let rig = try await makeControllerRig(
+        mrp: mrp, installSession: false, fabricManager: fabric.manager, transport: transport, interfaces: interfaces,
+        operationTimeout: operationTimeout, retryClock: retryClock
+    )
     return (rig, fabric)
+}
+
+/// Retransmission far slower than any test reply (60 s, one retransmission): a test's
+/// answers never race MRP, and nothing gives up while the test is still answering.
+let slowMRP = MRPConfig(
+    peer: MRPParameters(sessionIdleInterval: .seconds(60), sessionActiveInterval: .seconds(60)),
+    maxRetransmissions: 1
+)
+
+/// Watches `task` (the operation under test) while the test scripts the peer: if it ends
+/// with an error first, records the error and closes the peer's end of `link`, so a pending
+/// ``nextNewUnsecuredFrame(_:seen:)`` throws at once instead of waiting out the time limit.
+/// Cancel the watch before awaiting an expected failure, and when the test is done.
+func failFast<T: Sendable>(
+    on task: Task<T, any Error>,
+    closing link: FaultInjectingLink,
+    sourceLocation: SourceLocation = #_sourceLocation
+) -> Task<Void, Never> {
+    Task {
+        guard case .failure(let error) = await task.result, !Task.isCancelled else { return }
+        Issue.record("The operation under test ended before the test was done: \(error)", sourceLocation: sourceLocation)
+        await link.b.close()
+    }
 }
 
 // MARK: - Needles

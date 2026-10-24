@@ -15,27 +15,31 @@ let testPeerParameters = MRPParameters(
     sessionActiveThreshold: .milliseconds(4000)
 )
 
-/// A messenger on endpoint `a` of `link`, zero jitter, on `clock`; with `telemetry`, its
-/// metrics, tracer and a `test.messenger` logger.
+/// A messenger on endpoint `a` of `link` (or on `transport`, when given), zero jitter, on
+/// `clock`, under `interfaces`; with `telemetry`, its metrics, tracer and a `test.messenger` logger.
 func makeMessenger(
     link: FaultInjectingLink,
     clock: ManualClock,
     peer: MRPParameters = testPeerParameters,
     maxRetransmissions: Int = 4,
-    telemetry: TestTelemetry? = nil
+    telemetry: TestTelemetry? = nil,
+    transport: (any MatterUDPTransport)? = nil,
+    interfaces: InterfacePolicy = .automatic
 ) -> ControllerMessenger {
+    let transport = transport ?? link.a
     var configuration = ControllerMessenger.Configuration()
     configuration.mrp = MRPConfig(peer: peer, maxRetransmissions: maxRetransmissions)
+    configuration.interfaces = interfaces
     guard let telemetry else {
         return ControllerMessenger(
-            transport: link.a, localNodeID: NodeID(rawValue: 1), configuration: configuration,
+            transport: transport, localNodeID: NodeID(rawValue: 1), configuration: configuration,
             clock: clock, jitterSource: { 0 }
         )
     }
     configuration.metricsFactory = telemetry.metrics
     configuration.tracer = telemetry.tracer
     return ControllerMessenger(
-        transport: link.a, localNodeID: NodeID(rawValue: 1), configuration: configuration,
+        transport: transport, localNodeID: NodeID(rawValue: 1), configuration: configuration,
         clock: clock, jitterSource: { 0 }, logger: telemetry.logger(label: "test.messenger")
     )
 }

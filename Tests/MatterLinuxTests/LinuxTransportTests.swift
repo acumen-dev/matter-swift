@@ -174,8 +174,8 @@ struct MatterLinuxTests {
     func udpLoopback() async throws {
         // Use two separate transports so the receive stream isn't consuming its
         // own sends.  Bind both to ephemeral ports (port 0) so tests are
-        // independent of any fixed port.  Use IPv4 loopback; the dual-stack
-        // AF_INET6 socket accepts it via IPv4-mapped IPv6 internally.
+        // independent of any fixed port.  Use IPv4 loopback, which the
+        // transport's AF_INET socket carries.
         let receiver = LinuxUDPTransport()
         try await receiver.bind(port: 0)
         let receiverPort = await receiver.boundPort() ?? 15541
@@ -246,21 +246,6 @@ struct MatterLinuxTests {
         await receiver.close()
 
         #expect(received == MatterAddress(host: "127.0.0.1", port: UInt16(senderPort)))
-    }
-
-    @Test("Only IPv4-mapped addresses are rewritten; IPv6 and IPv4 pass through")
-    func matterAddressCanonicalisation() throws {
-        let mapped = try SocketAddress(ipAddress: "::ffff:192.168.1.5", port: 5540)
-        #expect(MatterDatagramHandler.matterAddress(mapped) == MatterAddress(host: "192.168.1.5", port: 5540))
-
-        let v4 = try SocketAddress(ipAddress: "10.0.0.7", port: 5540)
-        #expect(MatterDatagramHandler.matterAddress(v4) == MatterAddress(host: "10.0.0.7", port: 5540))
-
-        let loopback6 = try SocketAddress(ipAddress: "::1", port: 5540)
-        #expect(MatterDatagramHandler.matterAddress(loopback6) == MatterAddress(host: "::1", port: 5540))
-
-        let linkLocal = try SocketAddress(ipAddress: "fe80::1", port: 5540)
-        #expect(MatterDatagramHandler.matterAddress(linkLocal)?.host == linkLocal.ipAddress)
     }
 
     // MARK: - MatterAddress / SocketAddress conversion

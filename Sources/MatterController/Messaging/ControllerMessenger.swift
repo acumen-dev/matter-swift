@@ -28,7 +28,21 @@ import MatterTransport
 ///   bytes and the peer de-duplicates — nothing here re-encodes a request;
 /// - every reliable message received is acknowledged: piggybacked on the next
 ///   message of its exchange, otherwise standalone after the standalone-ack
-///   timeout, or at once when the exchange closes.
+///   timeout, or at once when the exchange closes;
+/// - every frame leaves by a pinned path (``sendPinned(_:to:key:queuedPath:fromOwner:)``): an
+///   exchange we open (PASE, CASE) is pinned by its first send, which lets
+///   the transport select under ``Configuration/interfaces``, and every later
+///   frame of it — Sigma3, acks, MRP copies — leaves the same way; a secure
+///   session carries its handshake's path (``SessionEntry/path``). Only a
+///   message that decrypted and passed counter de-duplication moves a
+///   session's pin (to the allowed interface it arrived on); unsecured
+///   traffic never moves one;
+/// - a pinned path that loses its route re-selects for a secure session (the
+///   message authenticates from any source) and fails an unsecured exchange
+///   at once with ``MessagingError/pathLost(_:_:)``. When no allowed interface
+///   has a route, an exchange with a reliable message outstanding fails with
+///   ``MessagingError/noAllowedRoute(_:peer:)`` rather than leaving MRP to
+///   retransmit into nothing.
 ///
 /// ``stop()`` is terminal: a transport's receive stream is consumed once.
 public actor ControllerMessenger {
@@ -52,6 +66,10 @@ public actor ControllerMessenger {
         public var metricsFactory: (any MetricsFactory)? = nil
         /// Tracer for exchange spans; nil uses `InstrumentationSystem.tracer` at creation.
         public var tracer: (any Tracer)? = nil
+        /// Which interfaces traffic may leave by: pushed into the transport once, at
+        /// ``ControllerMessenger/start()``, before any send; also decides which arrival
+        /// paths a session may re-pin to.
+        public var interfaces: InterfacePolicy = .automatic
 
         public init() {}
     }
@@ -67,6 +85,9 @@ public actor ControllerMessenger {
         var peerAddress: MatterAddress
         var mrp: MRPParameters?
         var dedup = CounterDeduplication(encrypted: true)
+        /// The path every frame of the session leaves by; nil until a send selects one (or
+        /// when the transport cannot tell).
+        var path: MatterPath?
     }
 
     struct Waiter {
@@ -81,6 +102,12 @@ public actor ControllerMessenger {
         let bytes: Data
         let address: MatterAddress
         let note: String
+        /// The exchange the frame belongs to, whose pinned path it leaves by.
+        let key: ExchangeKey?
+        /// The exchange's pinned path when the frame was queued: it still leaves by it
+        /// if the exchange is forgotten before the frame is sent (the ack `close()`
+        /// flushes, a frame behind a failure in the same batch).
+        let path: MatterPath?
     }
 
     /// How far ahead the timer parks when nothing is pending. It always
@@ -144,6 +171,13 @@ public actor ControllerMessenger {
     var isStopped = false
     /// `matter.exchange` spans of exchanges opened with a context, until the owner closes them.
     var exchangeSpans: [ExchangeKey: any Span] = [:]
+    /// The path each unsecured exchange is pinned to: chosen by the first send of one we
+    /// opened, or the (allowed) arrival path of one the peer opened. Secure exchanges use
+    /// their session's ``SessionEntry/path``.
+    var exchangePaths: [ExchangeKey: MatterPath] = [:]
+    /// Pushes ``Configuration/interfaces`` into the transport; every send waits for it, so
+    /// the first selection already follows the policy. Nil once it has been awaited.
+    var policyApplied: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -186,11 +220,16 @@ public actor ControllerMessenger {
     public func start() {
         guard !isStarted, !isStopped else { return }
         isStarted = true
-        let stream = transport.receive()
+        let transport = self.transport
+        let policy = configuration.interfaces
+        let applying = Task.detached { await transport.setInterfacePolicy(policy) }
+        policyApplied = applying
+        let stream = transport.receiveDatagrams()
         receiveTask = Task.detached { [weak self] in
-            for await (data, sender) in stream {
+            await applying.value
+            for await datagram in stream {
                 guard let self else { return }
-                await self.handleDatagram(data, from: sender)
+                await self.handleDatagram(datagram.data, from: datagram.sender, path: datagram.path)
             }
             await self?.receiveLoopEnded()
         }
@@ -222,6 +261,7 @@ public actor ControllerMessenger {
         closing.removeAll()
         ephemeralNodeIDs.removeAll()
         peerEphemeralNodeIDs.removeAll()
+        exchangePaths.removeAll()
         for span in exchangeSpans.values { span.end() }
         exchangeSpans.removeAll()
     }
@@ -305,18 +345,20 @@ public actor ControllerMessenger {
         if reliable {
             try manager.trackTransmission(key, message: bytes, now: clock.now)
         }
-        recordFrame(.outbound, key: key, header: header, counter: counter)
+        recordFrame(.outbound, key: key, header: header, counter: counter, path: pinnedPath(for: key))
         recordExchangeEvent(key, "send", attributes: Self.counterAttributes(counter))
         // State is final: arm the timer before suspending in the send.
         rearmTimer()
         do {
-            try await transport.send(bytes, to: address)
+            try await sendPinned(bytes, to: address, key: key, fromOwner: true)
         } catch where reliable {
             transportLogger.warning(
                 "Send on exchange \(key.exchangeID) to \(MatterLogValue.address(address)) failed; MRP will retransmit: \(error)",
                 metadata: Self.exchangeMetadata(key).merging([MatterLogKey.reason: "send_failed"]) { $1 }
             )
         }
+        // A path failure ends the exchange inside `sendPinned`; its owner hears of it now.
+        if let error = failed[key] { throw error }
     }
 
     func receive(_ key: ExchangeKey, timeout: Duration) async throws -> InboundMessage {
@@ -391,12 +433,22 @@ public actor ControllerMessenger {
         }
     }
 
+    /// The path exchange `key` is pinned to: its session's for a secure
+    /// exchange, its own for an unsecured one; nil when none is pinned yet.
+    func pinnedPath(for key: ExchangeKey) -> MatterPath? {
+        switch key.scope {
+        case .unsecured: return exchangePaths[key]
+        case .secured(let localSessionID): return sessions[localSessionID]?.path
+        }
+    }
+
     /// Forget an exchange entirely.
     func removeExchange(_ key: ExchangeKey) {
         manager.close(key)
         closing.remove(key)
         ephemeralNodeIDs[key] = nil
         peerEphemeralNodeIDs[key] = nil
+        exchangePaths[key] = nil
         endExchangeSpan(key, failing: nil)
     }
 
@@ -408,14 +460,15 @@ public actor ControllerMessenger {
 
     // MARK: - Receive path
 
-    func handleDatagram(_ data: Data, from sender: MatterAddress) async {
+    /// `path` is the path the datagram arrived on, nil when the transport cannot tell.
+    func handleDatagram(_ data: Data, from sender: MatterAddress, path: MatterPath? = nil) async {
         guard !isStopped else { return }
         // Transports report senders as inet_ntop writes them; canonicalise
         // anyway, so a key never depends on which transport produced it.
         let sender = sender.canonicalised
         var outgoing: [Outgoing] = []
         do {
-            try process(data, from: sender, now: clock.now, into: &outgoing)
+            try process(data, from: sender, arrival: path, now: clock.now, into: &outgoing)
         } catch {
             logger.debug("Dropping datagram from \(MatterLogValue.address(sender)): \(error)", metadata: [
                 MatterLogKey.reason: "undecodable",
@@ -426,8 +479,17 @@ public actor ControllerMessenger {
     }
 
     /// Everything a datagram changes, synchronously; sends are queued in
-    /// `outgoing` and performed by the caller afterwards.
-    func process(_ data: Data, from sender: MatterAddress, now: ContinuousClock.Instant, into outgoing: inout [Outgoing]) throws {
+    /// `outgoing` and performed by the caller afterwards. `arrival` is the
+    /// path it arrived on: it pins a peer-initiated unsecured exchange, and
+    /// moves a secure session's pin only once the message has authenticated
+    /// and passed de-duplication.
+    func process(
+        _ data: Data,
+        from sender: MatterAddress,
+        arrival: MatterPath? = nil,
+        now: ContinuousClock.Instant,
+        into outgoing: inout [Outgoing]
+    ) throws {
         let (messageHeader, headerLength) = try MessageHeader.decode(from: data)
         let scope: SessionScope
         let exchangeHeader: ExchangeHeader
@@ -466,6 +528,9 @@ public actor ControllerMessenger {
                 ])
                 entry.peerAddress = sender
             }
+            if verdict == .accepted, let arrival, arrival != entry.path {
+                repinOnArrival(&entry, sessionID: messageHeader.sessionID, arrival: arrival)
+            }
             sessions[messageHeader.sessionID] = entry
         } else {
             logger.trace("Dropping message for unknown session \(messageHeader.sessionID) from \(MatterLogValue.address(sender))", metadata: [
@@ -501,7 +566,7 @@ public actor ControllerMessenger {
         }
 
         manager.recordReceived(scope: scope, now: now)
-        recordFrame(.inbound, key: key, header: exchangeHeader, counter: counter)
+        recordFrame(.inbound, key: key, header: exchangeHeader, counter: counter, path: arrival)
         let wasClosing = closing.contains(key)
         var acknowledgedOurs = false
         if let acked = exchangeHeader.acknowledgedMessageCounter {
@@ -567,6 +632,10 @@ public actor ControllerMessenger {
         manager.open(key, peerAddress: peerAddress, config: mrpConfig(for: parameters(for: scope)), now: now)
         if case .unsecured = scope, let peerEphemeral = messageHeader.sourceNodeID {
             peerEphemeralNodeIDs[key] = peerEphemeral
+        }
+        if case .unsecured = scope, let arrival, configuration.interfaces.allows(arrival.interfaceName) {
+            // The peer's handshake: answer from the address and interface it came in on.
+            exchangePaths[key] = arrival
         }
         responderKeys.insert(key)
         if requiresAck { recordOwedAck(key, counter: counter, now: now, into: &outgoing) }
@@ -715,7 +784,7 @@ public actor ControllerMessenger {
                     ]) { $1 }
                 )
                 recordExchangeEvent(key, "retransmit", attributes: [MatterLogKey.attempt: .int64(Int64(attempt))])
-                outgoing.append(Outgoing(bytes: message, address: address, note: "retransmission on exchange \(key.exchangeID)"))
+                outgoing.append(Outgoing(bytes: message, address: address, note: "retransmission on exchange \(key.exchangeID)", key: key, path: pinnedPath(for: key)))
             case .exhausted where closing.contains(key):
                 // The owner already closed the exchange; nobody to tell.
                 telemetry.metrics.mrpGiveUps.increment()
@@ -782,7 +851,7 @@ public actor ControllerMessenger {
     func transmit(_ outgoing: [Outgoing]) async {
         for item in outgoing {
             do {
-                try await transport.send(item.bytes, to: item.address)
+                try await sendPinned(item.bytes, to: item.address, key: item.key, queuedPath: item.path)
             } catch {
                 transportLogger.warning("Send failed (\(item.note)) to \(MatterLogValue.address(item.address)): \(error)", metadata: [
                     MatterLogKey.reason: "send_failed",
@@ -806,8 +875,8 @@ public actor ControllerMessenger {
         do {
             let (bytes, counter) = try encode(header, payload: Data(), key: key, inbound: inbound)
             telemetry.metrics.message(.outbound, protocolID: header.protocolID)
-            mrpLogger.trace("standalone ack", metadata: frameMetadata(key: key, header: header, counter: counter))
-            return Outgoing(bytes: bytes, address: address, note: "standalone ack \(ackCounter)")
+            mrpLogger.trace("standalone ack", metadata: frameMetadata(key: key, header: header, counter: counter, path: pinnedPath(for: key)))
+            return Outgoing(bytes: bytes, address: address, note: "standalone ack \(ackCounter)", key: key, path: pinnedPath(for: key))
         } catch {
             mrpLogger.warning("Cannot encode standalone ack on exchange \(key.exchangeID): \(error)", metadata: Self.exchangeMetadata(key))
             return nil
@@ -911,21 +980,24 @@ public actor ControllerMessenger {
         span.addEvent(SpanEvent(name: name, attributes: attributes()))
     }
 
-    /// Count one frame sent or received, and trace it: `send|receive <secured|unsecured> I= R=`.
-    func recordFrame(_ direction: MessageDirection, key: ExchangeKey, header: ExchangeHeader, counter: UInt32?) {
+    /// Count one frame sent or received, and trace it: `send|receive <secured|unsecured> I= R=`,
+    /// with the path it leaves by (when pinned) or arrived on (when the transport tells).
+    func recordFrame(_ direction: MessageDirection, key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, path: MatterPath? = nil) {
         telemetry.metrics.message(direction, protocolID: header.protocolID)
         let verb = direction == .outbound ? "send" : "receive"
         logger.trace(
             "\(verb) \(Self.scopeName(key.scope)) I=\(header.flags.initiator ? 1 : 0) R=\(header.flags.reliableDelivery ? 1 : 0)",
-            metadata: frameMetadata(key: key, header: header, counter: counter)
+            metadata: frameMetadata(key: key, header: header, counter: counter, path: path)
         )
     }
 
     /// The static frame metadata plus, on a secure session, its peer's `matter.node` (none
-    /// for a PASE session, whose peer has no operational node ID yet). Call it only inside a
-    /// log call's metadata autoclosure.
-    func frameMetadata(key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, reason: String? = nil) -> Logger.Metadata {
+    /// for a PASE session, whose peer has no operational node ID yet), and `path` as
+    /// `matter.interface` / `matter.local_address`. Call it only inside a log call's
+    /// metadata autoclosure.
+    func frameMetadata(key: ExchangeKey, header: ExchangeHeader, counter: UInt32?, reason: String? = nil, path: MatterPath? = nil) -> Logger.Metadata {
         var metadata = Self.frameMetadata(key: key, header: header, counter: counter, reason: reason)
+        if let path { metadata.merge(Self.pathMetadata(path)) { $1 } }
         if case .secured(let localSessionID) = key.scope,
            let peer = sessions[localSessionID]?.session.peerNodeID, peer != .unspecified {
             metadata[MatterLogKey.node] = MatterLogValue.hex(peer.rawValue)

@@ -48,4 +48,11 @@ public enum MessagingError: Error, Sendable, Equatable {
     /// A different secure session is already registered under this local
     /// session ID.
     case sessionIDInUse(UInt16)
+    /// The path an unsecured exchange (a handshake) was pinned to lost its
+    /// route; the exchange failed at once, since changing the source address
+    /// mid-handshake breaks it anyway.
+    case pathLost(ExchangeKey, MatterPath)
+    /// No allowed interface has a route to `peer`; the exchange's reliable
+    /// message was not retransmitted into nothing.
+    case noAllowedRoute(ExchangeKey, peer: MatterAddress)
 }

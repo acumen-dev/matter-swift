@@ -38,6 +38,8 @@ The controller generates a root CA key pair automatically and manages fabric cre
 | `discoveryTimeout` | 30s | How long to search for a commissionable device when commissioning from a setup code; also `discoverDevice(nodeID:timeout:)`'s default |
 | `commissionableResolveTimeout` | 5s | How long that search waits for any one advertisement to resolve before skipping it |
 | `addressRefreshTimeout` | 5s | How long a CASE attempt that got no answer waits to re-resolve the device's address (see below) |
+| `interfaces` | `.automatic` | Which network interfaces Matter traffic may use on a multi-homed host (see Multi-homed hosts) |
+| `retryClock` | `ContinuousClock()` | The clock a CASE `busy` wait runs on; a test seam |
 | `metricsLabelPrefix` | `matter` | Prefix of every metric label (`<prefix>_controller_messages_total`, ...) |
 | `metricsFactory` | `nil` | Metrics backend; `nil` uses `MetricsSystem.factory` as it is when the controller is created |
 | `tracer` | `nil` | Tracer for spans; `nil` uses `InstrumentationSystem.tracer` as it is when the controller is created |
@@ -433,6 +435,55 @@ These never appear in a log message, metadata value, span attribute or span even
 - Controller CASE session resumption is not implemented, so every `matter_sessions_established_total{type="case"}` is a full handshake.
 - Device-side logging (the bridge and its handlers) is unchanged and does not use these keys, metrics or spans. The device path through `SecureMessageCodec` uses its default `matter.protocol.codec` logger.
 - The UDP transports (`matter.apple.udp`, `matter.linux.udp`) and mDNS keep their own loggers, with no `matter.subsystem`.
+
+## Multi-homed hosts
+
+A host with more than one interface on the same network (Ethernet and Wi-Fi, say) lets the kernel choose the source address and interface of every datagram. If the route to a device moves between interfaces mid-handshake, the device sees a message from an address it is not expecting and ignores it. The controller avoids this by pinning each exchange to one path.
+
+Set `Configuration.interfaces` to an `InterfacePolicy`:
+
+```swift
+let controller = try MatterController(
+    transport: AppleUDPTransport(),
+    discovery: AppleDiscovery(),
+    configuration: .init(
+        fabricID: FabricID(rawValue: 1),
+        interfaces: InterfacePolicy(preferred: ["en0"], excluded: ["utun3"])
+    )
+)
+```
+
+The policy is an order, not an allow-list: the controller uses the first preferred interface that has a route to the device, falls through to the route table's choice when it has none, and logs that it did. Interfaces you do not name stay usable. Only `excluded` is a hard limit. See <doc:PlatformTransport> for the full selection rules.
+
+### What is pinned, and when it moves
+
+- A PASE or CASE handshake is pinned to the path its first message chose. Every later frame on it (Sigma3, acknowledgements, retransmissions) uses that path, and unauthenticated traffic never moves it.
+- The session that handshake establishes inherits the path.
+- A session re-pins only when a message that decrypted and passed counter de-duplication arrives by a different path: another allowed interface, or another local address on the same interface. A datagram arriving on an excluded interface never moves the pin. A session that had no pin and takes one from an arrival is not counted as a re-pin.
+- If the pinned path loses its route (`TransportPathError.pathUnavailable`), a session re-selects and resends. A handshake in flight fails at once, because changing source mid-handshake breaks it anyway, and a CASE attempt that hit it is retried once straight away on a fresh selection.
+- If no allowed interface has a route (`noAllowedRoute`), the controller treats the device as unreachable: the session is invalidated and the device's address re-resolved.
+
+Device-side, `MatterDeviceServer.Config.interfaces` applies the same rules as a responder: a handshake is pinned to the arrival path of its first message, the session inherits it, and replies leave from the address the peer sent to.
+
+### What an operator sees
+
+| Signal | Level / type | Meaning |
+|---|---|---|
+| `en1 preferred, no route to fdf3:...; using en0` style line (`Path to <host>: ...; using <interface> (<address>)`) | info, `transport` | A send passed over a preferred interface |
+| `Interface <name> named in the Matter interface policy is down` / `missing` / `available again` | warning / info, `transport` | A named interface's state; logged when the policy is applied and when it changes, never per send |
+| `Session 0x1a2b re-pinned en1 → en0 (traffic arrived on en0)` | info, `session` | Re-pin on authenticated arrival |
+| `Session 0x1a2b: address changed on en0: fd48::a → fd48::c` | info, `session` | Re-pin on authenticated arrival at a new local address of the same interface |
+| `Session 0x1a2b: en1 lost its route to <address>; re-selecting`, then `re-pinned to ...` | info, `session` | Route lost; the session moved |
+| `CASE path en1 lost its route to <address>; retrying on a fresh selection` | info, `case` | A handshake restarted after losing its path |
+| `matter_transport_path_selections_total{outcome}` | counter | Sends that chose their path: `preferred`, `fallthrough` or `route_table` |
+| `matter_transport_path_repins_total{reason}` | counter | Sessions moved: `arrival` or `route_lost` |
+| `matter_case_busy_waits_total` | counter | CASE attempts the peer answered `busy` and that were waited out |
+
+The chosen path is also recorded as `matter.interface` and `matter.local_address` on the CASE span and in trace-level send and receive logs. The metric labels use `metricsLabelPrefix`.
+
+### CASE busy
+
+A device that is already running a CASE handshake may answer Sigma1 with a StatusReport of `busy`, carrying a minimum wait in milliseconds. The controller waits at least that long on `Configuration.retryClock`, then retries with a fresh Sigma1. It waits at most three times per establishment, and that budget, with the `operationTimeout` deadline, is shared with the address-refresh retry. A wait that would pass `operationTimeout` fails instead with `ControllerError.caseSessionFailed("peer busy; asked to wait N ms")`. A StatusReport with no wait time is treated as a wait of zero. Each wait is logged at info. Tests inject a manual clock as `retryClock`; production code leaves the default.
 
 ## Device Discovery
 

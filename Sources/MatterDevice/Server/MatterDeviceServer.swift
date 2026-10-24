@@ -63,6 +63,11 @@ public actor MatterDeviceServer {
         /// PBKDF2 iteration count (1000-100000).
         public let iterations: Int
 
+        /// Which network interfaces the server may reply through on a multi-homed host.
+        /// Each peer is answered by the path its traffic arrived on, when that interface
+        /// is allowed; `.automatic` lets the route table decide otherwise.
+        public let interfaces: InterfacePolicy
+
         public init(
             discriminator: UInt16 = 3840,
             passcode: UInt32 = 20202021,
@@ -71,7 +76,8 @@ public actor MatterDeviceServer {
             productId: UInt16 = 0x8000,
             deviceName: String = "Matter Bridge",
             salt: Data? = nil,
-            iterations: Int = 1000
+            iterations: Int = 1000,
+            interfaces: InterfacePolicy = .automatic
         ) {
             self.discriminator = discriminator
             self.passcode = passcode
@@ -81,6 +87,7 @@ public actor MatterDeviceServer {
             self.deviceName = deviceName
             self.salt = salt
             self.iterations = iterations
+            self.interfaces = interfaces
         }
     }
 
@@ -115,12 +122,27 @@ public actor MatterDeviceServer {
     /// Wire bytes of each handshake reply, keyed by the request it answered,
     /// so an MRP retransmission of that request (same counter) is answered
     /// byte-for-byte. Bounded to the most recent `unsecuredReplyLimit`.
-    private var unsecuredReplies: [UnsecuredRequestKey: Data] = [:]
+    private var unsecuredReplies: [UnsecuredRequestKey: StoredReply] = [:]
     private var unsecuredReplyOrder: [UnsecuredRequestKey] = []
     private static let unsecuredReplyLimit = 32
 
     /// Established sessions keyed by local session ID.
     private var sessions: [UInt16: SessionEntry] = [:]
+
+    /// The path each peer's secured traffic is answered by, keyed by canonical address.
+    /// Created when a session is established (inheriting its handshake's path), moved
+    /// only by an authenticated arrival elsewhere or by route loss; unsecured traffic
+    /// never creates or moves one (a handshake keeps its own path, on its state). Per
+    /// peer address rather than per session, since a session's address is fixed when it
+    /// is established. See ``send(_:to:)`` and ``prunePeerPaths(now:)``.
+    private(set) var peerPaths: [MatterAddress: MatterPath] = [:]
+
+    /// When each ``peerPaths`` entry was last used (a datagram from or to the peer).
+    private var peerPathsUsed: [MatterAddress: ContinuousClock.Instant] = [:]
+
+    /// How long a pin outlives its peer's last datagram when no session or handshake
+    /// uses that address: past the slowest MRP retransmission gap of a handshake reply.
+    static let peerPathIdleLimit: Duration = .seconds(120)
 
     /// Operational instance name advertised after AddNOC but before CommissioningComplete.
     ///
@@ -271,7 +293,8 @@ public actor MatterDeviceServer {
             }
         }
 
-        // Bind UDP transport
+        // Bind UDP transport, under the interface policy replies follow
+        await transport.setInterfacePolicy(config.interfaces)
         try await transport.bind(port: config.port)
 
         // Set initial window state based on fabric count.
@@ -322,7 +345,10 @@ public actor MatterDeviceServer {
         await transport.close()
 
         paseHandshakes.removeAll()
+        caseHandshakes.removeAll()
         sessions.removeAll()
+        peerPaths.removeAll()
+        peerPathsUsed.removeAll()
         unsecuredReplies.removeAll()
         unsecuredReplyOrder.removeAll()
 
@@ -332,13 +358,13 @@ public actor MatterDeviceServer {
     // MARK: - Receive Loop
 
     private func receiveLoop() async {
-        let stream = transport.receive()
-        for await (data, sender) in stream {
+        let stream = transport.receiveDatagrams()
+        for await datagram in stream {
             guard !Task.isCancelled else { break }
             do {
-                try await handleDatagram(data, from: sender)
+                try await handleDatagram(datagram.data, from: datagram.sender, arrival: datagram.path)
             } catch {
-                logger.warning("Error handling datagram from \(sender): \(error)")
+                logger.warning("Error handling datagram from \(datagram.sender): \(error)")
             }
         }
         logger.debug("Receive loop exited")
@@ -355,6 +381,8 @@ public actor MatterDeviceServer {
             }
 
             let now = Date()
+
+            prunePeerPaths(now: ContinuousClock.now)
 
             // Check commissioning window expiry
             if bridge.commissioningState.checkWindowExpiry(now: now) {
@@ -398,7 +426,7 @@ public actor MatterDeviceServer {
                     guard let firstChunk = chunks.first else { continue }
 
                     // Store context BEFORE sending — the StatusResponse for
-                    // chunk 1 can arrive during the `await transport.send()` suspension,
+                    // chunk 1 can arrive during the `await send()` suspension,
                     // and `handleSecuredMessage` needs the entry to exist at that point.
                     // For single-chunk reports, store an empty context so the final
                     // StatusResponse is handled by the chunked report handler and ACK'd.
@@ -423,7 +451,7 @@ public actor MatterDeviceServer {
                         sourceNodeID: NodeID(rawValue: 0)
                     )
 
-                    try await transport.send(encrypted, to: entry.address)
+                    try await send(encrypted, to: entry.address)
                     await bridge.reportSent(subscriptionID: report.subscriptionID)
                     logger.debug("Sent subscription report \(report.subscriptionID) chunk 1/\(chunks.count) to \(entry.address)")
                 } catch {
@@ -466,7 +494,7 @@ public actor MatterDeviceServer {
                 switch decision {
                 case .send(let message, let address, _):
                     do {
-                        try await transport.send(message, to: address)
+                        try await send(message, to: address)
                         logger.trace("MRP retransmit on exchange \(key.exchangeID) to \(address)")
                     } catch {
                         logger.warning("MRP retransmit failed on exchange \(key.exchangeID): \(error)")
@@ -502,12 +530,14 @@ public actor MatterDeviceServer {
 
     // MARK: - Datagram Handling
 
-    private func handleDatagram(_ data: Data, from sender: MatterAddress) async throws {
+    private func handleDatagram(_ data: Data, from sender: MatterAddress, arrival: MatterPath?) async throws {
         let (header, headerConsumed) = try MessageHeader.decode(from: data)
         let remaining = Data(data.suffix(from: headerConsumed))
 
         if header.isUnsecured {
-            try await handleUnsecuredMessage(header: header, payload: remaining, from: sender)
+            // A handshake is answered by the path its own first message arrived on; an
+            // unauthenticated message never creates or moves a peer's pin.
+            try await handleUnsecuredMessage(header: header, payload: remaining, from: sender, arrival: arrival)
         } else if let groupID = header.destinationGroupID, header.securityFlags.sessionType == .group {
             // Group-addressed message (DSIZ = 0x02, session type = group).
             // Route to all member endpoints — no response is sent for group messages (spec §4.16.2).
@@ -518,6 +548,7 @@ public actor MatterDeviceServer {
                     rawData: data,
                     session: entry.session,
                     address: sender,
+                    arrival: arrival,
                     fabricIndex: entry.fabricIndex
                 )
             } catch {
@@ -617,7 +648,8 @@ public actor MatterDeviceServer {
     private func handleUnsecuredMessage(
         header: MessageHeader,
         payload: Data,
-        from sender: MatterAddress
+        from sender: MatterAddress,
+        arrival: MatterPath?
     ) async throws {
         let (exchangeHeader, exchConsumed) = try ExchangeHeader.decode(from: payload)
         let body = Data(payload.suffix(from: exchConsumed))
@@ -648,7 +680,7 @@ public actor MatterDeviceServer {
         // recoverable.
         let requestKey = UnsecuredRequestKey(peer: sender, exchangeID: exchangeHeader.exchangeID, messageCounter: header.messageCounter)
         if let reply = unsecuredReplies[requestKey] {
-            try await transport.send(reply, to: sender)
+            _ = try await sendHandshakeFrame(reply.message, to: sender, via: reply.path)
             logger.trace("Replayed stored reply to \(opcode) on exchange \(exchangeHeader.exchangeID) counter=\(header.messageCounter)")
             return
         }
@@ -659,7 +691,8 @@ public actor MatterDeviceServer {
         case .pbkdfParamRequest:
             try await handlePBKDFParamRequest(body, exchangeID: exchangeHeader.exchangeID,
                                               messageCounter: header.messageCounter,
-                                              initiatorNodeID: header.sourceNodeID, from: sender)
+                                              initiatorNodeID: header.sourceNodeID, from: sender,
+                                              arrival: arrival)
         case .pasePake1:
             try await handlePake1(body, exchangeID: exchangeHeader.exchangeID,
                                   messageCounter: header.messageCounter,
@@ -671,7 +704,8 @@ public actor MatterDeviceServer {
         case .caseSigma1:
             try await handleSigma1(body, exchangeID: exchangeHeader.exchangeID,
                                    messageCounter: header.messageCounter,
-                                   initiatorNodeID: header.sourceNodeID, from: sender)
+                                   initiatorNodeID: header.sourceNodeID, from: sender,
+                                   arrival: arrival)
         case .caseSigma3:
             try await handleSigma3(body, exchangeID: exchangeHeader.exchangeID,
                                    messageCounter: header.messageCounter,
@@ -694,7 +728,8 @@ public actor MatterDeviceServer {
         exchangeID: UInt16,
         messageCounter: UInt32,
         initiatorNodeID: NodeID?,
-        from sender: MatterAddress
+        from sender: MatterAddress,
+        arrival: MatterPath?
     ) async throws {
         // Duplicate detection: if Apple Home retransmits (because it didn't get an MRP ACK),
         // resend the original response using the stored TLV — don't regenerate new random data.
@@ -760,7 +795,8 @@ public actor MatterDeviceServer {
             responderSessionID: responderSessionID,
             pbkdfParamRequestData: requestTLV,
             pbkdfParamResponseData: responseTLV,
-            initiatorNodeID: initiatorNodeID
+            initiatorNodeID: initiatorNodeID,
+            path: handshakePath(arrival)
         )
 
         let message = buildUnsecuredMessage(
@@ -895,6 +931,7 @@ public actor MatterDeviceServer {
             address: sender,
             fabricIndex: fabricIndex
         )
+        inheritHandshakePath(handshake.path, peer: sender, sessionID: handshake.responderSessionID)
 
         paseHandshakes.removeValue(forKey: exchangeID)
 
@@ -921,7 +958,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter, path: handshake.path)
         logger.info("PASE session established: local=\(handshake.responderSessionID) peer=\(handshake.initiatorSessionID)")
 
         // Record the interface the commissioner used so CASE address resolution is
@@ -942,7 +979,8 @@ public actor MatterDeviceServer {
         exchangeID: UInt16,
         messageCounter: UInt32,
         initiatorNodeID: NodeID?,
-        from sender: MatterAddress
+        from sender: MatterAddress,
+        arrival: MatterPath?
     ) async throws {
         logger.info("CASE Sigma1 received from \(sender) on exchange \(exchangeID)")
 
@@ -986,7 +1024,8 @@ public actor MatterDeviceServer {
             handlerContext: handshakeCtx,
             fabricInfo: fabricInfo,
             initiatorNodeID: initiatorNodeID,
-            sigma2Payload: sigma2Data
+            sigma2Payload: sigma2Data,
+            path: handshakePath(arrival)
         )
 
         let message = buildUnsecuredMessage(
@@ -1039,6 +1078,7 @@ public actor MatterDeviceServer {
             address: sender,
             fabricIndex: handshake.fabricInfo.fabricIndex
         )
+        inheritHandshakePath(handshake.path, peer: sender, sessionID: session.localSessionID)
 
         caseHandshakes.removeValue(forKey: exchangeID)
 
@@ -1058,7 +1098,7 @@ public actor MatterDeviceServer {
             destinationNodeID: handshake.initiatorNodeID
         )
 
-        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter)
+        try await sendUnsecuredReply(message, to: sender, exchangeID: exchangeID, requestCounter: messageCounter, path: handshake.path)
         logger.info("CASE session established: local=\(handshake.responderSessionID) fabric=\(handshake.fabricInfo.fabricIndex)")
     }
 
@@ -1331,6 +1371,7 @@ public actor MatterDeviceServer {
         rawData: Data,
         session: SecureSession,
         address: MatterAddress,
+        arrival: MatterPath?,
         fabricIndex: FabricIndex
     ) async throws {
         let (msgHeader, exchangeHeader, payload) = try SecureMessageCodec.decode(
@@ -1353,6 +1394,12 @@ public actor MatterDeviceServer {
             }
             return
         }
+
+        // Authenticated and new: the peer is answered by the path this arrived on.
+        if let arrival {
+            repinOnArrival(address, arrival: arrival)
+        }
+        notePeerActivity(address)
 
         // Peer activity selects SAI over SII for this session's retransmissions
         // (the old fixed 300 ms base is now 330 ms while the peer is active).
@@ -1474,7 +1521,7 @@ public actor MatterDeviceServer {
                     // the last chunk and the final StatusResponse is ACK'd on
                     // the next iteration.
                     pendingChunkedReports[exchangeHeader.exchangeID] = context
-                    try await transport.send(encrypted, to: address)
+                    try await send(encrypted, to: address)
                 } else if context.isComplete && !context.trailingResponses.isEmpty {
                     // All chunks already sent — this StatusResponse acknowledges
                     // the final chunk. Now send trailing responses (SubscribeResponse)
@@ -1501,7 +1548,7 @@ public actor MatterDeviceServer {
                             message: encrypted,
                             peerAddress: address
                         )
-                        try await transport.send(encrypted, to: address)
+                        try await send(encrypted, to: address)
                     }
                 } else {
                     // All chunks delivered, no trailing responses — send standalone ACK
@@ -1522,7 +1569,7 @@ public actor MatterDeviceServer {
                             session: session,
                             sourceNodeID: NodeID(rawValue: 0)
                         )
-                        try await transport.send(encrypted, to: address)
+                        try await send(encrypted, to: address)
                         logger.trace("[CHUNK-FLOW] Sent standalone ACK for final StatusResponse on exchange \(exchangeHeader.exchangeID)")
                     }
                 }
@@ -1566,7 +1613,7 @@ public actor MatterDeviceServer {
                         message: encrypted,
                         peerAddress: address
                     )
-                    try await transport.send(encrypted, to: address)
+                    try await send(encrypted, to: address)
                 }
 
                 // If no response was sent but we owe an ACK, send a standalone ACK.
@@ -1585,7 +1632,7 @@ public actor MatterDeviceServer {
                         session: session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
-                    try await transport.send(encrypted, to: address)
+                    try await send(encrypted, to: address)
                 }
 
             case .chunkedReport(var context):
@@ -1626,7 +1673,7 @@ public actor MatterDeviceServer {
                         message: encrypted,
                         peerAddress: address
                     )
-                    try await transport.send(encrypted, to: address)
+                    try await send(encrypted, to: address)
                 }
             }
         } else if exchangeHeader.protocolID == MatterProtocolID.secureChannel.rawValue {
@@ -1654,7 +1701,7 @@ public actor MatterDeviceServer {
                         session: session,
                         sourceNodeID: NodeID(rawValue: 0)
                     )
-                    try await transport.send(encrypted, to: address)
+                    try await send(encrypted, to: address)
                     logger.trace("Sent trailing \(trailingOpcode) on exchange \(exchangeHeader.exchangeID) after StandaloneAck")
                 }
             }
@@ -1697,22 +1744,39 @@ public actor MatterDeviceServer {
         return message
     }
 
-    /// Send a handshake reply and keep its exact bytes for replay to a
-    /// retransmission of the same request (see ``unsecuredReplies``).
+    /// Send a handshake reply by its handshake's path and keep its exact bytes, and the
+    /// path it left by, for replay to a retransmission of the same request (see
+    /// ``unsecuredReplies``).
+    ///
+    /// - Parameter path: the handshake's path when its state is already gone (the final
+    ///   StatusReport); otherwise the live handshake on `exchangeID` from `sender` supplies
+    ///   it, and takes the path this send used (a selection, or a re-selection after the
+    ///   path lost its route).
     private func sendUnsecuredReply(
         _ message: Data,
         to sender: MatterAddress,
         exchangeID: UInt16,
-        requestCounter: UInt32
+        requestCounter: UInt32,
+        path explicitPath: MatterPath? = nil
     ) async throws {
+        let path = explicitPath ?? liveHandshakePath(exchangeID: exchangeID, sender: sender)
         let key = UnsecuredRequestKey(peer: sender, exchangeID: exchangeID, messageCounter: requestCounter)
-        if unsecuredReplies.updateValue(message, forKey: key) == nil {
+        if unsecuredReplies.updateValue(StoredReply(message: message, path: path), forKey: key) == nil {
             unsecuredReplyOrder.append(key)
             if unsecuredReplyOrder.count > Self.unsecuredReplyLimit {
                 unsecuredReplies.removeValue(forKey: unsecuredReplyOrder.removeFirst())
             }
         }
-        try await transport.send(message, to: sender)
+        let used = try await sendHandshakeFrame(message, to: sender, via: path)
+        if let used, used != path {
+            unsecuredReplies[key] = StoredReply(message: message, path: used)
+            if paseHandshakes[exchangeID]?.sender == sender {
+                paseHandshakes[exchangeID]?.path = used
+            }
+            if caseHandshakes[exchangeID]?.sender == sender {
+                caseHandshakes[exchangeID]?.path = used
+            }
+        }
     }
 
     /// Acknowledge a received secured message on its exchange with a
@@ -1736,7 +1800,149 @@ public actor MatterDeviceServer {
             session: session,
             sourceNodeID: NodeID(rawValue: 0)
         )
-        try await transport.send(encrypted, to: address)
+        try await send(encrypted, to: address)
+    }
+
+    // MARK: - Paths
+
+    /// The way a session's datagram leaves: to `address` by the peer's pinned path,
+    /// selecting (and pinning) one when it has none. A pinned path that lost its route is
+    /// dropped and re-selected once. No allowed route is logged and thrown (callers log
+    /// send failures).
+    private func send(_ data: Data, to address: MatterAddress) async throws {
+        let peer = address.canonicalised
+        let result = try await transmit(data, to: address, via: peerPaths[peer]) { lost in
+            if peerPaths[peer] == lost {
+                peerPaths[peer] = nil
+            }
+            // Another send or an arrival may have re-pinned the peer meanwhile.
+            return peerPaths[peer]
+        }
+        // A send that selected its path pins it, unless the peer was pinned meanwhile
+        // (the first pin holds).
+        if let result, result.selection != nil, peerPaths[peer] == nil {
+            peerPaths[peer] = result.path
+            logger.debug("Peer \(address) pinned to \(result.path)")
+        }
+        notePeerActivity(address)
+    }
+
+    /// The way a handshake's datagram leaves: by `path`, the handshake's own (the arrival
+    /// path of its first message), or by a fresh selection when it has none. A path that
+    /// lost its route is re-selected once. Never reads or writes ``peerPaths``.
+    ///
+    /// - Returns: the path the datagram left by, when the transport can tell.
+    private func sendHandshakeFrame(_ data: Data, to address: MatterAddress, via path: MatterPath?) async throws -> MatterPath? {
+        let result = try await transmit(data, to: address, via: path) { _ in nil }
+        return result?.path
+    }
+
+    /// Send by `path` (nil: the policy's selection). When `path` lost its route, send once
+    /// more by `retryPath(lost)`. No allowed route is logged at warning and rethrown.
+    private func transmit(
+        _ data: Data,
+        to address: MatterAddress,
+        via path: MatterPath?,
+        retryPath: (MatterPath) -> MatterPath?
+    ) async throws -> MatterSendResult? {
+        do {
+            let result: MatterSendResult?
+            do {
+                result = try await transport.send(data, to: address, via: path)
+            } catch TransportPathError.pathUnavailable(let lost, _) {
+                logger.info("Path \(lost) to \(address) lost its route; re-selecting")
+                result = try await transport.send(data, to: address, via: retryPath(lost))
+            }
+            logger.trace("Sent \(data.count)B to \(address) by \(result.map { "\($0.path)" } ?? "an unknown path")")
+            return result
+        } catch TransportPathError.noAllowedRoute(let unroutable) {
+            logger.warning("No allowed interface has a route to \(address)")
+            throw TransportPathError.noAllowedRoute(peer: unroutable)
+        }
+    }
+
+    /// A new handshake's path: its first message's arrival, when that interface is allowed.
+    private func handshakePath(_ arrival: MatterPath?) -> MatterPath? {
+        guard let arrival, config.interfaces.allows(arrival.interfaceName) else { return nil }
+        return arrival
+    }
+
+    /// The path of the live handshake on `exchangeID` from `sender`, if any.
+    private func liveHandshakePath(exchangeID: UInt16, sender: MatterAddress) -> MatterPath? {
+        if let pase = paseHandshakes[exchangeID], pase.sender == sender { return pase.path }
+        if let caseHandshake = caseHandshakes[exchangeID], caseHandshake.sender == sender { return caseHandshake.path }
+        return nil
+    }
+
+    /// A session was established with `address`: the peer is answered by its handshake's
+    /// path from now on.
+    private func inheritHandshakePath(_ path: MatterPath?, peer address: MatterAddress, sessionID: UInt16) {
+        guard let path else { return }
+        let peer = address.canonicalised
+        let old = peerPaths[peer]
+        peerPaths[peer] = path
+        peerPathsUsed[peer] = ContinuousClock.now
+        if let old, old != path {
+            logger.info("\(Self.repinText(peer: address, from: old, to: path)) (session \(sessionID) established)")
+        } else {
+            logger.debug("Peer \(address) pinned to \(path) (session \(sessionID) established)")
+        }
+    }
+
+    /// `Peer <address> re-pinned en0/a → en1/b`, or `Peer <address>: address changed on
+    /// en1: a → b` when only the local address moved on the same interface.
+    private static func repinText(peer address: MatterAddress, from old: MatterPath, to new: MatterPath) -> String {
+        if old.interfaceIndex == new.interfaceIndex, old.interfaceName == new.interfaceName {
+            return "Peer \(address): address changed on \(new.interfaceName): \(old.localAddress) → \(new.localAddress)"
+        }
+        return "Peer \(address) re-pinned \(old) → \(new)"
+    }
+
+    /// An authenticated, de-duplicated message from `address` arrived on `arrival`. An
+    /// allowed interface other than the pin becomes the pin; an excluded one is accepted
+    /// but never replied through.
+    private func repinOnArrival(_ address: MatterAddress, arrival: MatterPath) {
+        let peer = address.canonicalised
+        let old = peerPaths[peer]
+        guard old != arrival else { return }
+        guard config.interfaces.allows(arrival.interfaceName) else {
+            logger.debug("Peer \(address): traffic arrived on excluded \(arrival.interfaceName); keeping \(old.map { "\($0)" } ?? "no pin")")
+            return
+        }
+        peerPaths[peer] = arrival
+        peerPathsUsed[peer] = ContinuousClock.now
+        if let old {
+            logger.info("\(Self.repinText(peer: address, from: old, to: arrival))")
+        } else {
+            logger.debug("Peer \(address) pinned to \(arrival) (traffic arrived on \(arrival.interfaceName))")
+        }
+    }
+
+    private func notePeerActivity(_ address: MatterAddress) {
+        let peer = address.canonicalised
+        if peerPaths[peer] != nil {
+            peerPathsUsed[peer] = ContinuousClock.now
+        }
+    }
+
+    /// Forget the pins no session or handshake uses whose peer has been silent for
+    /// ``peerPathIdleLimit``, so the map is bounded by live peers rather than growing with
+    /// every address that ever spoke. An established session's address keeps its pin for
+    /// as long as the session exists (a subscription may be quiet for longer than the limit).
+    func prunePeerPaths(now: ContinuousClock.Instant) {
+        guard !peerPaths.isEmpty else { return }
+        var inUse = Set(sessions.values.map(\.address.canonicalised))
+        inUse.formUnion(paseHandshakes.values.map(\.sender.canonicalised))
+        inUse.formUnion(caseHandshakes.values.map(\.sender.canonicalised))
+        for peer in peerPaths.keys where !inUse.contains(peer) {
+            if let used = peerPathsUsed[peer], now - used < Self.peerPathIdleLimit { continue }
+            peerPaths[peer] = nil
+            peerPathsUsed[peer] = nil
+            logger.debug("Peer \(peer) unpinned: no session and silent for \(Self.peerPathIdleLimit)")
+        }
+        for peer in peerPathsUsed.keys where peerPaths[peer] == nil {
+            peerPathsUsed[peer] = nil
+        }
     }
 
     // MARK: - Helpers
@@ -1963,6 +2169,9 @@ extension MatterDeviceServer {
         /// The raw Pake2 payload bytes — stored so we can re-send idempotently
         /// if the initiator retransmits Pake1 on the same exchange ID (MRP behaviour).
         var pake2ResponsePayload: Data?
+        /// The path every frame of this handshake leaves by: its first message's allowed
+        /// arrival path, else the first reply's selection. The session inherits it.
+        var path: MatterPath?
     }
 
     /// An established session with its associated network address.
@@ -1972,6 +2181,12 @@ extension MatterDeviceServer {
         let fabricIndex: FabricIndex
         /// Received-counter window for duplicate detection.
         var dedup = CounterDeduplication(encrypted: true)
+    }
+
+    /// A handshake reply's wire bytes and the path it left by, for a verbatim replay.
+    struct StoredReply {
+        let message: Data
+        let path: MatterPath?
     }
 
     /// The request a handshake reply answered: an MRP retransmission repeats
@@ -1995,6 +2210,9 @@ extension MatterDeviceServer {
         /// The raw Sigma2 payload bytes — stored so we can re-send idempotently
         /// if the initiator retransmits Sigma1 on the same exchange ID (MRP behaviour).
         let sigma2Payload: Data
+        /// The path every frame of this handshake leaves by: its first message's allowed
+        /// arrival path, else the first reply's selection. The session inherits it.
+        var path: MatterPath?
     }
 }
 

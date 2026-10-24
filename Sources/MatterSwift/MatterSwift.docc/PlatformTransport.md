@@ -26,6 +26,54 @@ public protocol MatterUDPTransport: Sendable {
 - `receive()` — AsyncStream of incoming datagrams with sender address
 - `close()` — Stop listening and release resources
 
+Three further requirements make the transport path-aware on a multi-homed host. Each has a default implementation, so a transport that implements only the four above still compiles and works:
+
+```swift
+    func receiveDatagrams() -> AsyncStream<MatterDatagram>
+    func send(_ data: Data, to address: MatterAddress, via path: MatterPath?) async throws -> MatterSendResult?
+    func setInterfacePolicy(_ policy: InterfacePolicy) async
+```
+
+- `receiveDatagrams()` — Like `receive()`, but each ``MatterDatagram`` also carries the ``MatterPath`` it arrived on. Default: wraps `receive()` with a `nil` path.
+- `send(_:to:via:)` — Send by a pinned path, or, when `via` is `nil`, by the path the interface policy selects. Returns a ``MatterSendResult`` naming the path used, or `nil` when the transport cannot tell. Default: calls `send(_:to:)` and returns `nil`.
+- `setInterfacePolicy(_:)` — Receive the ``InterfacePolicy`` that selection follows. `MatterController` and `MatterDeviceServer` call it before their first send. Default: no-op.
+
+A custom transport that implements only the original four requirements gets exactly the behaviour it had before: the controller sees every datagram with no path, never pins anything, and the policy is ignored.
+
+### Paths
+
+- ``MatterPath`` — The interface index, interface name and local (source) address a datagram left from or arrived on. The local address is a canonical literal with no zone.
+- ``MatterDatagram`` — A received payload, its sender and its `path` (`nil` when the transport cannot tell).
+- ``MatterSendResult`` — The `path` a send used, and, when that send chose the path itself (no `via`), the `selection` outcome: `preferred`, `fallthrough` or `route_table`. A send over a pinned path has no selection.
+- ``TransportPathError`` — Thrown by a path-aware transport. `pathUnavailable(_:errno:)` means a pinned path can no longer reach the peer: `EHOSTUNREACH`, `ENETUNREACH` or `EADDRNOTAVAIL`; `EHOSTDOWN` on Darwin (neighbour discovery failed on the pinned interface); `EINVAL` on Linux when the path's address or interface has left the host; `EAFNOSUPPORT` when the path is of the other address family; `ENXIO` when the destination's `%zone` interface is gone; the controller re-selects for a session and fails an unsecured handshake at once. `noAllowedRoute(peer:)` means no allowed interface has a route to the peer; the controller treats it like an unreachable peer (the session is invalidated and the device's address re-resolved).
+
+### InterfacePolicy
+
+``InterfacePolicy`` tells a transport which interfaces to use on a host with more than one (for example Ethernet and Wi-Fi on the same subnet):
+
+```swift
+public struct InterfacePolicy: Sendable, Equatable {
+    public var preferred: [String]     // interface names, most preferred first
+    public var excluded: Set<String>   // never used to send
+    public static let automatic = InterfacePolicy()
+}
+```
+
+The policy is an order, not an allow-list:
+
+- **Allowed** is every interface that is up, minus `excluded`. Interfaces not named in `preferred` stay allowed and rank after the listed ones.
+- **Selection** for a peer with no pinned path takes the first `preferred` interface, in order, that is allowed and has a route to the peer; else the route table's own choice, if its interface is allowed; else any remaining allowed interface with a route; else it throws `noAllowedRoute`. Passing over a preferred interface is logged at info with the reason.
+- **Exclusion is the only hard limit.** A datagram that arrives on an excluded interface is still accepted (a peer's traffic cannot be steered) but never becomes a pin and is never replied through.
+- Names in the policy that are missing or down are logged at warning when the policy is applied, and again only when their state changes.
+
+The route check needs no privileges and sends no packets: it scopes a throwaway UDP socket to the interface and `connect()`s it to the peer.
+
+## POSIX Core and C Shim
+
+The Apple and Linux transports share one implementation, `POSIXUDPSocketCore` in `MatterTransport`, compiled on Darwin and Glibc. It owns an `AF_INET6` (`IPV6_V6ONLY`) socket and an `AF_INET` socket bound to the same port, one receive thread per socket using `recvmsg`, and the interface listing and route check. Every send uses `sendmsg` with `IPV6_PKTINFO` / `IP_PKTINFO` carrying the pinned interface and source address, which keeps the bound source port. Receives enable `IPV6_RECVPKTINFO` / `IP_RECVPKTINFO` and report the arrival interface and local address.
+
+The control-message macros (`CMSG_*`) and the platform differences in the `PKTINFO` and interface-scoping options are not expressible in Swift, so they sit behind a small C shim, `CMatterSockets`. A custom POSIX-based transport can reuse the core rather than the shim directly.
+
 ### MatterDiscovery
 
 Handles mDNS/DNS-SD service advertisement, browsing and resolution. `MatterDiscovery` is an alias for `ServiceDiscovery` from [mdns-swift](https://github.com/acumen-dev/mdns-swift)'s `MDNSCore` (and `MatterServiceRecord` for its `ServiceRecord`):
@@ -57,18 +105,18 @@ The resolve contract the controller relies on:
 
 ### Apple (MatterApple module)
 
-- **`AppleUDPTransport`** — Uses `NWConnection` and `NWListener` from Network.framework
+- **`AppleUDPTransport`** — A thin actor over the shared POSIX core (BSD sockets with per-datagram `PKTINFO`); it implements the path-aware requirements
 - **`AppleDiscovery`** — Uses `NWBrowser` for browsing, `DNSServiceRegister` for advertisement
 
 Features:
-- IPv4 + IPv6 dual-stack
+- IPv4 + IPv6 dual-stack, with per-peer interface and source-address pinning under an ``InterfacePolicy``
 - Interface-aware mDNS registration (prevents cross-interface address leakage on dual-homed hosts)
 - Link-local IPv6 AAAA record registration for each active LAN interface
 - Automatic interface detection (filters out VPN tunnels, bridges, virtual interfaces)
 
 ### Linux (MatterLinux module)
 
-- **`LinuxUDPTransport`** — Uses SwiftNIO `DatagramBootstrap` bound to `::` (dual-stack IPv6)
+- **`LinuxUDPTransport`** — A thin actor over the shared POSIX core, as on Apple; no longer uses SwiftNIO (SwiftNIO cannot set `IPV6_PKTINFO` on a write)
 - **`LinuxDiscovery`** — Pure-Swift mDNS implementation (RFC 6762) over multicast UDP (224.0.0.251:5353)
 
 Features:
@@ -99,7 +147,7 @@ To support a new platform (e.g., embedded systems, Windows, or a testing mock):
 
 1. **Create a new module** (e.g., `MatterMyPlatform`) that depends on `MatterTransport`.
 
-2. **Implement `MatterUDPTransport`**:
+2. **Implement `MatterUDPTransport`** (the four original requirements are enough; add `receiveDatagrams()`, `send(_:to:via:)` and `setInterfacePolicy(_:)` if your platform can report and choose paths):
 
 ```swift
 import MatterTransport

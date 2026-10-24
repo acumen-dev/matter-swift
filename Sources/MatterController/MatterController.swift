@@ -111,6 +111,14 @@ public actor MatterController {
         /// host schedules it. Production code leaves the default.
         public var discoveryClock: any MRPClock
 
+        /// The clock a CASE `busy` wait runs on: when a peer answers Sigma1 with a `busy`
+        /// StatusReport, the controller sleeps at least the time it asked for on this clock
+        /// (and checks the wait against `operationTimeout` on it). Default: `ContinuousClock()`.
+        /// MRP and the handshake's own timeouts are not on it.
+        ///
+        /// A seam for tests, as ``discoveryClock``: production code leaves the default.
+        public var retryClock: any MRPClock
+
         /// The roots and Certification Declaration signing keys device attestation is verified
         /// against during commissioning. `nil` (the default) uses
         /// `AttestationTrustStore.bundledProduction()`, the DCL production PAAs and CSA CD
@@ -136,6 +144,12 @@ public actor MatterController {
         /// `InstrumentationSystem.tracer` as it is when the controller is created.
         public var tracer: (any Tracer)?
 
+        /// Which network interfaces Matter traffic may use on a multi-homed host (default
+        /// `.automatic`: the route table decides). Pushed into the transport when the
+        /// message layer starts; each handshake, and the session it establishes, then keeps
+        /// the path its first message chose.
+        public var interfaces: InterfacePolicy
+
         public init(
             fabricID: FabricID,
             controllerNodeID: NodeID = NodeID(rawValue: 1),
@@ -148,10 +162,12 @@ public actor MatterController {
             addressRefreshTimeout: Duration = .seconds(5),
             commissionableResolveTimeout: Duration = .seconds(5),
             discoveryClock: any MRPClock = ContinuousClock(),
+            retryClock: any MRPClock = ContinuousClock(),
             attestationTrustStore: AttestationTrustStore? = nil,
             metricsLabelPrefix: String = "matter",
             metricsFactory: (any MetricsFactory)? = nil,
-            tracer: (any Tracer)? = nil
+            tracer: (any Tracer)? = nil,
+            interfaces: InterfacePolicy = .automatic
         ) {
             self.fabricID = fabricID
             self.controllerNodeID = controllerNodeID
@@ -164,10 +180,12 @@ public actor MatterController {
             self.addressRefreshTimeout = addressRefreshTimeout
             self.commissionableResolveTimeout = commissionableResolveTimeout
             self.discoveryClock = discoveryClock
+            self.retryClock = retryClock
             self.attestationTrustStore = attestationTrustStore
             self.metricsLabelPrefix = metricsLabelPrefix
             self.metricsFactory = metricsFactory
             self.tracer = tracer
+            self.interfaces = interfaces
         }
     }
 
@@ -859,7 +877,7 @@ public actor MatterController {
             throw ControllerError.paseHandshakeFailed("No free local session ID")
         }
         defer { sessionCache.releaseSessionID(sessionID) }
-        let paseContext = try await establishPASE(
+        let (paseContext, pasePath) = try await establishPASE(
             address: address, mrp: mrp, setupCode: setupCode, sessionID: sessionID,
             context: ServiceContext.current ?? .topLevel
         )
@@ -872,7 +890,7 @@ public actor MatterController {
         // CommissioningComplete. Register the PASE session before the first
         // encrypted request so the reply can be decrypted and routed.
         do {
-            try await messenger.registerSession(paseSession, peerAddress: address, mrp: mrp)
+            try await messenger.registerSession(paseSession, peerAddress: address, path: pasePath, mrp: mrp)
         } catch {
             throw Self.commissioningError(error)
         }
@@ -911,17 +929,19 @@ public actor MatterController {
     /// Commissioning step 1: PBKDFParamRequest → Pake3 on one unsecured exchange, inside a
     /// `matter.pase` span, with its info line (duration) and
     /// `<prefix>_sessions_established_total{type="pase"}`. Errors are mapped as commissioning errors.
+    /// Returns the context and the path the handshake ran on (the PASE session's path).
     private func establishPASE(
         address: MatterAddress,
         mrp: MRPParameters?,
         setupCode: UInt32,
         sessionID: UInt16,
         context: ServiceContext
-    ) async throws -> CommissioningController.CommissioningContext {
+    ) async throws -> (context: CommissioningController.CommissioningContext, path: MatterPath?) {
         let timeout = configuration.operationTimeout
         let (pbkdfReq, ctx1) = commissioning.beginPASE(passcode: setupCode, initiatorSessionID: sessionID)
         return try await instrumentedEstablishment(
-            .paseSession, context: context, sessionID: sessionID, mapError: Self.commissioningError
+            .paseSession, context: context, sessionID: sessionID,
+            establishedPath: { $0.path }, mapError: Self.commissioningError
         ) { paseContext in
             let handshake = await self.messenger.openExchange(peer: address, mrp: mrp, context: paseContext)
             do {
@@ -954,8 +974,9 @@ public actor MatterController {
                 guard statusReport.generalStatus == .success else {
                     throw ControllerError.paseHandshakeFailed("PASE StatusReport: \(statusReport.generalStatus)")
                 }
+                let path = await handshake.path()
                 await handshake.close()
-                return ctx3
+                return (ctx3, path)
             } catch {
                 await handshake.close()
                 throw error
@@ -1122,14 +1143,15 @@ public actor MatterController {
             throw ControllerError.caseSessionFailed("No free local session ID")
         }
         caseReservation = caseSessionID
+        var busyBudget = CASEBusyBudget(clock: configuration.retryClock, timeout: configuration.operationTimeout)
         let established = try await instrumentedCASE(nodeID: deviceNodeID, context: ServiceContext.current ?? .topLevel) { caseContext in
-            let session = try await self.caseHandshake(
-                nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext
+            let (session, path) = try await self.caseHandshakeHonouringBusy(
+                nodeID: deviceNodeID, address: address, mrp: mrp, localSessionID: caseSessionID, context: caseContext, budget: &busyBudget
             )
             // Inside the CASE outcome, as on the operational path: established
             // means handshake and registration.
-            try await self.messenger.registerSession(session, peerAddress: address, mrp: mrp)
-            return session
+            try await self.messenger.registerSession(session, peerAddress: address, path: path, mrp: mrp)
+            return (session, path)
         }
         caseSession = established
         try commissioningFailureInjection?(.afterCASE)
@@ -1569,6 +1591,7 @@ public actor MatterController {
         messaging.metricsLabelPrefix = configuration.metricsLabelPrefix
         messaging.metricsFactory = configuration.metricsFactory
         messaging.tracer = configuration.tracer
+        messaging.interfaces = configuration.interfaces
         return ControllerMessenger(transport: transport, localNodeID: localNodeID, configuration: messaging, logger: logger)
     }
 
@@ -1687,23 +1710,27 @@ public actor MatterController {
         defer { sessionCache.releaseSessionID(sessionID) }
 
         return try await instrumentedCASE(nodeID: nodeID, context: context) { caseContext in
+            var busyBudget = CASEBusyBudget(clock: self.configuration.retryClock, timeout: self.configuration.operationTimeout)
             var usedAddress = address
             let session: SecureSession
+            let path: MatterPath?
             do {
-                session = try await self.caseHandshake(
-                    nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext
+                (session, path) = try await self.caseHandshakeHonouringBusy(
+                    nodeID: nodeID, address: address, mrp: device.mrpParameters, localSessionID: sessionID, context: caseContext,
+                    budget: &busyBudget
                 )
             } catch {
                 let original = Self.operationalError(error, nodeID: nodeID)
-                guard Self.nothingAnswered(original, nodeID: nodeID),
+                guard Self.nothingAnswered(original, nodeID: nodeID) || Self.pathVanished(error),
                       let refreshed = try await self.refreshedAddress(nodeID: nodeID, tried: address, context: caseContext) else {
                     throw original
                 }
                 self.loggers.caseHandshake.info("Node did not answer CASE; retrying at its re-resolved address", metadata: .node(nodeID))
                 usedAddress = refreshed.address
                 do {
-                    session = try await self.caseHandshake(
-                        nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext
+                    (session, path) = try await self.caseHandshakeHonouringBusy(
+                        nodeID: nodeID, address: refreshed.address, mrp: refreshed.mrp, localSessionID: sessionID, context: caseContext,
+                        budget: &busyBudget
                     )
                 } catch {
                     throw Self.operationalError(error, nodeID: nodeID)
@@ -1718,12 +1745,12 @@ public actor MatterController {
                 throw ControllerError.deviceNotFound
             }
             do {
-                try await self.messenger.registerSession(session, peerAddress: usedAddress, mrp: current.mrpParameters)
+                try await self.messenger.registerSession(session, peerAddress: usedAddress, path: path, mrp: current.mrpParameters)
             } catch {
                 throw Self.operationalError(error, nodeID: nodeID)
             }
             self.sessionCache.store(session, for: nodeID)
-            return session
+            return (session, path)
         }
     }
 
@@ -1732,17 +1759,18 @@ public actor MatterController {
     /// on success it also records `<prefix>_case_duration`. `body` covers the handshake and
     /// the session's registration; the duration and the CASE line's `matter.latency_ms`
     /// include any address-refresh retry (the failed attempt, the re-resolve and the second
-    /// handshake).
+    /// handshake). `body` returns the session and the path its handshake ran on, which the
+    /// span records as `matter.interface` / `matter.local_address`.
     private func instrumentedCASE(
         nodeID: NodeID,
         context: ServiceContext,
-        _ body: (ServiceContext) async throws -> SecureSession
+        _ body: (ServiceContext) async throws -> (session: SecureSession, path: MatterPath?)
     ) async throws -> SecureSession {
         loggers.caseHandshake.debug("Establishing CASE session", metadata: .node(nodeID))
         return try await instrumentedEstablishment(
             .caseSession, context: context, nodeID: nodeID,
-            establishedSessionID: { $0.localSessionID }, body
-        )
+            establishedSessionID: { $0.session.localSessionID }, establishedPath: { $0.path }, body
+        ).session
     }
 
     /// Run one session establishment inside its `matter.case` / `matter.pase` span (child of
@@ -1750,13 +1778,15 @@ public actor MatterController {
     /// and `<prefix>_sessions_established_total{type,outcome}`. The outcome is classified from
     /// the error `body` threw; `mapError` gives the error logged, recorded on the span and
     /// thrown. An establishment cancelled or ended by ``stop()`` gets a debug line but is
-    /// neither counted nor timed, and its span ends without error status.
+    /// neither counted nor timed, and its span ends without error status. `establishedPath`
+    /// gives the path the handshake ran on, recorded on the span.
     private func instrumentedEstablishment<T: Sendable>(
         _ type: SessionType,
         context: ServiceContext,
         nodeID: NodeID? = nil,
         sessionID: UInt16? = nil,
         establishedSessionID: (T) -> UInt16? = { _ in nil },
+        establishedPath: (T) -> MatterPath? = { _ in nil },
         mapError: (any Error) -> any Error = { $0 },
         _ body: (ServiceContext) async throws -> T
     ) async throws -> T {
@@ -1781,6 +1811,10 @@ public actor MatterController {
             let session = establishedSessionID(result) ?? sessionID
             if let session, span.isRecording {
                 span.attributes[MatterLogKey.session] = MatterLogValue.hexString(session)
+            }
+            if let path = establishedPath(result), span.isRecording {
+                span.attributes[MatterLogKey.interface] = path.interfaceName
+                span.attributes[MatterLogKey.localAddress] = path.localAddress
             }
             logger.info(
                 "\(type.name) session established in \(MatterLogValue.milliseconds(elapsed)) ms",
@@ -1852,8 +1886,17 @@ public actor MatterController {
         return (resolved.address, await registry.device(for: nodeID)?.mrpParameters)
     }
 
+    /// Whether a handshake failed because the path it was pinned to lost its
+    /// route (unmapped `error`): nothing could answer it there.
+    private static func pathVanished(_ error: any Error) -> Bool {
+        if case MessagingError.pathLost? = error as? MessagingError { return true }
+        return false
+    }
+
     /// Whether `error` (already mapped by ``operationalError(_:nodeID:)``)
     /// means nothing answered, rather than a device that answered badly.
+    /// No allowed route maps to `peerUnreachable` and counts; a vanished path
+    /// is checked on the unmapped error (``pathVanished(_:)``).
     private static func nothingAnswered(_ error: any Error, nodeID: NodeID) -> Bool {
         switch error as? ControllerError {
         case .peerUnreachable(let node)?: return node == nodeID
@@ -1862,16 +1905,82 @@ public actor MatterController {
         }
     }
 
+    /// ``caseHandshakeRetryingLostPath(nodeID:address:mrp:localSessionID:context:)``, with a
+    /// `busy` Sigma1 answer honoured: wait the minimum the peer stated on
+    /// `configuration.retryClock`, then retry with a fresh Sigma1.
+    ///
+    /// `budget` belongs to one establishment and is shared by its attempts (first and
+    /// post-refresh): one deadline (`retryClock.now + operationTimeout`, fixed when the budget
+    /// is made) and one busy count. A wait that would pass the deadline fails at once; the
+    /// fourth busy answer (three waited retries) gives up. Worst case per establishment: 4
+    /// busy-answered attempts per handshake call, each with at most one lost-path retry (it
+    /// sits inside the busy loop and never re-arms it), but the budget is shared, so across
+    /// both calls of `establishCASESession` there are at most 4 busy answers: at most 8
+    /// handshakes while busy, plus one non-busy failed attempt's lost-path pair.
+    private func caseHandshakeHonouringBusy(
+        nodeID: NodeID,
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        localSessionID sessionID: UInt16,
+        context: ServiceContext? = nil,
+        budget: inout CASEBusyBudget
+    ) async throws -> (session: SecureSession, path: MatterPath?) {
+        while true {
+            do {
+                return try await caseHandshakeRetryingLostPath(
+                    nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context
+                )
+            } catch let busy as CASEBusy {
+                budget.busyAnswers += 1
+                let ms = Int(busy.minimumWait.components.seconds * 1000
+                    + busy.minimumWait.components.attoseconds / 1_000_000_000_000_000)
+                if budget.clock.now + busy.minimumWait > budget.deadline {
+                    throw ControllerError.caseSessionFailed("peer busy; asked to wait \(ms) ms")
+                }
+                if budget.busyAnswers >= CASEBusyBudget.maxAttempts {
+                    throw ControllerError.caseSessionFailed("peer busy after \(CASEBusyBudget.maxAttempts) attempts")
+                }
+                loggers.caseHandshake.info("Node busy; retrying CASE in \(ms) ms", metadata: .node(nodeID))
+                telemetry.metrics.caseBusyWaits.increment()
+                try await budget.clock.sleep(until: budget.clock.now + busy.minimumWait)
+            }
+        }
+    }
+
+    /// ``caseHandshake(nodeID:address:mrp:localSessionID:context:)``, retried once at once
+    /// when the path it was pinned to lost its route mid-handshake (`pathLost`): the fresh
+    /// exchange selects a path afresh, so a flapped interface costs one Sigma1, not an
+    /// address re-resolve.
+    private func caseHandshakeRetryingLostPath(
+        nodeID: NodeID,
+        address: MatterAddress,
+        mrp: MRPParameters?,
+        localSessionID sessionID: UInt16,
+        context: ServiceContext? = nil
+    ) async throws -> (session: SecureSession, path: MatterPath?) {
+        do {
+            return try await caseHandshake(nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context)
+        } catch MessagingError.pathLost(_, let lost) {
+            loggers.caseHandshake.info(
+                "CASE path \(lost.interfaceName) lost its route to \(MatterLogValue.address(address)); retrying on a fresh selection",
+                metadata: Logger.Metadata.node(nodeID).merging([MatterLogKey.reason: "path_lost"]) { $1 }
+            )
+            return try await caseHandshake(nodeID: nodeID, address: address, mrp: mrp, localSessionID: sessionID, context: context)
+        }
+    }
+
     /// Sigma1/2/3 with `nodeID` at `address` on one unsecured exchange,
     /// closed on every path. Returns the established session, not yet
-    /// registered with the message layer.
+    /// registered with the message layer, and the path every frame of the
+    /// handshake left by (nil when the transport cannot tell), for the session
+    /// to keep.
     private func caseHandshake(
         nodeID: NodeID,
         address: MatterAddress,
         mrp: MRPParameters?,
         localSessionID sessionID: UInt16,
         context: ServiceContext? = nil
-    ) async throws -> SecureSession {
+    ) async throws -> (session: SecureSession, path: MatterPath?) {
         let timeout = configuration.operationTimeout
         let (sigma1Data, handshakeCtx) = controllerSession.createSigma1(
             peerNodeID: nodeID,
@@ -1887,6 +1996,20 @@ public actor MatterController {
                 payload: sigma1Data,
                 timeout: timeout
             )
+            if sigma2.protocolID == MatterProtocolID.secureChannel.rawValue,
+               sigma2.opcode == SecureChannelOpcode.statusReport.rawValue,
+               let report = try? StatusReportMessage.decode(from: sigma2.payload),
+               report.protocolID == MatterProtocolID.secureChannel.rawValue,
+               report.protocolStatus == SecureChannelStatusCode.busy.rawValue {
+                var wait: UInt16 = 0
+                if let data = report.protocolData, data.count >= 2 {
+                    let base = data.startIndex
+                    wait = UInt16(data[base]) | UInt16(data[base + 1]) << 8
+                } else {
+                    loggers.caseHandshake.debug("CASE busy StatusReport without a minimum wait; treating it as 0 ms", metadata: .node(nodeID))
+                }
+                throw CASEBusy(minimumWait: .milliseconds(Int(wait)))
+            }
             try Self.expect(sigma2, .caseSigma2, failure: ControllerError.caseSessionFailed)
 
             // Sigma2 → Sigma3 + session
@@ -1915,8 +2038,9 @@ public actor MatterController {
             await handshake.close()
             throw error
         }
+        let path = await handshake.path()
         await handshake.close()
-        return session
+        return (session, path)
     }
 
     /// Reserve a local session ID that no registered, cached or in-flight
@@ -2102,15 +2226,17 @@ public actor MatterController {
     private static func operationalError(_ error: any Error, nodeID: NodeID) -> any Error {
         guard let messaging = error as? MessagingError else { return error }
         switch messaging {
-        case .peerUnreachable, .sessionClosed, .unknownSession:
+        case .peerUnreachable, .sessionClosed, .unknownSession, .noAllowedRoute:
             // The session is gone from the message layer (unacknowledged,
-            // closed, or unregistered): invalidate it, as for a silent peer.
+            // closed, or unregistered), or no allowed interface reaches the
+            // node: invalidate it and re-resolve, as for a silent peer.
             return ControllerError.peerUnreachable(nodeID)
         case .responseTimeout:
             return ControllerError.timeout("No response from node \(nodeID.rawValue)")
         case .unexpectedProtocol(let protocolID, let opcode):
             return ControllerError.unexpectedResponse("Protocol \(protocolID) opcode \(opcode) from node \(nodeID.rawValue)")
-        case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse:
+        case .exchangeClosed, .receiveAlreadyPending, .sendAlreadyPending, .stopped, .sessionIDInUse,
+             .pathLost:
             return ControllerError.operational(messaging)
         }
     }
@@ -2180,4 +2306,25 @@ private extension SessionType {
 
     /// The start of the info line for a failed establishment.
     var failed: String { self == .caseSession ? "CASE session failed" : "PASE failed" }
+}
+
+/// A CASE Sigma1 answered by a `busy` StatusReport: the peer asks for `minimumWait` before a retry.
+struct CASEBusy: Error {
+    let minimumWait: Duration
+}
+
+/// What one CASE establishment may spend on a peer answering `busy`: a deadline fixed at its
+/// start and a count of busy answers, shared by all its handshake attempts.
+struct CASEBusyBudget {
+    /// Busy-answered attempts after which the establishment gives up (three waited retries).
+    static let maxAttempts = 4
+
+    let clock: any MRPClock
+    let deadline: ContinuousClock.Instant
+    var busyAnswers = 0
+
+    init(clock: any MRPClock, timeout: Duration) {
+        self.clock = clock
+        deadline = clock.now + timeout
+    }
 }
