@@ -217,12 +217,14 @@ final class XMLClusterParser: NSObject, XMLParserDelegate {
         case "bitfield":
             if currentBitmap != nil {
                 let field = PartialBitfield(
-                    bit: Int(attrs["bit"] ?? "0") ?? 0,
+                    bit: Self.bitOffset(from: attrs),
+                    width: Self.bitWidth(from: attrs),
                     name: attrs["name"] ?? "",
                     summary: attrs["summary"] ?? ""
                 )
                 currentBitmapFields.append(BitfieldItem(
                     bit: field.bit,
+                    width: field.width,
                     name: field.name,
                     summary: field.summary,
                     conformance: .unknown
@@ -393,7 +395,7 @@ final class XMLClusterParser: NSObject, XMLParserDelegate {
                 let idx = currentBitmapFields.count - 1
                 let item = currentBitmapFields[idx]
                 currentBitmapFields[idx] = BitfieldItem(
-                    bit: item.bit, name: item.name,
+                    bit: item.bit, width: item.width, name: item.name,
                     summary: item.summary, conformance: conf
                 )
             }
@@ -465,6 +467,25 @@ final class XMLClusterParser: NSObject, XMLParserDelegate {
 
     private func pushConformanceExpression(_ expr: ConformanceExpression) {
         conformanceStack.last?.pushExpression(expr)
+    }
+
+    /// Matter XML declares a bitfield as either a single `bit` or an inclusive
+    /// `from`/`to` range, highest bit first (`from="1" to="0"` is a 2-bit field
+    /// at offset 0). Reading only `bit` defaulted every ranged field to bit 0
+    /// and collapsed a bitmap's fields onto one option (#50).
+    private static func bitOffset(from attrs: [String: String]) -> Int {
+        if let from = attrs["from"].flatMap(Int.init) {
+            let to = attrs["to"].flatMap(Int.init) ?? from
+            return min(from, to)
+        }
+        return Int(attrs["bit"] ?? "0") ?? 0
+    }
+
+    /// The field's width in bits: 1 for `bit="N"`, `from - to + 1` for a range.
+    private static func bitWidth(from attrs: [String: String]) -> Int {
+        guard let from = attrs["from"].flatMap(Int.init) else { return 1 }
+        let to = attrs["to"].flatMap(Int.init) ?? from
+        return abs(from - to) + 1
     }
 
     private func parseHexOrDecimal(_ string: String) -> UInt32 {
@@ -539,6 +560,7 @@ private struct PartialBitmap {
 
 private struct PartialBitfield {
     let bit: Int
+    let width: Int
     let name: String
     let summary: String
 }

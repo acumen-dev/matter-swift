@@ -370,8 +370,8 @@ struct SwiftCodeGenerator {
         let typeName = sanitizeTypeName(bitmapDef.name)
         if bitmapDef.bitfields.isEmpty { return }
 
-        // Determine raw value type from max bit
-        let maxBit = bitmapDef.bitfields.map(\.bit).max() ?? 0
+        // Determine raw value type from the highest occupied bit
+        let maxBit = highestBit(of: bitmapDef)
         let rawType: String
         if maxBit >= 16 {
             rawType = "UInt32"
@@ -386,9 +386,24 @@ struct SwiftCodeGenerator {
         lines.append("        public init(rawValue: \(rawType)) { self.rawValue = rawValue }")
         for field in bitmapDef.bitfields {
             let propName = NamingConventions.bitmapFieldName(from: field.name)
-            lines.append("        public static let \(escaped(propName)) = \(typeName)(rawValue: 1 << \(field.bit))")
+            if field.width > 1 {
+                // A multi-bit field (Matter XML `from`/`to`) is the mask over
+                // its whole range: bits 0–1 → 0b11. Emitting `1 << bit` made
+                // every ranged field a single-bit option on the same bit, so
+                // all of a bitmap's fields were equal (#50).
+                lines.append("        public static let \(escaped(propName)) = \(typeName)(rawValue: ((1 << \(field.width)) - 1) << \(field.bit))")
+            } else {
+                lines.append("        public static let \(escaped(propName)) = \(typeName)(rawValue: 1 << \(field.bit))")
+            }
         }
         lines.append("    }")
+    }
+
+    /// The highest bit any field occupies. A field's width comes from the
+    /// Matter XML `from`/`to` range; using its low bit alone under-sized the
+    /// raw type of a bitmap whose last field is multi-bit (#50).
+    private static func highestBit(of bitmapDef: BitmapDefinition) -> Int {
+        bitmapDef.bitfields.map { $0.bit + $0.width - 1 }.max() ?? 0
     }
 
     // MARK: - Cluster Definitions File
@@ -567,7 +582,7 @@ struct SwiftCodeGenerator {
             }
             // Named bitmaps → raw integer type
             else if let bitmapDef = cluster.bitmaps.first(where: { $0.name == xmlType }) {
-                let maxBit = bitmapDef.bitfields.map(\.bit).max() ?? 0
+                let maxBit = highestBit(of: bitmapDef)
                 if maxBit >= 16 { base = "UInt32" }
                 else if maxBit >= 8 { base = "UInt16" }
                 else { base = "UInt8" }
@@ -1092,7 +1107,7 @@ struct SwiftCodeGenerator {
         }
 
         if let bitmapDef = cluster.bitmaps.first(where: { $0.name == t }) {
-            let maxBit = bitmapDef.bitfields.map(\.bit).max() ?? 0
+            let maxBit = highestBit(of: bitmapDef)
             if maxBit >= 16 { return ".uint32" }
             if maxBit >= 8 { return ".uint16" }
             return ".uint8"

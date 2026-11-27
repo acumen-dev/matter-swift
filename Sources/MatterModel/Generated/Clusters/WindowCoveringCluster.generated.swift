@@ -172,9 +172,9 @@ public enum WindowCoveringCluster {
     public struct OperationalStatusBitmap: OptionSet, Sendable {
         public let rawValue: UInt8
         public init(rawValue: UInt8) { self.rawValue = rawValue }
-        public static let global = OperationalStatusBitmap(rawValue: 1 << 0)
-        public static let lift = OperationalStatusBitmap(rawValue: 1 << 0)
-        public static let tilt = OperationalStatusBitmap(rawValue: 1 << 0)
+        public static let global = OperationalStatusBitmap(rawValue: ((1 << 2) - 1) << 0)
+        public static let lift = OperationalStatusBitmap(rawValue: ((1 << 2) - 1) << 2)
+        public static let tilt = OperationalStatusBitmap(rawValue: ((1 << 2) - 1) << 4)
     }
 
     public struct SafetyStatusBitmap: OptionSet, Sendable {
