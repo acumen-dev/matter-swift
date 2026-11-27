@@ -87,7 +87,11 @@ struct BitmapDefinition {
 
 /// A single bitmap bitfield.
 struct BitfieldItem {
+    /// The field's lowest bit (`to` in a Matter XML `from`/`to` range).
     let bit: Int
+    /// The field's width in bits: 1 for a `bit="N"` field, `from - to + 1` for
+    /// an inclusive `from`/`to` range.
+    let width: Int
     let name: String
     let summary: String
     let conformance: Conformance

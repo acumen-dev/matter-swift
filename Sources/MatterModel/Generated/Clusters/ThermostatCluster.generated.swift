@@ -310,8 +310,8 @@ public enum ThermostatCluster {
     public struct HVACSystemTypeBitmap: OptionSet, Sendable {
         public let rawValue: UInt8
         public init(rawValue: UInt8) { self.rawValue = rawValue }
-        public static let coolingStage = HVACSystemTypeBitmap(rawValue: 1 << 0)
-        public static let heatingStage = HVACSystemTypeBitmap(rawValue: 1 << 0)
+        public static let coolingStage = HVACSystemTypeBitmap(rawValue: ((1 << 2) - 1) << 0)
+        public static let heatingStage = HVACSystemTypeBitmap(rawValue: ((1 << 2) - 1) << 2)
         public static let heatingIsHeatPump = HVACSystemTypeBitmap(rawValue: 1 << 4)
         public static let heatingUsesFuel = HVACSystemTypeBitmap(rawValue: 1 << 5)
     }
