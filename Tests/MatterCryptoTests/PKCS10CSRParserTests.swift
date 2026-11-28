@@ -130,22 +130,16 @@ struct PKCS10CSRParserTests {
         throw PKCS10CSRError.malformed("no signature with the wanted last bit in 256 tries")
     }
 
-    @Test("A signature BIT STRING declaring one unused bit, with that bit clear, still yields the signer's key")
-    func unusedBitClear() throws {
-        // swift-certificates ignores the padding count on the signature BIT STRING and still
-        // verifies the signature over the exact CertificationRequestInfo, so a CSR that parses
-        // is still genuinely self-signed.
-        let (key, der) = try csrWithOneUnusedBit(lowBitSet: false)
-        let parsed = try PKCS10CSR(der: der)
-        #expect(parsed.publicKey.x963Representation == key.publicKey.x963Representation)
-    }
-
-    @Test("A signature BIT STRING declaring one unused bit that is set is rejected")
-    func unusedBitSet() throws {
-        let (_, der) = try csrWithOneUnusedBit(lowBitSet: true)
-        #expect(throws: PKCS10CSRError.self) {
-            _ = try PKCS10CSR(der: der)
-        }
+    @Test("A signature BIT STRING declaring an unused bit is malformed, whether that bit is clear or set")
+    func unusedBitIsMalformed() throws {
+        // An ECDSA signature is octet-aligned, so a padding count other than zero is never a
+        // valid encoding of one. swift-certificates 1.21.2 refuses it outright, before any
+        // verification, so that one signature has one encoding; earlier versions ignored the
+        // count, which is why this once parsed with the bit clear.
+        let (_, clear) = try csrWithOneUnusedBit(lowBitSet: false)
+        expectMalformed(clear, "unused bit clear")
+        let (_, set) = try csrWithOneUnusedBit(lowBitSet: true)
+        expectMalformed(set, "unused bit set")
     }
 
     private func csr(keyOID: [UInt64], curveOID: [UInt64], key: P256.Signing.PrivateKey) throws -> Data {
