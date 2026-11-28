@@ -1111,9 +1111,21 @@ public actor MatterController {
         let csrResp = try await imRequest(sessionID: paseSessionID, opcode: .invokeRequest, payload: csrMsg)
         let deviceNodeID = await fabricManager.allocateNodeID()
         allocatedNodeID = deviceNodeID
-        let (addRootMsg, addNOCMsg, ctx6) = try await commissioning.handleCSRResponse(
-            response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctxAttested
-        )
+        let csrStep: (addRootCertMessage: Data, addNOCMessage: Data, context: CommissioningController.CommissioningContext)
+        do {
+            csrStep = try await commissioning.handleCSRResponse(
+                response: csrResp.payload, expectedNonce: csrNonce, deviceNodeID: deviceNodeID, context: ctxAttested
+            )
+        } catch {
+            // The response as the device sent it, so a rejected CSR can be read off the
+            // record rather than guessed at from the error.
+            loggers.paseHandshake.debug(
+                "CSRResponse rejected: \(error)",
+                metadata: [MatterLogKey.payload: "\(csrResp.payload.map { String(format: "%02x", $0) }.joined())"]
+            )
+            throw error
+        }
+        let (addRootMsg, addNOCMsg, ctx6) = csrStep
         loggers.paseHandshake.debug("Device will be node \(MatterLogValue.hexString(deviceNodeID.rawValue))")
         try commissioningFailureInjection?(.afterCSR)
 
