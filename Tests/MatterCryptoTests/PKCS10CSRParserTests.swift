@@ -58,6 +58,21 @@ struct PKCS10CSRParserTests {
         }
     }
 
+    /// The reason text of the `.unsupportedAlgorithm` that parsing `der` throws, or "" with
+    /// an issue recorded when it throws something else or parses.
+    private func expectUnsupported(_ der: Data, _ what: String) -> String {
+        do {
+            _ = try PKCS10CSR(der: der)
+            Issue.record("\(what): expected failure")
+        } catch PKCS10CSRError.unsupportedAlgorithm(let reason) {
+            #expect(!reason.isEmpty, "\(what): the reason names what was found")
+            return reason
+        } catch {
+            Issue.record("\(what): expected .unsupportedAlgorithm, got \(error)")
+        }
+        return ""
+    }
+
     @Test("Truncation at every cut is malformed")
     func truncatedIsMalformed() throws {
         let der = try B.buildCSR(privateKey: P256.Signing.PrivateKey())
@@ -115,22 +130,16 @@ struct PKCS10CSRParserTests {
         throw PKCS10CSRError.malformed("no signature with the wanted last bit in 256 tries")
     }
 
-    @Test("A signature BIT STRING declaring one unused bit, with that bit clear, still yields the signer's key")
-    func unusedBitClear() throws {
-        // swift-certificates ignores the padding count on the signature BIT STRING and still
-        // verifies the signature over the exact CertificationRequestInfo, so a CSR that parses
-        // is still genuinely self-signed.
-        let (key, der) = try csrWithOneUnusedBit(lowBitSet: false)
-        let parsed = try PKCS10CSR(der: der)
-        #expect(parsed.publicKey.x963Representation == key.publicKey.x963Representation)
-    }
-
-    @Test("A signature BIT STRING declaring one unused bit that is set is rejected")
-    func unusedBitSet() throws {
-        let (_, der) = try csrWithOneUnusedBit(lowBitSet: true)
-        #expect(throws: PKCS10CSRError.self) {
-            _ = try PKCS10CSR(der: der)
-        }
+    @Test("A signature BIT STRING declaring an unused bit is malformed, whether that bit is clear or set")
+    func unusedBitIsMalformed() throws {
+        // An ECDSA signature is octet-aligned, so a padding count other than zero is never a
+        // valid encoding of one. swift-certificates 1.21.2 refuses it outright, before any
+        // verification, so that one signature has one encoding; earlier versions ignored the
+        // count, which is why this once parsed with the bit clear.
+        let (_, clear) = try csrWithOneUnusedBit(lowBitSet: false)
+        expectMalformed(clear, "unused bit clear")
+        let (_, set) = try csrWithOneUnusedBit(lowBitSet: true)
+        expectMalformed(set, "unused bit set")
     }
 
     private func csr(keyOID: [UInt64], curveOID: [UInt64], key: P256.Signing.PrivateKey) throws -> Data {
@@ -150,9 +159,9 @@ struct PKCS10CSRParserTests {
         // sanity: the helper with the right OIDs parses
         _ = try PKCS10CSR(der: csr(keyOID: B.oidECPublicKey, curveOID: B.oidPrime256v1, key: key))
         // rsaEncryption key type
-        #expect(throws: PKCS10CSRError.unsupportedAlgorithm) {
-            try PKCS10CSR(der: csr(keyOID: [1, 2, 840, 113549, 1, 1, 1], curveOID: B.oidPrime256v1, key: key))
-        }
+        _ = expectUnsupported(
+            try csr(keyOID: [1, 2, 840, 113549, 1, 1, 1], curveOID: B.oidPrime256v1, key: key), "rsaEncryption key"
+        )
         // A genuine P-384 CSR (secp384r1 curve, 97-byte point, ecdsa-with-SHA384)
         let p384 = P384.Signing.PrivateKey()
         let algID = B.derSequence(B.derOID(B.oidECPublicKey) + B.derOID([1, 3, 132, 0, 34]))
@@ -166,9 +175,7 @@ struct PKCS10CSRParserTests {
         let der384 = Data(B.derSequence(
             [UInt8](cri) + sigAlg384 + B.derBitString([UInt8](sig384.derRepresentation))
         ))
-        #expect(throws: PKCS10CSRError.unsupportedAlgorithm) {
-            try PKCS10CSR(der: der384)
-        }
+        #expect(expectUnsupported(der384, "P-384").contains("not ecdsa-with-SHA256"))
     }
 
     @Test("A non-ECDSA signature algorithm is unsupported")
@@ -183,9 +190,7 @@ struct PKCS10CSRParserTests {
         let der = Data(B.derSequence(
             [UInt8](cri) + sigAlg + B.derBitString([UInt8](sig.derRepresentation))
         ))
-        #expect(throws: PKCS10CSRError.unsupportedAlgorithm) {
-            try PKCS10CSR(der: der)
-        }
+        _ = expectUnsupported(der, "sha256WithRSAEncryption signature")
     }
 
     @Test("Long-form DER lengths parse")
@@ -198,5 +203,57 @@ struct PKCS10CSRParserTests {
         )
         let csr = try PKCS10CSR(der: der)
         #expect(csr.publicKey.x963Representation == key.publicKey.x963Representation)
+    }
+
+    // MARK: ecdsa-with-SHA256 with a NULL parameter
+
+    private func standardCRI(for key: P256.Signing.PrivateKey) -> Data {
+        B.buildCertificationRequestInfo(publicKey: key.publicKey, organization: "CSA", commonName: "Matter Device")
+    }
+
+    /// A CSR as mbedTLS before 3.x writes it: the signature AlgorithmIdentifier carries an
+    /// explicit NULL parameter where RFC 5758 §3.2 wants none. Device stacks built on that
+    /// mbedTLS still send this form.
+    private func csrWithNullSignatureParameter(key: P256.Signing.PrivateKey, cri: Data) throws -> Data {
+        let sig = try key.signature(for: cri)
+        let sigAlg = B.derSequence(B.derOID(B.oidECDSAWithSHA256) + [0x05, 0x00])
+        return Data(B.derSequence([UInt8](cri) + sigAlg + B.derBitString([UInt8](sig.derRepresentation))))
+    }
+
+    @Test("ecdsa-with-SHA256 with an explicit NULL parameter, as older mbedTLS writes it, yields the signer's key")
+    func nullSignatureParameter() throws {
+        let key = P256.Signing.PrivateKey()
+        let der = try csrWithNullSignatureParameter(key: key, cri: standardCRI(for: key))
+        let csr = try PKCS10CSR(der: der)
+        #expect(csr.publicKey.x963Representation == key.publicKey.x963Representation)
+    }
+
+    @Test("The NULL-parameter form is still checked over the exact CertificationRequestInfo")
+    func nullSignatureParameterTampered() throws {
+        let key = P256.Signing.PrivateKey()
+        var der = try csrWithNullSignatureParameter(key: key, cri: standardCRI(for: key))
+        let range = try #require(der.range(of: Data("Matter".utf8)))
+        der[range.lowerBound] ^= 0x01
+        #expect(throws: PKCS10CSRError.badSignature) {
+            try PKCS10CSR(der: der)
+        }
+    }
+
+    @Test("A parameter other than NULL on ecdsa-with-SHA256 is unsupported")
+    func otherSignatureParameter() throws {
+        let key = P256.Signing.PrivateKey()
+        let cri = standardCRI(for: key)
+        let sig = try key.signature(for: cri)
+        let sigAlg = B.derSequence(B.derOID(B.oidECDSAWithSHA256) + B.derOID(B.oidPrime256v1))
+        let der = Data(B.derSequence([UInt8](cri) + sigAlg + B.derBitString([UInt8](sig.derRepresentation))))
+        _ = expectUnsupported(der, "OID parameter on ecdsa-with-SHA256")
+    }
+
+    @Test("The NULL-parameter form with trailing bytes is still malformed: the pre-pass rebuilds nothing it cannot parse whole")
+    func nullSignatureParameterTrailingBytes() throws {
+        let key = P256.Signing.PrivateKey()
+        var der = try csrWithNullSignatureParameter(key: key, cri: standardCRI(for: key))
+        der.append(0x00)
+        expectMalformed(der, "NULL form, trailing byte")
     }
 }

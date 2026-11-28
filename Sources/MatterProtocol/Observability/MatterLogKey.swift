@@ -32,11 +32,13 @@ public enum MatterLogKey {
     public static let interface = "matter.interface"
     /// The local (source) address of that path.
     public static let localAddress = "matter.local_address"
+    /// Raw message bytes as hex, on a line that records a message the controller rejected.
+    public static let payload = "matter.payload"
 
     public static let all: [String] = [
         subsystem, node, session, exchange, protocolID, opcode, counter, ack, endpoint, cluster,
         command, attribute, imStatus, subscription, latencyMs, attempt, reason, instance, timed, paths,
-        interface, localAddress,
+        interface, localAddress, payload,
     ]
 }
 
